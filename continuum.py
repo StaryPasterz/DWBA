@@ -257,8 +257,8 @@ def solve_continuum_wave(
     l: int,
     E_eV: float,
     tail_fraction: float = 0.1,
-    rtol: float = 1e-8,
-    atol: float = 1e-10,
+    rtol: float = 1e-5,
+    atol: float = 1e-7,
 ) -> ContinuumWave:
     """
     Solve for the distorted-wave scattering solution χ_l(k,r) in channel j.
@@ -373,7 +373,7 @@ def solve_continuum_wave(
         t_span=(r_min, r_max),
         y0=y0,
         t_eval=r,          # we want the solution specifically on our global grid points
-        method="RK45",     # explicit Runge-Kutta; potentials are smooth after spline
+        method="LSODA",    # LSODA is generally faster/stiffer-resistant
         rtol=rtol,
         atol=atol,
         dense_output=False

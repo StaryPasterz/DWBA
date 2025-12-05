@@ -1,4 +1,3 @@
-
 """
 DW_main.py
 
@@ -12,11 +11,16 @@ from potential_core import CorePotentialParams
 from driver import (
     ExcitationChannelSpec,
     compute_total_excitation_cs,
+    ev_to_au,
 )
 from ionization import (
     IonizationChannelSpec,
     compute_ionization_cs,
 )
+
+AU_TO_EV = 27.211386245988 
+A0_SQ_CM2 = 2.8002852e-17
+PI_A0_SQ_CM2 = np.pi * A0_SQ_CM2
 
 def get_user_input_float(prompt: str, default: float = None) -> float:
     try:
@@ -44,6 +48,24 @@ def get_user_input_int(prompt: str, default: int = None) -> int:
         print("Invalid integer.")
         return get_user_input_int(prompt, default)
 
+def format_sigma(sigma_cm2: float, unit: str) -> str:
+    if unit == "cm2":
+        return f"{sigma_cm2:.4e} cm^2"
+    elif unit == "a02":
+        val = sigma_cm2 / A0_SQ_CM2
+        return f"{val:.4e} a0^2"
+    elif unit == "pia02":
+        val = sigma_cm2 / PI_A0_SQ_CM2
+        return f"{val:.4e} pi*a0^2"
+    return f"{sigma_cm2:.4e} ?"
+
+def format_energy(E_eV: float, unit: str) -> str:
+    if unit == "eV":
+        return f"{E_eV:.4f} eV"
+    elif unit == "Ha":
+        return f"{E_eV / AU_TO_EV:.4f} Ha"
+    return f"{E_eV:.4f} ?"
+
 def main():
     print("=== DWBA Electron Impact Cross Section Calculator ===")
     print("1. Excitation (Bound -> Bound)")
@@ -51,18 +73,38 @@ def main():
     
     mode = get_user_input_int("Select mode", 1)
     
+    # Units selection
+    print("\n--- Unit Selection ---")
+    print("Select Energy unit:")
+    print("1. eV (Default)")
+    print("2. Hartree")
+    u_e = get_user_input_int("Choice", 1)
+    unit_E = "Ha" if u_e == 2 else "eV"
+    
+    print("Select Cross Section unit:")
+    print("1. cm^2 (Default)")
+    print("2. a0^2 (Bohr radius squared)")
+    print("3. pi * a0^2")
+    u_s = get_user_input_int("Choice", 1)
+    if u_s == 2:
+        unit_Sig = "a02"
+    elif u_s == 3:
+        unit_Sig = "pia02"
+    else:
+        unit_Sig = "cm2"
+
     # Common params
     print("\n--- Core Potential Parameters (H-like / generic) ---")
     Z = get_user_input_float("Nuclear charge Z", 1.0)
-    # Prosty potencjał kulombowski -Z/r + krótkozasięgowe?
-    # W tym kodzie V_coreParams ma: Z, alpha1, alpha2...
-    # Użyjmy domyślnych zer dla alph, czyli czysty Coulomb.
-    # Chyba że użytkownik chce podać parametry.
-    # Uproszczenie: tylko Z.
-    core_params = CorePotentialParams(Zc=Z, a1=0.0, a2=0.0, a3=0.0, a4=0.0, a5=0.0, a6=0.0) # Gołe jądro Z (lub efektywny)
+    core_params = CorePotentialParams(Zc=Z, a1=0.0, a2=0.0, a3=0.0, a4=0.0, a5=0.0, a6=0.0)
 
     print("\n--- Incident Energy ---")
-    E_inc = get_user_input_float("Incident Electron Energy [eV]", 50.0)
+    
+    if unit_E == "Ha":
+        E_inc_au = get_user_input_float("Incident Electron Energy [Ha]", 2.0)
+        E_inc_eV = E_inc_au * AU_TO_EV
+    else:
+        E_inc_eV = get_user_input_float("Incident Electron Energy [eV]", 50.0)
 
     if mode == 1:
         # EXCITATION
@@ -83,16 +125,18 @@ def main():
             N_equiv=N_equiv, L_max=L_max, L_i_total=L_i_tot
         )
         
-        print(f"\nComputing Excitation σ for E={E_inc} eV...")
+        print(f"\nComputing Excitation σ for E={format_energy(E_inc_eV, unit_E)}...")
         try:
-            res = compute_total_excitation_cs(E_inc, spec, core_params)
+            res = compute_total_excitation_cs(E_inc_eV, spec, core_params)
+            
             if res.ok_open_channel:
                 print(f"\nRESULT:")
-                print(f"  Excitation Energy: {res.E_excitation_eV:.4f} eV")
-                print(f"  Sigma DWBA:        {res.sigma_total_cm2:.4e} cm^2")
-                print(f"  Sigma M-Tong:      {res.sigma_mtong_cm2:.4e} cm^2")
+                print(f"  Excitation Energy: {format_energy(res.E_excitation_eV, unit_E)}")
+                print(f"  Sigma DWBA:        {format_sigma(res.sigma_total_cm2, unit_Sig)}")
+                print(f"  Sigma M-Tong:      {format_sigma(res.sigma_mtong_cm2, unit_Sig)}")
             else:
-                print(f"\nChannel closed! (Threshold {res.E_excitation_eV:.4f} eV > Incident {E_inc:.4f} eV)")
+                thr = res.E_excitation_eV
+                print(f"\nChannel closed! (Threshold {format_energy(thr, unit_E)} > Incident {format_energy(E_inc_eV, unit_E)})")
         except Exception as e:
             print(f"Error: {e}")
             import traceback
@@ -118,13 +162,15 @@ def main():
             L_i_total=L_i_tot
         )
         
-        print(f"\nComputing Ionization σ for E={E_inc} eV...")
+        print(f"\nComputing Ionization σ for E={format_energy(E_inc_eV, unit_E)}...")
         print("Integration over ejected energy takes time...")
         try:
-            res = compute_ionization_cs(E_inc, spec, core_params)
+            res = compute_ionization_cs(E_inc_eV, spec, core_params)
+            
             print(f"\nRESULT:")
-            print(f"  Ionization Potential: {res.IP_eV:.4f} eV")
-            print(f"  Total Ionization CS:  {res.sigma_total_cm2:.4e} cm^2")
+            print(f"  Ionization Potential: {format_energy(res.IP_eV, unit_E)}")
+            print(f"  Total Ionization CS:  {format_sigma(res.sigma_total_cm2, unit_Sig)}")
+                 
         except Exception as e:
              print(f"Error: {e}")
              import traceback
