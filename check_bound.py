@@ -4,13 +4,10 @@ from bound_states import solve_bound_states
 
 def main():
     core_params = CorePotentialParams(
-        Zc = 2.0,
-        a1 = 8.043,
-        a2 = 2.715,
-        a3 = 0.506,
-        a4 = 0.982,
-        a5 = -0.043,
-        a6 = 0.401,
+        Zc = 1.0,
+        a1 = 0.0, a2 = 0.0,
+        a3 = 0.0, a4 = 0.0,
+        a5 = 0.0, a6 = 0.0,
     )
 
     grid = make_r_grid(r_min=0.1, r_max=50.0, n_points=200)

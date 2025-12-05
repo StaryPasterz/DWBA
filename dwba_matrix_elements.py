@@ -64,7 +64,7 @@
 from __future__ import annotations
 import numpy as np
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Dict, List, Union
 
 from grid import RadialGrid
 from potential_core import V_core_on_grid
@@ -174,7 +174,7 @@ def radial_ME_single_L(
     V_core_array: np.ndarray,
     U_i_array: np.ndarray,
     bound_i: BoundOrbital,
-    bound_f: BoundOrbital,
+    bound_f: Union[BoundOrbital, ContinuumWave],
     cont_i: ContinuumWave,
     cont_f: ContinuumWave,
     L: int
@@ -212,8 +212,12 @@ def radial_ME_single_L(
         na tej samej siatce. (Występuje w części δ_{L,0}.)
     bound_i : BoundOrbital
         Orbital związany stanu początkowego Φ_i (u_i(r)).
-    bound_f : BoundOrbital
-        Orbital związany stanu końcowego Φ_f (u_f(r)).
+    bound_i: BoundOrbital
+        Orbital związany stanu początkowego Φ_i (u_i(r)).
+    bound_f : Union[BoundOrbital, ContinuumWave]
+        Orbital stanu końcowego Φ_f.
+        - Dla wzbudzenia: BoundOrbital (u_f(r)).
+        - Dla jonizacji: ContinuumWave (chi_eject(r)).
     cont_i : ContinuumWave
         Fala rozpraszania w kanale wejściowym χ_i(r).
         UWAGA: musi być policzona przy energii wejściowej elektron/pocisk.
@@ -293,7 +297,7 @@ def radial_ME_all_L(
     V_core_array: np.ndarray,
     U_i_array: np.ndarray,
     bound_i: BoundOrbital,
-    bound_f: BoundOrbital,
+    bound_f: Union[BoundOrbital, ContinuumWave],
     cont_i: ContinuumWave,
     cont_f: ContinuumWave,
     L_max: int

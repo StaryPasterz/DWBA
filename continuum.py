@@ -102,6 +102,11 @@ class ContinuumWave:
     chi_of_r: np.ndarray
     phase_shift: float
 
+    @property
+    def u_of_r(self) -> np.ndarray:
+        """Alias for chi_of_r to ensure compatibility with BoundOrbital interface."""
+        return self.chi_of_r
+
 
 def _schrodinger_rhs_factory(l: int, U_spline: CubicSpline, k_au: float):
     """

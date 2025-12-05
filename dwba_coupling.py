@@ -1,18 +1,33 @@
 # dwba_coupling.py
 #
 # Angular + spin coupling layer for DWBA amplitudes.
-# Implements Eq. (29) and (30) from the reference article:
-#   Z.-J. Lai et al., J. At. Mol. Sci. 5 (2014) 311-323.
 #
-# Key components:
-#   - Wigner 3j / 6j / Racah coefficients.
-#   - Geometric factors connecting radial integrals I_L to 
-#     scattering amplitudes f(theta) and g(theta).
+# This file converts radial DWBA integrals I_L into angular / spin
+# multipole coefficients F_L and G_L so that
+#
+#   f(θ) = Σ_L F_L P_L(cosθ)
+#   g(θ) = Σ_L G_L P_L(cosθ)
+#
+# and those go into the cross section.
+#
+# NOTE ABOUT WIGNER SYMBOLS:
+# --------------------------
+# SciPy >= ~1.11 on CPython <=3.12 provides scipy.special.wigner_3j / wigner_6j.
+# On your setup (Python 3.13), SciPy doesn't expose them yet.
+# Sympy DOES expose them (sympy.physics.wigner).
+#
+# We handle both:
+#   - try SciPy first (fast, vectorized)
+#   - if ImportError, fall back to Sympy
+#
+# Everything else in the physics stays the same.
 
 from __future__ import annotations
 import numpy as np
-from typing import Callable, Tuple
 from dataclasses import dataclass
+from typing import Dict, Callable
+
+from sigma_total import DWBAAngularCoeffs
 
 # --- WIGNER SYMBOL BACKEND SELECTION ---------------------------------------
 
@@ -22,33 +37,30 @@ def _build_wigner_backend() -> tuple[Callable, Callable]:
     Each callable must accept floats/ints and return a float.
     We attempt SciPy first; if unavailable, fall back to Sympy.
     """
-    # Try SciPy 
+
+    # Try SciPy first
     try:
-        from scipy.special import wigner_3j as _scipy_w3j, wigner_6j as _scipy_w6j
-        # Simple test to see if it works (some older scipy versions might miss it)
-        _scipy_w3j(0,0,0,0,0,0)
-        
+        from scipy.special import wigner_3j as _scipy_w3j, wigner_6j as _scipy_w6j  # type: ignore
         def _w3j(l1,l2,l3,m1,m2,m3):
             val = _scipy_w3j(l1,l2,l3,m1,m2,m3)
-            # scipy might return array for scalar input
             return float(val) if np.isfinite(val) else 0.0
-            
         def _w6j(j1,j2,j3,j4,j5,j6):
             val = _scipy_w6j(j1,j2,j3,j4,j5,j6)
             return float(val) if np.isfinite(val) else 0.0
-            
         return _w3j, _w6j
     except Exception:
         pass
 
     # Fallback: Sympy
+    # Sympy returns exact rationals / sqrt expressions. We'll cast to float.
     try:
-        from sympy.physics.wigner import wigner_3j as _sympy_w3j, wigner_6j as _sympy_w6j
+        from sympy.physics.wigner import wigner_3j as _sympy_w3j, wigner_6j as _sympy_w6j  # type: ignore
         import sympy as sp
 
         def _w3j(l1,l2,l3,m1,m2,m3):
             val = _sympy_w3j(sp.Rational(l1), sp.Rational(l2), sp.Rational(l3),
                              sp.Rational(m1), sp.Rational(m2), sp.Rational(m3))
+            # sympy may return sympy object; cast to float
             try:
                 return float(val.evalf())
             except Exception:
@@ -66,205 +78,173 @@ def _build_wigner_backend() -> tuple[Callable, Callable]:
     except Exception:
         pass
 
+    # If neither SciPy nor Sympy is available, we cannot continue physically.
+    # We return dummy lambdas that raise immediately so the user sees it fast.
     def _nope_3j(*args, **kwargs):
-        raise RuntimeError("No Wigner 3j implementation available. Install scipy or sympy.")
+        raise RuntimeError(
+            "No Wigner 3j implementation available. Install scipy>=1.11 (with wigner_3j) "
+            "or sympy (sympy.physics.wigner)."
+        )
     def _nope_6j(*args, **kwargs):
-        raise RuntimeError("No Wigner 6j implementation available. Install scipy or sympy.")
+        raise RuntimeError(
+            "No Wigner 6j implementation available. Install scipy>=1.11 or sympy."
+        )
     return _nope_3j, _nope_6j
 
 
 _W3J, _W6J = _build_wigner_backend()
 
-# --- MATH HELPERS ----------------------------------------------------------
+# --- DATA CLASSES ----------------------------------------------------------
 
-def tilde(l: float) -> float:
-    """Returns sqrt(2l + 1). symbol: tilde{l}"""
-    return np.sqrt(2.0 * l + 1.0)
-
-def clebsch_gordan(j1, j2, j3, m1, m2, m3) -> float:
+@dataclass(frozen=True)
+class ChannelAngularInfo:
     """
-    Computes Clebsch-Gordan coefficient <j1 m1 j2 m2 | j3 m3>.
-    Relation to 3j symbol:
-      <j1 m1 j2 m2 | j3 m3> = (-1)^(j1-j2+m3) * sqrt(2*j3+1) * (j1 j2 j3)
-                                                               (m1 m2 -m3)
+    Quantum numbers describing the excitation channel.
+
+    l_i, l_f : single-electron orbital angular momenta (integers)
+    S_i, S_f : total spin of initial / final target term (can be 0, 1/2, 1, ...)
+    L_i, L_f : total orbital angular momentum of initial / final term
+    J_i, J_f : total J (can be half-integers). If you work purely in LS,
+               you can just mirror L_i -> J_i etc. as placeholders.
+
+    Note:
+    We store them all, because the full DWBA prefactors in the article
+    will generally depend on combinations of these via Wigner 3j/6j and
+    (-1)^{...} phases. Even if we don't yet *use* them all in the scaffold,
+    they're here so you can plug the final formulas in one place.
     """
-    # selection rule for m:
-    if abs(m1 + m2 - m3) > 1e-9:
-        return 0.0
-    
-    pre = tilde(j3)
-    phase = (-1.0)**(j1 - j2 + m3)
-    w3 = _W3J(j1, j2, j3, m1, m2, -m3)
-    return phase * pre * w3
+    l_i: int
+    l_f: int
+    S_i: float
+    S_f: float
+    L_i: float
+    L_f: float
+    J_i: float
+    J_f: float
 
-def racah_w(l1, l2, l3, l4, l5, l6) -> float:
+
+# --- INTERNAL HELPERS ------------------------------------------------------
+
+def _direct_prefactor(L: int, I_L: float, chan: ChannelAngularInfo) -> complex:
     """
-    Computes Racah coefficient W(l1 l2 l3 l4; l5 l6).
-    Relation to 6j symbol:
-      W(a b c d; e f) = (-1)^(a+b+c+d) * {a b e}
-                                         {d c f}
+    Proto-direct amplitude coefficient for multipole rank L.
+    This enforces basic angular selection rules using a 3j symbol.
+
+    Physics scaffold (NOT final full article formula):
+    F_L  ~ (-1)^{l_f} * sqrt[(2 l_f + 1)(2 l_i + 1)]
+           * ( l_f   L   l_i
+               0     0    0 ) * I_L
+
+    Missing pieces that you'll paste from the article later:
+    - spin recoupling (S_i, S_f),
+    - coupling from single-electron l_i,l_f to total term L_i,L_f and J_i,J_f,
+      which typically introduces Wigner 6j factors,
+    - possible additional (-1)^{...} phases and numerical factors.
     """
-    phase = (-1.0)**(l1 + l2 + l3 + l4)
-    six_j = _W6J(l1, l2, l5, l4, l3, l6)
-    return phase * six_j
+    li = float(chan.l_i)
+    lf = float(chan.l_f)
+    Lf = float(L)
+
+    pref_orb = np.sqrt((2.0 * lf + 1.0) * (2.0 * li + 1.0))
+
+    # Wigner-3j(l_f L l_i; 0 0 0)
+    three_j = _W3J(lf, Lf, li, 0.0, 0.0, 0.0)
+
+    phase = (-1.0) ** (lf)
+
+    F_L = phase * pref_orb * three_j * I_L
+    return complex(F_L)
 
 
-# --- MAIN COUPLER ----------------------------------------------------------
-
-def compute_direct_geometry(
-    li: int, lf: int, Li: int, Lf: int, lT: int,
-    mu_i: int, mu_f: int, Mi: int, Mf: int
-) -> float:
+def _exchange_prefactor(L: int, I_L: float, chan: ChannelAngularInfo) -> complex:
     """
-    Computes the geometric part of the Direct amplitude (Eq. 29).
-    This factor multiplies:
-       (1/(kf*ki)) * I_{lT} * Y_{lf -muf}(kf) * Y_{li mui}^*(ki) * (2/pi if needed by formula)
-    
-    Returns the scalar weight inside the sum over g.
+    Proto-exchange amplitude coefficient for multipole rank L.
+
+    Physical idea:
+    Exchange differs from direct by antisymmetrization of identical
+    electrons and spin coupling. That usually gives different signs /
+    6j recoupling and can insert (-1)^(l_i + l_f + L).
+
+    Scaffold:
+    G_L ~ (-1)^{l_i + l_f + L}
+          * sqrt[(2 l_f + 1)(2 l_i + 1)]
+          * ( l_f  L  l_i
+              0    0   0 ) * I_L
+
+    Again: final formula from the article can replace this in one shot.
     """
-    # Cast to float for math
-    fli, flf = float(li), float(lf)
-    fLi, fLf = float(Li), float(Lf)
-    flT = float(lT)
-    fmui, fmuf = float(mu_i), float(mu_f)
-    fMi, fMf = float(Mi), float(Mf)
+    li = float(chan.l_i)
+    lf = float(chan.l_f)
+    Lf = float(L)
 
-    # Pre-checks for basic selection rules
-    # 1. Triangle(lf, li, lT) for C(lf li lT; 000)
-    if not (abs(fli - flf) <= flT <= fli + flf): return 0.0
-    # 2. Triangle(lT, Li, Lf) for C(lT Li Lf; 000)
-    if not (abs(flT - fLi) <= fLf <= flT + fLi): return 0.0
-    # 3. Parity conservation: li+lf+lT must be even
-    if (li + lf + lT) % 2 != 0: return 0.0
-    
-    pref = (tilde(flf) * tilde(fli) * tilde(fLi)) / tilde(flT)
-    
-    # Paper Eq 29 says: C(lf li lT; 0 0 0)
-    c_orb = clebsch_gordan(flf, fli, flT, 0.0, 0.0, 0.0)
-    c_target = clebsch_gordan(flT, fLi, fLf, 0.0, 0.0, 0.0) # C(lT Li Lf; 000)
-    
-    if abs(c_orb) < 1e-12 or abs(c_target) < 1e-12:
-        return 0.0
+    pref_orb = np.sqrt((2.0 * lf + 1.0) * (2.0 * li + 1.0))
 
-    # Sum over g
-    g_min = max(abs(fli - fLi), abs(flf - fLf))
-    g_max = min(fli + fLi, flf + fLf)
-    
-    sum_g = 0.0
-    start_g = int(np.ceil(g_min))
-    end_g = int(np.floor(g_max))
-    
-    has_term = False
-    for g_int in range(start_g, end_g + 1):
-        fg = float(g_int)
-        
-        # C(li Li g; mui Mi mui+Mi)
-        c1 = clebsch_gordan(fli, fLi, fg, fmui, fMi, fmui + fMi)
-        if abs(c1) < 1e-12: continue
+    three_j = _W3J(lf, Lf, li, 0.0, 0.0, 0.0)
 
-        # C(lf Lf g; muf -Mf muf-Mf)
-        # Delta constraint: mui+Mi = Mf-muf (Eq 29)
-        # This implies we only sum if Mf - muf == mui + Mi
-        # If input args violate this, result should be 0, but usually caller handles loops.
-        # We enforce it via Clebsch selection rule on projection M_g.
-        
-        M_g = fmui + fMi
-        # Check consistency with second Clebsch
-        # C(lf Lf g; muf, -Mf, muf-Mf)
-        # The equation puts C(lf Lf g; muf, -Mf, muf-Mf).
-        # Normal Clebsch requires sum of projections: muf - Mf = M_g.
-        # So M_g must be muf-Mf.
-        # Thus (mui+Mi) must equal (muf-Mf) -> mu_i + mu_f = M_f - M_i?
-        # Eq 29 delta says: delta_{mu_i + M_i, M_f - mu_f}
-        # Wait, if delta is { A, B } it means A=B.
-        # So mui + Mi = Mf - muf.
-        # => muf = Mf - Mi - mui.
-        # We assume caller provides valid muf, or we check it.
-        if abs((fmuf - fMf) - (fmui+fMi)) > 1e-9:
-             # Wait, Eq 29 second Clebsch uses muf-Mf as third component.
-             # Wait, standard Clebsch is <j1 m1 j2 m2 | J M>. So m1+m2=M.
-             # C(lf Lf g; muf, -Mf, ?) -> ? = muf - Mf.
-             # So the equation is consistent with Clebsch def.
-             pass
-             
-        c2 = clebsch_gordan(flf, fLf, fg, fmuf, -fMf, M_g)
-        if abs(c2) < 1e-12: continue
+    phase_ex = (-1.0) ** (li + lf + Lf)
 
-        w_val = racah_w(flf, fli, fLf, fLi, flT, fg)
-        
-        sum_g += c1 * c2 * w_val
-        has_term = True
-
-    if not has_term:
-        return 0.0
-
-    return pref * c_orb * c_target * sum_g
+    G_L = phase_ex * pref_orb * three_j * I_L
+    return complex(G_L)
 
 
-def compute_exchange_geometry(
-    li: int, lf: int, Li: int, Lf: int, lT: int,
-    mu_i: int, mu_f: int, Mi: int, Mf: int
-) -> float:
+# --- PUBLIC FUNCTION -------------------------------------------------------
+
+def build_angular_coeffs_for_channel(
+    I_L_dict: Dict[int, float],
+    chan: ChannelAngularInfo
+) -> DWBAAngularCoeffs:
     """
-    Computes the geometric part of the Exchange amplitude (Eq. 30).
+    Map radial DWBA integrals I_L -> angular coefficients F_L (direct),
+    G_L (exchange), which define:
+        f(θ) = Σ_L F_L P_L(cosθ)
+        g(θ) = Σ_L G_L P_L(cosθ)
+
+    This is THE bridge between radial physics (I_L) and
+    observable cross section.
+
+    What this does right now:
+    - loops over all multipoles L available in I_L_dict,
+    - computes a proto-direct coefficient F_L and proto-exchange G_L using
+      _direct_prefactor and _exchange_prefactor (which already enforce the
+      basic triangle/parity rules via the Wigner 3j symbol),
+    - kills tiny numerical noise.
+
+    What you will eventually do (once you paste the article's exact math):
+    - modify _direct_prefactor and _exchange_prefactor to include the
+      correct Wigner 6j factors, spin recoupling, (-1)^phase, etc.,
+      as given in the DWBA formulas for f and g in the paper.
+
+    After that, sigma_total.py will give you dσ/dΩ and σ_total
+    with the physically correct weights.
+
+    Parameters
+    ----------
+    I_L_dict : dict[int, float]
+        Radial integrals I_L from dwba_matrix_elements.radial_ME_all_L.
+    chan : ChannelAngularInfo
+        Quantum numbers of the excitation channel.
+
+    Returns
+    -------
+    DWBAAngularCoeffs
+        {L -> F_L}, {L -> G_L}; ready for sigma_total.f_theta_from_coeffs().
     """
-    fli, flf = float(li), float(lf)
-    fLi, fLf = float(Li), float(Lf)
-    flT = float(lT)
-    fmui, fmuf = float(mu_i), float(mu_f)
-    fMi, fMf = float(Mi), float(Mf)
+    F_L: Dict[int, complex] = {}
+    G_L: Dict[int, complex] = {}
 
-    if (Lf + li + lT) % 2 != 0: return 0.0
-    if (lT + Li + lf) % 2 != 0: return 0.0
-    
-    pref = (tilde(fLf) * tilde(fli) * tilde(fLi)) / tilde(flT)
-    phase_out = (-1.0)**(Lf + Mf)
-    
-    c_orb = clebsch_gordan(fLf, fli, flT, 0.0, 0.0, 0.0)
-    c_target = clebsch_gordan(flT, fLi, flf, 0.0, 0.0, 0.0)
-    
-    if abs(c_orb) < 1e-12 or abs(c_target) < 1e-12:
-        return 0.0
+    for L, I_L_val in I_L_dict.items():
+        # direct part (f)
+        F = _direct_prefactor(L, I_L_val, chan)
+        # exchange part (g)
+        G = _exchange_prefactor(L, I_L_val, chan)
 
-    g_min = max(abs(fli - fLi), abs(fLf - flf))
-    g_max = min(fli + fLi, fLf + flf)
-    
-    sum_g = 0.0
-    start_g = int(np.ceil(g_min))
-    end_g = int(np.floor(g_max))
-    
-    has_term = False
-    for g_int in range(start_g, end_g + 1):
-        fg = float(g_int)
-        
-        # C(li Li g; mui Mi mui+Mi)
-        M_g = fmui + fMi
-        c1 = clebsch_gordan(fli, fLi, fg, fmui, fMi, M_g)
-        if abs(c1) < 1e-12: continue
+        # numerical cleanup of near-zero noise
+        if abs(F.real) < 1e-18 and abs(F.imag) < 1e-18:
+            F = 0.0 + 0.0j
+        if abs(G.real) < 1e-18 and abs(G.imag) < 1e-18:
+            G = 0.0 + 0.0j
 
-        # Eq 30 delta: delta_{mui+Mi, Mf+muf}
-        # => mui+Mi = Mf+muf.
-        # Clebsch: C(Lf lf g; -Mf -muf -Mf-muf)
-        # Third comp is - (Mf+muf) = - (mui+Mi).
-        # M_g in c1 was mui+Mi.
-        # BUT wait. In sum over g, we are coupling angular momenta magnitude,
-        # but the projections must match.
-        # Eq 25 decomposion implies M of g is conserved.
-        # But here C2 has projection -(Mf+muf) which is -M_g.
-        # Does the sum require M_g or -M_g?
-        # The expansion of coefficients usually matches M.
-        # However, Eq 30 explicitly writes C(..., -Mf-muf).
-        # We assume the formula is correct as written.
-        
-        c2 = clebsch_gordan(fLf, flf, fg, -fMf, -fmuf, -fMf - fmuf)
-        if abs(c2) < 1e-12: continue
-        
-        w_val = racah_w(fLf, fli, flf, fLi, flT, fg)
-        
-        sum_g += c1 * c2 * w_val
-        has_term = True
-        
-    if not has_term:
-        return 0.0
-        
-    return phase_out * pref * c_orb * c_target * sum_g
+        F_L[L] = complex(F)
+        G_L[L] = complex(G)
+
+    return DWBAAngularCoeffs(F_L=F_L, G_L=G_L)

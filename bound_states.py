@@ -414,21 +414,36 @@ def solve_bound_states(
     V_eff = _effective_potential_l(V_core_array, r, l)
 
     # Assemble sparse Hamiltonian on the interior points
-    H = _assemble_hamiltonian_sparse(grid, V_eff)
+    # This matrix H is non-symmetric on non-uniform grid regarding standard dot product.
+    H_nonsym = _assemble_hamiltonian_sparse(grid, V_eff)
     Nint = N - 2
-
-    # We want the eigenstates with the smallest algebraic eigenvalues.
-    # 'eigsh' can give k lowest (most negative). We'll ask for n_states_max,
-    # but cap at dimension of H.
-    k_req = min(n_states_max, Nint - 1)  # eigsh requires k < Nint
+    
+    # Symetryzacja przez wagi (w_trapz na interior):
+    # Macierz symetryczna S = W * H_nonsym
+    # Problem własny: S u = E W u
+    # Gdzie W = diag(w_i)
+    # Wagi z grid.w_trapz odpowiadają dokładnie (h_minus + h_plus)/2.
+    # Używamy wag dla punktów wewnętrznych (indices 1..N-2).
+    
+    weights_inner = grid.w_trapz[1:-1]
+    W_mat = diags(weights_inner, 0, shape=(Nint, Nint), format='csr')
+    
+    # Mnożenie H_nonsym przez wagi wierszowo
+    H_sym = W_mat @ H_nonsym
+    
+    # Upewnijmy się, że H_sym jest numerycznie symetryczna (usuń błędy zaokrągleń)
+    # H_sym = (H_sym + H_sym.T) / 2.0  <-- dla pewności, choć matematycznie powinna być.
+    # W praktyce scipy.sparse product może nie dać idealnej symetrii w strukturze.
+    # Ale teoretycznie dla tego schematu 3-pkt jest symetryczna.
+    
+    k_req = min(n_states_max, Nint - 1)
     if k_req < 1:
-        # Degenerate / tiny grid case, can't eigsh
         return []
 
-    # Solve H u = E u
-    # which='SA' -> smallest algebraic eigenvalues (most negative first).
     try:
-        evals, evecs = eigsh(H, k=k_req, which='SA')
+        # Solve generalized eigenproblem A x = lambda M x
+        # Use shift-invert mode (sigma) for better convergence near bound states
+        evals, evecs = eigsh(H_sym, k=k_req, M=W_mat, sigma=-2.0, which='LM')
     except Exception as exc:
         raise RuntimeError(f"eigsh failed for l={l}: {exc}")
 
