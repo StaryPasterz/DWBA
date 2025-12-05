@@ -1,0 +1,423 @@
+# distorting_potential.py
+#
+# Construction of the distorted-wave scattering potentials U_j(r)
+# used in DWBA, following the article.
+#
+# The article defines (in atomic units):
+#
+#   U_j(r) = V_{A+}(r) + ∫ |Φ_j(r2)|^2 / |r - r2| d^3 r2,
+#
+# where Φ_j is the bound-state wavefunction of the active electron
+# in the *initial* (j=i) or *final* (j=f) target state.
+#
+# Physically:
+# - V_{A+}(r) is the effective single-active-electron core potential
+#   (the ionic core without the active electron).
+# - The integral term is the electrostatic (Hartree) potential generated
+#   by the active electron itself. We take only the spherically averaged
+#   (monopole) contribution, which is exactly what the paper does.
+#
+# For a spherically symmetric charge density ρ(r2), the Coulomb potential is:
+#
+#   V_H(r) = (1/r) ∫_0^r ρ(r2) 4π r2^2 dr2
+#          +       ∫_r^∞ ρ(r2) 4π r2   dr2
+#
+# In our single-active-electron description,
+#
+#   Φ_j(r,Ω) = u_j(r)/r * Y_{l m}(Ω),
+#
+# where u_j(r) is the reduced radial wavefunction solved in bound_states.py,
+# normalized so that ∫ |u_j(r)|^2 dr = 1.
+#
+# If we average |Φ_j|^2 over angles (which is what we want for a central,
+# spherically averaged potential), the resulting radial probability density
+# per unit r is:
+#
+#   P(r) = |u_j(r)|^2          [dimension: 1/length]
+#
+# and the corresponding *3D* density is
+#
+#   ρ(r) = |Φ_j(r)|^2 = |u_j(r)|^2 / (4π r^2).
+#
+# Plugging ρ into the Hartree formula simplifies beautifully to:
+#
+#   V_H(r)
+#    = (1/r) ∫_0^r |u_j(r2)|^2 dr2
+#      +      ∫_r^∞ |u_j(r2)|^2 / r2  dr2
+#
+# (atomic units, Coulomb interaction is +1/|r1 - r2|)
+#
+# This expression is what we will compute numerically on our radial grid.
+#
+# IMPORTANT:
+#  - Because u_j(r) is normalized (∫ |u_j|^2 dr = 1), for large r:
+#        V_H(r) -> 1/r.
+#    Then:
+#        U_j(r) = V_{A+}(r) + V_H(r) -> -1/r + 1/r = 0
+#    So U_j(r) is short-range. This matches the article's requirement
+#    that the distorted scattering wave χ_l(k,r) can asymptotically match
+#    a free spherical wave, not a Coulomb wave.
+#
+#
+# What this file provides:
+#
+# - cumulative_trapz_forward / cumulative_trapz_reverse:
+#       robust cumulative integrators on our *nonuniform* radial grid.
+#
+# - hartree_potential_from_orbital:
+#       computes V_H(r) from a BoundOrbital.
+#
+# - U_distorting:
+#       builds U_j(r) = V_core(r) + V_H(r).
+#
+# - build_distorting_potentials:
+#       convenience helper that, given two orbitals (initial and final),
+#       returns U_i(r) and U_f(r) on the common grid.
+#
+#
+# All inputs/outputs are in atomic units, consistent with the rest of the code.
+
+
+from __future__ import annotations
+import numpy as np
+from dataclasses import dataclass
+from typing import Tuple
+
+from grid import RadialGrid
+from bound_states import BoundOrbital
+
+
+@dataclass(frozen=True)
+class DistortingPotential:
+    """
+    Container for a distorted-wave potential U_j(r).
+
+    Attributes
+    ----------
+    U_of_r : np.ndarray
+        The full distorted potential U_j(r) = V_core(r) + V_H(r),
+        in Hartree, sampled on the same radial grid.
+        By construction U_of_r -> 0 for large r.
+    V_hartree_of_r : np.ndarray
+        The Hartree (electron-electron) part V_H(r), in Hartree.
+        This should behave ~ +1/r at large r, because the active electron
+        carries total charge -1 in atomic units.
+    """
+    U_of_r: np.ndarray
+    V_hartree_of_r: np.ndarray
+
+
+def _cumulative_trapz_forward(r: np.ndarray, f: np.ndarray) -> np.ndarray:
+    """
+    Compute forward cumulative integral:
+        F[i] = ∫_{r[0]}^{r[i]} f(r') dr'
+    using trapezoidal rule on a nonuniform grid.
+
+    Implementation:
+        F[0] = 0
+        F[i] = F[i-1] + 0.5*(f[i-1] + f[i]) * (r[i] - r[i-1])
+
+    Parameters
+    ----------
+    r : np.ndarray, shape (N,)
+        Strictly increasing radii (bohr).
+    f : np.ndarray, shape (N,)
+        Function values at those radii.
+
+    Returns
+    -------
+    F : np.ndarray, shape (N,)
+        Forward cumulative integral.
+        F[0] = 0 by definition.
+    """
+    if r.shape != f.shape:
+        raise ValueError("cumulative_trapz_forward: shape mismatch.")
+    N = r.size
+    F = np.zeros_like(r, dtype=float)
+    for i in range(1, N):
+        dr = r[i] - r[i - 1]
+        F[i] = F[i - 1] + 0.5 * (f[i - 1] + f[i]) * dr
+    return F
+
+
+def _cumulative_trapz_reverse(r: np.ndarray, g: np.ndarray) -> np.ndarray:
+    """
+    Compute reverse cumulative integral:
+        G[i] = ∫_{r[i]}^{r[-1]} g(r') dr'
+    using trapezoidal rule on a nonuniform grid.
+
+    Implementation:
+        G[-1] = 0
+        G[i] = G[i+1] + 0.5*(g[i+1] + g[i]) * (r[i+1] - r[i])
+
+    Parameters
+    ----------
+    r : np.ndarray, shape (N,)
+        Strictly increasing radii (bohr).
+    g : np.ndarray, shape (N,)
+        Function values at those radii.
+
+    Returns
+    -------
+    G : np.ndarray, shape (N,)
+        Reverse cumulative integral.
+        G[-1] = 0 by definition.
+
+    Notes
+    -----
+    We approximate ∫_{r}^{∞} (...) dr' by ∫_{r}^{r_max} (...),
+    assuming the orbital density vanishes by r_max. With a large enough
+    r_max (e.g. 200 bohr+), that is perfectly fine numerically.
+    """
+    if r.shape != g.shape:
+        raise ValueError("cumulative_trapz_reverse: shape mismatch.")
+    N = r.size
+    G = np.zeros_like(r, dtype=float)
+    for i in range(N - 2, -1, -1):
+        dr = r[i + 1] - r[i]
+        G[i] = G[i + 1] + 0.5 * (g[i + 1] + g[i]) * dr
+    return G
+
+
+def hartree_potential_from_orbital(
+    grid: RadialGrid,
+    orbital: BoundOrbital
+) -> np.ndarray:
+    """
+    Compute the Hartree potential V_H(r) generated by the active electron
+    in the given bound orbital, following the spherically averaged
+    single-active-electron picture in the article.
+
+    Formula in atomic units:
+        V_H(r) = (1/r) ∫_0^r |u(r')|^2 dr'  +  ∫_r^∞ |u(r')|^2 / r' dr'
+
+    where u(r) is the reduced radial wavefunction from BoundOrbital,
+    normalized so that ∫ |u(r)|^2 dr = 1.
+
+    Interpretation:
+    - The first term is like the Coulomb field from the "inner" charge
+      enclosed within radius r.
+    - The second term is the contribution from the "outer shell"
+      beyond r.
+    - Because ∫ |u|^2 dr = 1, we have V_H(r) → 1/r at large r.
+
+    Parameters
+    ----------
+    grid : RadialGrid
+        Radial grid (bohr).
+    orbital : BoundOrbital
+        Bound state (u_of_r, energy_au, etc.) from bound_states.solve_bound_states.
+
+    Returns
+    -------
+    V_H : np.ndarray, shape (N,)
+        Hartree potential in Hartree, sampled at grid.r.
+
+    Raises
+    ------
+    ValueError
+        If orbital/u_of_r shape doesn't match grid.
+    """
+    r = grid.r
+    u = orbital.u_of_r
+    if u.shape != r.shape:
+        raise ValueError("hartree_potential_from_orbital: mismatched grid/orbital shapes.")
+
+    # Probability density in r-space for the reduced radial function u(r)
+    # is |u(r)|^2 (dimension 1/length). We've normalized u so that
+    # integral |u(r)|^2 dr = 1 using integrate_trapz in bound_states.
+    u2 = np.abs(u) ** 2  # |u|^2
+
+    # Precompute forward integral:
+    #   Q_inner(r) = ∫_0^r |u(r')|^2 dr'
+    Q_inner = _cumulative_trapz_forward(r, u2)
+
+    # Precompute reverse integral:
+    #   Q_outer(r) = ∫_r^∞ |u(r')|^2 / r' dr'
+    # We'll approximate ∞ by r_max = r[-1].
+    # We need g(r') = |u(r')|^2 / r'
+    # Guard against r=0: grid.r[0] > 0 by construction, so safe.
+    g = u2 / r
+    Q_outer = _cumulative_trapz_reverse(r, g)
+
+    # Now build V_H(r):
+    #   V_H(r) = Q_inner(r)/r + Q_outer(r)
+    # Guard against division by zero at r ~ 0 using same assumption:
+    # our grid never includes r=0 exactly (r_min ~ 1e-5).
+    V_H = Q_inner / r + Q_outer
+
+    # sanity: V_H should be finite and positive, ~1/r at large r
+    if not np.all(np.isfinite(V_H)):
+        raise ValueError("Hartree potential contains non-finite values.")
+
+    return V_H
+
+
+def U_distorting(
+    V_core_array: np.ndarray,
+    V_H_array: np.ndarray
+) -> np.ndarray:
+    """
+    Build the distorted potential U_j(r) for a given channel j:
+
+        U_j(r) = V_{A+}(r) + V_H^{(j)}(r)
+
+    with:
+    - V_{A+}(r) from the SAE core potential (potential_core.V_core_on_grid),
+    - V_H^{(j)}(r) from hartree_potential_from_orbital.
+
+    Physical meaning:
+    - U_i(r) is what the *incident* electron "sees" in the entrance channel,
+      i.e. target in its initial state Φ_i.
+    - U_f(r) is what the *scattered* electron "sees" in the exit channel,
+      i.e. target in the final state Φ_f.
+
+    Important property:
+    - At large r, V_{A+}(r) ~ -1/r and V_H(r) ~ +1/r,
+      so U_j(r) -> 0. This is exactly the condition in the article
+      that lets us treat the asymptotic scattered waves χ_l(k,r)
+      as essentially free spherical waves with short-range phase shifts,
+      not long-range Coulomb waves.
+
+    Parameters
+    ----------
+    V_core_array : np.ndarray, shape (N,)
+        Core potential in Hartree.
+    V_H_array : np.ndarray, shape (N,)
+        Hartree potential for the specific orbital, in Hartree.
+
+    Returns
+    -------
+    U_array : np.ndarray, shape (N,)
+        Distorting potential in Hartree.
+
+    Raises
+    ------
+    ValueError
+        If shapes mismatch or U has non-finite values.
+    """
+    if V_core_array.shape != V_H_array.shape:
+        raise ValueError("U_distorting: shape mismatch.")
+    U = V_core_array + V_H_array
+    if not np.all(np.isfinite(U)):
+        raise ValueError("U_distorting: produced non-finite values.")
+    return U
+
+
+def build_distorting_potentials(
+    grid: RadialGrid,
+    V_core_array: np.ndarray,
+    orbital_initial: BoundOrbital,
+    orbital_final: BoundOrbital
+) -> Tuple[DistortingPotential, DistortingPotential]:
+    """
+    Convenience helper:
+    Given the core potential V_{A+}(r) and two bound orbitals
+    (initial Φ_i and final Φ_f), construct BOTH distorted-wave
+    channel potentials:
+        U_i(r)  for the entrance channel,
+        U_f(r)  for the exit channel.
+
+    Steps:
+    1. Compute V_H from orbital_initial  -> V_H_i(r).
+    2. Compute V_H from orbital_final    -> V_H_f(r).
+    3. Build U_i = V_core + V_H_i
+       and U_f = V_core + V_H_f.
+
+    This matches the article's definition where the incoming electron
+    sees U_i and the outgoing electron sees U_f.
+
+    Parameters
+    ----------
+    grid : RadialGrid
+        Radial grid.
+    V_core_array : np.ndarray, shape (N,)
+        Core potential V_{A+}(r) [Hartree] on that same grid.
+    orbital_initial : BoundOrbital
+        Bound orbital representing the active electron in the *initial*
+        target state Φ_i.
+    orbital_final : BoundOrbital
+        Bound orbital representing the active electron in the *final*
+        target state Φ_f.
+
+    Returns
+    -------
+    (U_i, U_f) : tuple(DistortingPotential, DistortingPotential)
+        U_i, U_f are dataclasses containing both U_of_r and the
+        Hartree part V_hartree_of_r for diagnostic / reuse.
+
+    Raises
+    ------
+    ValueError
+        If shapes mismatch or inputs inconsistent.
+
+    Notes
+    -----
+    - The only assumption here is that orbital_initial.u_of_r and
+      orbital_final.u_of_r are defined on the SAME grid as V_core_array.
+      This is guaranteed if everything was generated consistently
+      using the same RadialGrid.
+    - Physically, in DWBA you solve distorted-wave scattering states
+      χ_l(k,r) in U_i for the incoming channel, and in U_f for the
+      outgoing channel. We'll do to to build χ in the next module.
+    """
+    r = grid.r
+    if V_core_array.shape != r.shape:
+        raise ValueError("build_distorting_potentials: V_core_array/grid mismatch.")
+
+    # Hartree potentials
+    V_H_i = hartree_potential_from_orbital(grid, orbital_initial)
+    V_H_f = hartree_potential_from_orbital(grid, orbital_final)
+
+    # Distorting potentials
+    U_i_arr = U_distorting(V_core_array, V_H_i)
+    U_f_arr = U_distorting(V_core_array, V_H_f)
+
+    U_i = DistortingPotential(U_of_r=U_i_arr, V_hartree_of_r=V_H_i)
+    U_f = DistortingPotential(U_of_r=U_f_arr, V_hartree_of_r=V_H_f)
+
+    return U_i, U_f
+
+
+def inspect_distorting_potential(
+    grid: RadialGrid,
+    U: DistortingPotential,
+    n_preview: int = 5
+) -> Tuple[float, float]:
+    """
+    Diagnostic helper, analogous do inspect_core_potential().
+
+    Sprawdza zachowanie potencjału zniekształcającego przy małym r i dużym r.
+
+    Z punktu widzenia artykułu:
+    - przy bardzo dużym r chcemy U(r)->0,
+    - blisko jądra U(r) ≈ V_core(r) + duża dodatnia część Hartree,
+      więc może nie być trywialne w znaku.
+
+    Parameters
+    ----------
+    grid : RadialGrid
+        Radial grid.
+    U : DistortingPotential
+        Wynik build_distorting_potentials(...).
+    n_preview : int
+        Ile pierwszych/ostatnich punktów chcemy użyć do oszacowania.
+
+    Returns
+    -------
+    (U_small, U_large) : tuple of floats
+        Przybliżona wartość U(r) na najmniejszym i największym r siatki.
+        To jest szybki sanity check.
+
+    Notes
+    -----
+    Fizycznie oczekujemy:
+    - |U_large| << |V_core_large|, powinno iść do zera.
+    """
+    r = grid.r
+    n_preview = max(1, min(n_preview, r.size))
+
+    U_small = float(U.U_of_r[0])
+    U_large = float(U.U_of_r[-1])
+
+    return U_small, U_large

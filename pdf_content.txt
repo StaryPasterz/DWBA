@@ -1,0 +1,726 @@
+J. At. Mol. Sci.
+doi: 10.4208/jams.022814.051414a
+V ol. 5, No. 4, pp. 311-323
+November 2014
+Calculation of differential cross sections for electron
+impact excitation of H and He+
+Zhuo-Jin Lai, De-Feng Chen, Lin-Qing Pan, Xiao-Han Jiang,
+Y ong-Liang Xu, and Zhang-Jin Chen∗
+Department of Physics, College of Science, Shantou University, Guangdong 515063,
+China
+Received 28 February 2014; Accepted (in revised version) 14May 2014
+Published Online 29 October 2014
+Abstract. W e present the distorted wave Born approximation (DWBA) for electron
+impact excitation and a method to calibrate the DWBA. W ith th e calibrated DWBA, the
+differential cross sections (DCS) for excitation of H and He + from 1s to 2s and 2p are
+calculated and the results are compared with the absolute ex perimental measurements
+for H at incident energies of 50 eV and 100 eV . It has been found that the theoretical
+results are in very good agreement with the experiment, whic h conﬁrms the validity
+of the calibration procedure. This work prepares an efﬁcien t theoretical method for
+numerical simulations of non-sequential double ionizatio n of He in strong laser pulse
+in which laser-induced electron impact excitation of He + is involved.
+P ACS: 34.80.Dp, 34.50.Rk
+Key words : electron impact excitation, distorted wave Born approxim ation, differential cross
+sections, total cross sections
+1 Introduction
+The process of electron impact excitation of atoms and ions i s one of the most basic and
+important processes in atomic physics. Theoretical invest igations of such problems are
+of not only practical interest but also more fundamental int erest. Numerous theoretical
+methods have been proposed for calculations of differentia l cross sections (DCS) for elec-
+tron impact excitation, including the distorted wave Born a pproximation (DWBA) [1,2],
+the second-order distorted wave model [3], the convergent c lose-coupling (CCC) calcula-
+tions [5], and the R-matrix method [4], among which the DWBA is the simplest. The so-
+phisticated theoretical models, such as the CCC and the R-matrix method, are supposed
+to be able to reproduce accurate DCS in angular distribution and absolute magnitude as
+∗Corresponding author . Email address: chenzj@stu.edu.cn (Z. J. Chen)
+http://www .global-sci.org/jams 311 c⃝ 2014 Global-Science Press
+
+312 Z. -J. Lai, D. -F . Chen, L. -Q. Pan, et al. / J. At. Mol. Sci. 5 (2014) 311-323
+well at low incident energies. On the other hand, for high ene rgies, both the total cross
+sections (TCS) and the DCS predicted by DWBA are in fairly goo d agreement with the
+absolute measurements. However , it has been well recognize d that, at low energies, the
+TCS predicted by the DWBA substantially overestimates the e xperimental values. “Ide-
+ally , one could use the R-matrix approach for low energies, the DWBA for high energie s,
+and the two theories would yield the same results for interme diate energies. Unfortu-
+nately , we do not live in an ideal world [6].”
+The purpose of this work is to calibrate the DWBA for electron impact excitation of
+H and He + at low energies by employing the empirical formula proposed by T ong et al.
+[7]. This calibration procedure has been previously applie d to correct the overestimate of
+DWBA on the DCS for electron impact excitation of Ne and Ar [8] .
+Our ultimate objective is to apply the calibrated DWBA to sim ulate the correlated
+momentum distributions in nonsequential double ionizatio n (NSDI) of He in strong laser
+ﬁelds [9,10].
+The process of NSDI is one of the laser-induced rescattering processes, which still re-
+mains one of the most interesting and challenging topics in s trong ﬁeld physics. Both
+electron impact ionization and electron impact excitation of ions could be involved in
+NSDI. In the last two decades a lot of experimental measureme nts have been performed,
+particularly noteworthy are the correlated momentum distr ibutions of the two outgo-
+ing electrons which were measured at the turn of this century [11]. In the meantime, a
+number of theoretical efforts have been devoted to this prob lem as well. In one of the the-
+oretical models, which was developed by Chen et al. [12,13], the correlated two-electron
+momentum spectra can be treated as a product of the wave packe t for laser-induced
+returning electrons and the differential cross sections fo r the laser-free electron impact
+excitation and/or ionization of the parent ion. In the pract ical simulations of the cor-
+related electron momentum distributions for NSDI, one need s to evaluate the DCS for
+electron impact excitation of the parent ion to all possible excited states at all incident
+energies from threshold to the maximum returning electron e nergy which is usually less
+than 200 eV . Due to the heavy computational demand, relative ly simple and efﬁcient the-
+oretical approaches are highly desired. Since the shape of t he DCS predicted by DWBA is
+typically in fairly good agreement with the experimental me asurements, once the over-
+estimate of DWBA on the DCS is corrected, the calibrated DWBA can serve as a good
+candidate for such required theoretical tools.
+The organization of this paper is as follows: In Section 2, th e theory of DWBA for
+electron impact excitation is presented in detail and the me thod to calibrate DWBA is
+proposed. In Section 3, the normalization factors for DWBA a t incident energies below
+1000 eV are given for electron impact excitation of H and He + from 1s to 2s and 2p,
+and the calibrated DCS of DWBA for H at 50 eV and 100 eV are compa red with the
+experimental measurements. Furthermore, some calibrated DCS of DWBA for H and
+He+ at four different incident energies below 100 eV are analyze d. And ﬁnally some
+conclusions are drawn in Section 4.
+Atomic units are used in this paper unless otherwise speciﬁed .
+
+Z. -J. Lai, D. -F . Chen, L. -Q. Pan, et al. / J. At. Mol. Sci. 5 (2014) 311-323 313
+2 Theory
+In this section, we present the general form for DWBA theory i n detail on electron impact
+excitation of atoms which can be easily applied to electron i mpact excitation of ions. A
+method used to calibrate the DWBA at energies below 1000 eV is also given.
+2.1 Basic equations
+The problem to be considered here is inelastic electron-ato m ( e- A) scattering. The Hamil-
+tonian for such a process is given by
+H = −1
+2 ∇2
+r1 +
+VA+ (r1 )− 1
+2 ∇2
+r2 +
+VA+ (r2 )+ 1
+r12
+, (1)
+where r1 and r2 are the position vectors for the projectile and the bound sta te electron
+with respect to the nucleus, respectively . In Eq. (1), VA+ is the effective potential based on
+single active electron approximation, which takes the form as
+VA+ (r) =−1+a1 e−a2 r +a3 re−a4 r +a5 e−a6 r
+r (2)
+where the parameters ai , as given explicitly in table 1 in T ong and Lin [14], were obta ined
+by ﬁtting the calculated binding energies of the ground state and the ﬁrst few excited
+states of the target atom using this potential to the experim ental data. Both the exact ini-
+tial state wavefunction Ψ i (r1,r2 ) and the ﬁnal state wavefunction Ψ f (r1,r2 ) of the system
+satisfy the Schr ¨ odinger equation
+HΨ j (r1 ,r2 ) =EΨ j (r1 ,r2 ) ( j =i, f ), (3)
+where E is the total energy .
+Since Eq. (3) cannot be solved analytically , one has to emplo y approximate Hamilto-
+nians, which can be expressed as
+Hj = −1
+2 ∇2
+1+
+Uj (r1 )− 1
+2 ∇2
+2+
+VA+ (r2 ) ( j =i, f ), (4)
+where Ui (U f ) is the distorting potential used to calculate the wavefunc tion χki (χk f ) for
+the projectile in the incident (exit) channel with momentum ki (k f ). With this approxi-
+mation, the initial (ﬁnal) state wavefunction can be express ed as a product of the initial
+(ﬁnal) state wavefunction for the projectile and the wavefun ction for the bound electron
+in the ground (excited) state.
+The initial and ﬁnal state wavefunctions for the projectile s atisfy the differential equa-
+tion
+[
+−1
+2 ∇2
+1+
+Uj (r1 )
+]
+χkj (r1 ) =1
+2 k2
+j χkj (r1 ) ( j =i, f ), (5)
+
+314 Z. -J. Lai, D. -F . Chen, L. -Q. Pan, et al. / J. At. Mol. Sci. 5 (2014) 311-323
+and the bound state wave functions are eigenfunctions of the equation
+[
+−1
+2 ∇2
+2+
+VA+ (r2 )
+]
+Φ j (r2 ) =ǫj Φ j (r2 ) ( j =i, f ) (6)
+where ǫj (j = i, f ) are the corresponding eigenenergies of the initial and ﬁnal states. Due
+to energy conservation,
+1
+2 k2
+i +ǫi = 1
+2 k2
+f +ǫ f . (7)
+In the distorted wave Born approximation, the direct transi tion amplitude for excita-
+tion from an initial state Φ i to a ﬁnal state Φ f is given by
+f = ⟨χ−
+k f
+(r1 )Φ f (r2 )|Vi |Φ i (r2 )χ+
+ki
+(r1 )⟩ (8)
+where Vi is the perturbation interaction,
+Vi = H −Hi = 1
+r12
++VA+ (r1 )−Ui (r1 ). (9)
+And the exchange scattering amplitude is given by
+g = ⟨Φ f (r1 )χ−
+k f
+(r2 )|Vi |Φ i (r2 )χ+
+ki
+(r1 )⟩. (10)
+2.2 Partial wave expansions
+T o evaluate the scattering amplitude, we perform standard p artial wave expansions.
+The distorted wave for the incident electron with outgoing ( +) boundary condition is
+expanded as
+χ+
+ki
+(r1 ) =
+√
+2
+π
+1
+ki r1
+∑
+li µ i
+ili χli (ki ,r1 )Yli µ i (ˆr1 )Y∗
+li µ i ( ˆki ) (11)
+where ˆr1 and ˆki are the unit vectors denoting the directions of r1 and ki , and Ylm are the
+spherical harmonics. Similarly , the partial wave expansio ns for the scattering electron
+with incoming ( −) boundary condition are
+[χ−
+k f
+(r1 )]∗ =
+√
+2
+π
+1
+k f r1
+∑
+l f µ f
+i−l f χl f (k f ,r1 )Yl f µ f (ˆr1 )Y∗
+l f µ f ( ˆk f ). (12)
+In this work, all continuum waves are normalized to δ(k −k′). For a plane wave, the
+radial component χl (k,r)/kr in Eqs. (11) and (12) is a standard spherical Bessel function
+jl (kr).
+
+Z. -J. Lai, D. -F . Chen, L. -Q. Pan, et al. / J. At. Mol. Sci. 5 (2014) 311-323 315
+The initial and ﬁnal bound states can be expressed as
+Φ j (r2 ) =1
+r2
+φNj Lj (r2 )YLj Mj (ˆr2 ) ( j =i, f ). (13)
+In the scattering amplitude (8), the perturbation potentia l is the last remaining quantity
+which needs to be expanded. The ﬁrst term in the perturbation p otential (9) can be ex-
+panded as
+1
+r12
+=4π ∑
+lT µ T
+˜l−2
+T
+(r<)lT
+(r>)lT +1 Y∗
+lT µ T (ˆr1 )YlT µ T (ˆr2 ) (14)
+where ˜l =
+√
+2l +1, and r< is the smaller and r> the larger of r1 and r2 . Actually , the second
+and third terms of the perturbation potential in Eq. (9) are s pherically symmetric which
+can be expressed as
+VA+ (r1 )−Ui (r1 ) =4π ∑
+lT µ T
+[VA+ (r1 )−Ui (r1 )]Y∗
+lT µ T (ˆr1 )YlT µ T (ˆr2 )δlT 0. (15)
+The expansions (14) and (15) then yield
+Vi (r1 ,r2 ) =4π ∑
+lT µ T
+˜l−2
+T AlT (r1 ,r2 )Y∗
+lT µ T (ˆr1 )YlT µ T (ˆr2 ) (16)
+where the radial factor AlT (r1 ,r2 ) is given by
+AlT (r1 ,r2 ) = (r<)lT
+(r>)lT +1 +[VA+ (r1 )−Ui (r1 )]δlT 0. (17)
+2.3 Calculation of the differential cross sections
+The differential cross section for electron impact excitat ion of atoms is given by
+dσ
+dΩ = N(2π)4 k f
+ki
+1
+2Li +1
+×
++Li
+∑
+Mi =−Li
++L f
+∑
+M f =−L f
+( 3
+4 | f −g|2 + 1
+4 | f +g|2
+)
+(18)
+where the prefactor N denotes the number of electrons in the subshell from which on e
+electron is excited.
+
+316 Z. -J. Lai, D. -F . Chen, L. -Q. Pan, et al. / J. At. Mol. Sci. 5 (2014) 311-323
+With the expansions given in the above subsection, the direc t scattering amplitude is
+given by
+f =8 ∑
+l f µ f
+i−l f
+∑
+lT µ T
+˜l−2
+T ∑
+li µ i
+ili Y∗
+l f µ f ( ˆk f )Y∗
+li µ i ( ˆki )
+× 1
+k f ki
+∫
+dr1 dr2 χl f (k f ,r1 )φ∗
+N f L f (r2 )
+× AlT (r1 ,r2 )φNi Li (r2 )χli (ki ,r1 )
+× F1 F2 (19)
+where F1 and F2 are given by
+F1 ≡
+∫
+dˆr1Yl f µ f (ˆr1 )Yli µ i (ˆr1 )Y∗
+lT µ T (ˆr1 )
+= 1√
+4π
+˜l f ˜li
+˜lT
+C(l f li lT ; µ f , µ i , µ T )(l f li lT ;000) (20)
+and
+F2 ≡
+∫
+dˆr2YlT µ T (ˆr2 )YLi Mi (ˆr2 )Y∗
+L f M f (ˆr2 )
+= 1√
+4π
+˜lT ˜Li
+˜L f
+C(lT Li L f ; µ T Mi M f )(lT Li L f ;000) (21)
+T o perform the integrals over polar angles in Eqs. (20) and (2 1), we have used the relations
+Yl,−m (ˆr) = (−)mY∗
+lm (ˆr) (22)
+and
+∫
+Yl1 m1 (ˆr)Yl2 m2 (ˆr)Yl3 m3 (ˆr)dˆr
+= 1√
+4π
+˜l1˜l2
+˜l3
+C(l1 l2 l3 ; m1, m2, −m3 )(l1, l2 , l3;000)(−)m3 (23)
+where C(l1l2 l3; m1 m2 m3 ) is a Clebsch-Gordan coefﬁcient.
+The product of F1 and F2 can be further simpliﬁed as
+F1 F2 = 1
+4π
+˜l f ˜li ˜Li
+˜L f
+C(l f li lT ;000)C(lT Li L f ;000)
+× ∑
+g
+˜lT ˜gW (l f li L f Li; lT g)
+× C(li Li g; µ i Mi µ g )C(l f gL f ; µ f µ g M f ) (24)
+
+Z. -J. Lai, D. -F . Chen, L. -Q. Pan, et al. / J. At. Mol. Sci. 5 (2014) 311-323 317
+where W (l1 l2 l3 l4; l5 l6 ) is a Racah coefﬁcient, and we have used
+C(l1 l2 l3 ; m1 m2 m3 )C(l3 l4 l5; m3 m4 m5 )
+= ∑
+g
+˜l3 ˜gW (l1 l2 l5 l4; l3 g)C(l2 l4 g; m2 m4 µ g )C(l1 gl5 ; m1 µ g m5 ). (25)
+Furthermore, by using
+C(l1 l2 l3; m1 m2 m3 ) = (−)l1 −m1
+˜l3
+˜l2
+C(l1 l3 l2; m1, −m3, −m2 ), (26)
+we rewrite C(l f gL f ; µ f µ g M f ) in Eq. (24) as
+C(l f gL f ; µ f µ g M f ) = (−)l f −µ f
+˜L f
+˜g C(l f L f g; µ f , −M f , −µ g ). (27)
+Consequently ,
+F1 F2 = 1
+4π (−)l f −µ f ˜l f ˜li ˜Li˜lT C(l f li lT ;000)C(lT Li L f ;000)
+× ∑
+g
+W (l f li L f Li ; lT g)C(li Li g; µ i , Mi , µ i +Mi )
+× C(l f L f g; µ f , −M f , µ f −M f )δµ i +Mi , M f −µ f . (28)
+Substituting Eq. (28) into Eq. (29), we ﬁnally obtain
+f = 2
+π ∑
+li µ i
+∑
+l f µ f
+∑
+lT
+∑
+g
+ili +l f
+˜l f ˜li ˜Li
+˜lT
+C(li Li g; µ i , Mi , µ i +Mi )
+× C(l f L f g; µ f , −M f , µ f −M f )C(l f li lT ;000)C(lT Li L f ;000)
+×W (l f li L f Li ; lT g)Yl f ,−µ f ( ˆk f )Y∗
+li µ i ( ˆki )δµ i +Mi , M f −µ f
+× 1
+k f ki
+∫
+dr1 dr2 χl f (k f ,r1 )φ∗
+N f L f (r2 )AlT (r1 ,r2 )φNi Li (r2 )χli (ki ,r1 ). (29)
+Similarly , the exchange scattering amplitude is given by
+g = 2
+π ∑
+li µ i
+∑
+l f µ f
+∑
+lT
+∑
+g
+ili −l f (−)L f +M f
+˜L f ˜li ˜Li
+˜lT
+C(li Li g; µ i , Mi , µ i +Mi )
+× C(L f l f g; −M f , −µ f , −M f −µ f )C(L f li lT ;000)C(lT Li l f ;000)
+×W (L f li l f Li ; lT g)Y∗
+l f µ f ( ˆk f )Y∗
+li µ i ( ˆki )δµ i +Mi , M f +µ f
+× 1
+k f ki
+∫
+dr1 dr2 φ∗
+N f L f (r1 )χl f (k f ,r2 )AlT (r1 ,r2 )φNi Li (r2 )χli (ki ,r1 ). (30)
+
+318 Z. -J. Lai, D. -F . Chen, L. -Q. Pan, et al. / J. At. Mol. Sci. 5 (2014) 311-323
+2.4 Distorting potentials
+In the DWBA model, the distorting potentials Ui and U f which are used in Eq. (5) to
+evaluate the wavefunctions for the projectile in the initia l and ﬁnal states respectively
+play important rule in the numerical calculations, since th e calculated DCSs are sensitive
+to the distorted wavefunctions describing the projectile. Unfortunately , neither Ui nor U f
+is determined directly by the formalism. Here, we use static potentials which take the
+form as
+Uj (r1 ) =VA+ (r1 )+
+∫
+dr2
+|Φ j (r2 )|2
+r12
+(j =i, f ). (31)
+As shown previously , VA+ (r) in Eq. (31) is the atomic potential used to evaluate eigen-
+state wave functions Φ i and Φ f for the bound electron in the initial and ﬁnal states,
+respectively . Obviously , the distorting potentials given by Eq. (31) for electron impact
+excitation of atoms are neutral asymptotically .
+2.5 Calibration of DWBA
+T o evaluate the total cross sections for electron impact exc itation, T ong et al. [7] employed
+an empirical formula
+σT ong(Ei ) = π
+∆ E2 e1.5(∆ E−ǫ)/Ei f
+( Ei
+∆ E
+)
+, (32)
+where
+f (x) =1
+x
+[
+β ln x +γ
+(
+1− 1
+x
+)
++δ ln x
+x
+]
+, (33)
+with ∆ E is the excitation energy for a given transition and ǫ is the eigenenergy of the
+corresponding excited state in atomic hydrogen. The parame ters β, γ and δ in Eq. (33)
+have been obtained initially by ﬁtting the TCS to the converge nt-close coupling (CCC)
+results for hydrogen from 1s to 2p and further tested for e−+He+(1s) → e−+He+(2p).
+However , it has been found that, with the parameters given in Ref. [7], the formula
+Eq. (32) fails to predict the correct values of the TCS for exc itation of other atoms and
+ions. Even for H and He +, the TCS for excitation to other excited states reproduced b y
+Eq. (32) are much higher than the CCC data and the shape of the T CS as a function of
+incident energy does not agree with the CCC very well, either .
+T o adjust the overall difference in magnitude, we introduce a prefactor α to modify
+the empirical formula, which is given by
+σM-T ong(Ei ) =α π
+∆ E2 e1.5(∆ E−ǫ)/Ei f
+( Ei
+∆ E
+)
+. (34)
+
+Z. -J. Lai, D. -F . Chen, L. -Q. Pan, et al. / J. At. Mol. Sci. 5 (2014) 311-323 319
+It should be noted that, in Eq. (34), ǫ denotes the eigenenergy of the corresponding excited
+state in target atoms or ions. In the present work, we apply th e same ﬁtting procedure
+as in Ref. [7] to obtain the parameters. For excitations of H a nd He + from 1s to 2s, the
+parameters we obtained are β=0.7638, γ=1.1759, and δ=0.6706, which are different from
+those in Ref. [7]. It has been found that with this set of param eters, the TCS reproduced
+by Eq. (34) are in better agreement with CCC in shape. These pa rameters are further
+tested by comparing the predicted excitation cross section with CCC for excitations of H
+and He + from 1s to 3s and 4s. For excitations of H and He + from 1s to np ( n=2, 3 and 4),
+the parameters are β =1.32, γ =−1.08, and δ =−0.04. The prefactor α is then determined
+by matching the TCS from Eq. (34) with the CCC data at high ener gies.
+It should also be noted that the TCS of CCC are not available fo r most atoms or ions.
+Hence, the applicability of the above ﬁtting procedure to exc itation of other atoms and
+ions is quite limited. Fortunately , both the DCS and the TCS o f DWBA are reliable at high
+energies. Therefore, the prefactor α can be obtained by matching the TCS from Eq. (34)
+with the DWBA results at high energies, say 1000 eV , provided that the parameters β, γ
+and δ remain the same for all target atoms and ions.
+The total cross section of DWBA at ﬁxed incident energy Ei =k2
+i /2 can be obtained by
+integrating the DCS of Eq. (18) over scattering angles:
+σDWBA (Ei ) =
+∫ dσ
+dΩ d ˆk f . (35)
+T o calibrate the DWBA at low energies, we deﬁne a normalizatio n factor
+C(Ei ) =σM-T ong(Ei )/σDWBA (Ei ). (36)
+By multiplying the DCS of DWBA by the normalization factor at each incident energy ,
+one obtains the calibrated DWBA as
+( dσ
+dΩ
+)
+C
+= C(Ei ) dσ
+dΩ . (37)
+3 Results and discussion
+T o obtain the normalization factors to calibrate the DCS of D WBA, we calculate the TCS
+from the empirical formula of Eq. (34) and the TCS of DWBA. The results are shown
+in Figs. 1 and 2 for excitations of H and He +, respectively . The corresponding CCC re-
+sults [15] are also plotted for comparison. It can be seen tha t the CCC data for excitation
+from 1s to 2s are reproduced very well for both H and He + while for excitation from 1s
+to 2p slight differences exist. Whereas, the agreement betw een the TCS of T ong and CCC
+can be improved if the TCS of T ong at 1000 eV is ﬁtted to CCC rathe r than DWBA. The
+reason that we ﬁt the TCS of T ong at 1000 eV to DWBA instead of CCC is that DWBA
+results are always available.
+
+320 Z. -J. Lai, D. -F . Chen, L. -Q. Pan, et al. / J. At. Mol. Sci. 5 (2014) 311-323
+ 0
+ 0.1
+ 0.2
+ 0.3
+ 0.4
+ 0.5
+      
+ 0
+ 0.2
+ 0.4
+ 0.6
+ 0.8
+ 1
+Total cross section (a.u.)
+ 
+CCC
+Tong
+DWBA
+Tong/DWBA
+Normalization factor
+(a)
+1s-2s
+ 0
+ 0.5
+ 1
+ 1.5
+ 2
+ 2.5
+ 0  200  400  600  800  1000
+ 0
+ 0.2
+ 0.4
+ 0.6
+ 0.8
+ 1
+ 
+Incident energy (eV)
+(b)
+1s-2p
+Figure 1: TCSs (left vertical axis) and normalization facto rs of DWBA (right vertical axis) for excitation of H
+from (a) 1s to 2s and (b) 1s to 2p at incident energies from the e xcitation energy of 10.2 eV to 1000 eV. Dotted
+curve, total cross sections of DWBA; Solid curve, total cros s sections calculated using the empirical formula
+Eq. (34); Chain curve, normalization factor given by Tong/D WBA; Solid circles, CCC data [15].
+ 0
+ 0.01
+ 0.02
+ 0.03
+ 0.04
+      
+ 0
+ 0.2
+ 0.4
+ 0.6
+ 0.8
+ 1
+Total cross section (a.u.)
+ 
+CCC
+Tong
+DWBA
+Tong/DWBA
+Normalization factor
+(a)1s-2s
+ 0
+ 0.05
+ 0.1
+ 0.15
+ 0.2
+ 0.25
+ 0  200  400  600  800  1000
+ 0
+ 0.2
+ 0.4
+ 0.6
+ 0.8
+ 1
+ 
+Incident energy (eV)
+(b)1s-2p
+Figure 2: TCSs (left vertical axis) and normalization facto rs of DWBA (right vertical axis) for excitation of He +
+from (a) 1s to 2s and (b) 1s to 2p at incident energy from the exc itation energy of 40.8 eV to 1000 eV. Dotted
+curve, total cross sections of DWBA; Solid curve, total cros s sections calculated using the empirical formula of
+Eq. (34); Chain curve, normalization factor given by Tong/D WBA; Solid circles, CCC data [16].
+
+Z. -J. Lai, D. -F . Chen, L. -Q. Pan, et al. / J. At. Mol. Sci. 5 (2014) 311-323 321
+10-3
+10-2
+10-1
+100
+101
+102
+ 0  30  60  90  120 150 180
+Differential cross sections (a.u.)
+Scattering angle (deg)
+1s-2s
+1s-2p
+1s-(2s+2p)
+Experiment
+(a)
+50 eV
+DWBA
+10-4
+10-3
+10-2
+10-1
+100
+101
+102
+ 0  30  60  90  120 150 180
+ 
+(b)
+100 eV
+Figure 3: Comparison of the DCSs of the calibrated DWBA with e xperimental measurements of Khakoo et
+al [16] for excitation of H from ground state to n=2 state at incident energies of (a) 50 eV and (b) 100 eV.
+The absolute experimental measurements of Khakoo et al [16] for electron impact ex-
+citation of the 1 2 S → 22 S +22 P levels of H at incident energies of 50 and 100 eV provide
+the excellent possibility of a stringent test for the presen t calibration procedure. It is illus-
+trated in Fig. 3 that the calibrated DWBA DCSs follow the expe rimental data very well
+10-4
+10-3
+10-2
+10-1
+100
+ 0  30  60  90  120 150 180
+Differential cross sections (a.u.)
+Scattering angle (deg)
+(a)
+1s-2s
+10-4
+10-3
+10-2
+10-1
+100
+101
+102
+ 0  30  60  90  120 150 180
+ 
+15 eV
+25 eV
+50 eV
+100 eV
+(b)
+1s-2p
+Figure 4: Calibrated DWBA diﬀerential cross sections for ex citation of H from (a) 1s to 2s and (b) 1s to 2p at
+incident energies of 15, 25, 50, and 100 eV, respectively.
+
+322 Z. -J. Lai, D. -F . Chen, L. -Q. Pan, et al. / J. At. Mol. Sci. 5 (2014) 311-323
+over the whole angular region for both incident energies. T o see the contributions from
+the excitations of 1 2 S →22 S and 1 2 S →22 P separately , the corresponding theoretical DCSs
+of the calibrated DWBA are also plotted in Fig. 3 for comparis on. One can see that the
+excitation of 1s to 2p dominates the forward scattering for a ngular region from 0 ◦ to 45 ◦
+at 50 eV and 0 ◦ to 30 ◦ at 100 eV . On the other hand, the excitation of 1s to 2s can not b e
+neglected in the region of larger scattering angles.
+In Fig. 4 we show the differential cross sections of DWBA weig hted by the normal-
+ization factors for excitations of H from 1s to 2s and 1s to 2p a t incident energies of 15,
+25, 50 and 100 eV , respectively . The slope of DCSs for both exc itations of 1s to 2s and 1s
+to 2p changes more rapidly at larger scattering angles as inc ident energy decreases. In
+addition to the slope change, extra minima are reproduced by the DWBA around 70 ◦ for
+excitation of 1s to 2p and 100 ◦ for 1s to 2p at 15 eV .
+10-3
+10-2
+ 0  30  60  90  120 150 180
+Differential cross sections (a.u.)
+Scattering angle (deg)
+(a)
+1s-2s 10-3
+10-2
+10-1
+ 0  30  60  90  120 150 180
+ 
+45 eV
+60 eV
+80 eV
+100 eV
+(b)
+1s-2p
+Figure 5: Calibrated DWBA DCSs for excitation of He + from (a) 1s to 2s and (b) 1s to 2p at incident energies
+of 45, 60, 80, and 100 eV, respectively.
+Fig. 5 shows the similar results for excitations of He + at energies below 100 eV . Com-
+pared to the excitation of H, enhanced backward scattering D CSs are predicted by the
+DWBA due to larger Coulomb attraction to the scattered elect ron since large angle scat-
+tering takes place when the projectile approaches closer to the nuclear of He such that it
+sees more charge than the nuclear charge of H. As a result, a mi nimum appears in the
+DCSs for both excitation of 1s to 2p and 1s to 2p at 45 and 60 eV . B oth of the depths and
+positions of the minimum in DCSs have signiﬁcant physical imp ortance since they reﬂect
+the structure information of the targets. In addition, with the increase of incident energy ,
+the angle at which the slope changes does not move as much as th at for H, which even
+almost remains ﬁxed at 110 ◦ for the excitation of He + from 1s to 2p, as shown in Fig. 5(b).
+
+Z. -J. Lai, D. -F . Chen, L. -Q. Pan, et al. / J. At. Mol. Sci. 5 (2014) 311-323 323
+4 Conclusions
+W e present a method to correct the overestimate of DWBA on the TCSs for electron im-
+pact excitation of H and He +. The purpose of this work is to apply the calibrated DWBA
+to simulate the correlated momentum distributions for lase r-induced nonsequential dou-
+ble ionization of He. The calibration method is based on two a ssumptions: (1) the relative
+angular distributions of the DCSs predicted by the DWBA at lo w incident energies are
+fairly accurate, and (2) the TCSs reproduced by the DWBA at hi gh incident energies are
+reliable. The validity of the calibration method is conﬁrmed by the agreement between
+the DCSs obtained by the calibrated DWBA and the absolute exp erimental measurements
+for excitations of H from the ground state to n=2 state. The calculated DCSs with the cal-
+ibrated DWBA for excitations of H and He + from 1s to 2s and 1s to 2p below 100 eV are
+also presented and the structure of the DCSs is analyzed.
+Acknowledgments.This work was supported by the National Natural Science Foun -
+dation of China under Grant No. 11274219, the STU Scientiﬁc Re search Foundation for
+T alents, and the Scientiﬁc Research Foundation for the Retur ned Overseas Chinese Schol-
+ars, State Education Ministry .
+References
+[1] D. H. Madison and W . N. Shelton, Phys. Rev . A 7 (1973) 499.
+[2] K. Bartschat and D. H. Madison, J. Phys. B 20 (1987) 5839.
+[3] D. H. Madison and K. H. W inters, J. Phys. B 16 (1983) 4437.
+[4] V . Zeman and K. Bartschat, J. Phys. B 30 (1997) 4609.
+[5] I. Bray and A. T . Stelbovics, Phys. Rev . A 46 (1992) 6995.
+[6] M. A. Khakoo, J. W rkich, M. Larsen, G. Kleiban, I. Kanik, S. T rajmar , M. J. Brunger , P . J. O.
+T eubner , A. Crowe, C. J. Fontes, R. E. H. Clark, V . Zeman, K. Ba rtschat, D. H. Madison, R.
+Srivastava, and A. D. Stauffer , Phys. Rev . A 65 (2002) 062711 .
+[7] X. M. T ong, Z. X. Zhao, and C. D. Lin, Phys. Rev . A 68 (2003) 0 43412.
+[8] Y . Q. Liang, Z. J. Chen, D. H. Madison, and C. D. Lin, J. Phys . B 44 (2011) 085201.
+[9] A. Staudte, C. Ruiz, M. Sch ¨ ofﬂer , S. Sch ¨ ossler , D. Zeid ler , Th. W eber5, M. Meckel, D. M.
+V illeneuve, P . B. Corkum, A. Becker , and R. D ¨ orner , Phys. Re v . Lett. 99 (2007) 263002.
+[10] A. Rudenko, V . L. B. de Jesus, Th. Ergler , K. Zrost, B. Feu erstein, C. D. Schr ¨ oter , R. Mosham-
+mer , and J. Ullrich, Phys. Rev . Lett. 99 (2007) 263003.
+[11] T . W eber , H. Giessen, M. W eckenbrock, G. Urbasch, A. Sta udte, L. Spielberger , O. Jagutzki,
+V . Mergel, M. V ollmer , and R. D ¨ orner , Nature 405 (2000) 658.
+[12] Z. J. Chen, Y . Q. Liang, and C. D. Lin, Phys. Rev . Lett. 104 (2010) 253201.
+[13] Z. J. Chen, Y . Q. Liang, and C. D. Lin, Phys. Rev . A 82 (2010 ) 063417.
+[14] X. M. T ong and C. D. Lin, J. Phys. B 38 (2005) 2593.
+[15] S. I. Bray , CCC-database, http://atom.curtin.edu.au/CCC-WWW/index.html.
+[16] M. A. Khakoo, M. Larsen, B. Paolini, X. Guo, I. Bray , A. St elbovics, I. Kanik, and S. T rajmar ,
+Phys. Rev . Lett. 82 (1999) 3980.
+

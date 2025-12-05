@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.gemini/
+.vscode/
+.idea/
+*.pdf
