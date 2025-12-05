@@ -1,135 +1,126 @@
 # plotter.py
 #
-# Wizualizacja wyników z batch_runner.py
-# Usage: python plotter.py [output_filename] [--E-unit UNIT] [--Sig-unit UNIT]
-#   UNITs for E: eV, Ha, u (Threshold)
-#   UNITs for Sig: cm2, a02, pia02
+# Universal DWBA Results Plotter.
+# Reads scan_results.json and generates high-quality plots for all datasets found.
+#
+# Usage: python plotter.py [style]
+# Styles:
+#   std     -> E[eV] vs Sigma[cm^2]
+#   atomic  -> E[Ha] vs Sigma[a0^2]
+#   article -> E[u]  vs Sigma[pi a0^2]  (u = E/Threshold)
 #
 
 import matplotlib.pyplot as plt
 import json
 import numpy as np
 import sys
-import argparse
+import math
+import os
 
-# Stałe
-AU_TO_EV = 27.211386
+RESULTS_FILE = "scan_results.json"
+
+# Constants
+AU_TO_EV = 27.211386245988
 A0_SQ_CM2 = 2.8002852e-17
 PI_A0_SQ_CM2 = np.pi * A0_SQ_CM2
 
-# Hardcoded thresholds for known keys (since not currently in JSON for excitation)
-THRESHOLDS_EV = {
-    "H_Excitation_1s_2p": 10.1988, # 13.6 * (1 - 1/4)
-    # For Ionization, we will try to read IP_eV from JSON data points
-}
+def load_data():
+    if not os.path.exists(RESULTS_FILE):
+        print(f"File {RESULTS_FILE} not found.")
+        sys.exit(1)
+    with open(RESULTS_FILE, "r") as f:
+        return json.load(f)
 
-def parse_arguments():
-    parser = argparse.ArgumentParser(description="Plot DWBA cross sections.")
-    parser.add_argument("output", nargs='?', default="cross_sections_plot_custom.png", help="Output filename")
-    parser.add_argument("--E-unit", default="eV", choices=["eV", "Ha", "u"], help="Energy unit")
-    parser.add_argument("--Sig-unit", default="cm2", choices=["cm2", "a02", "pia02"], help="Cross section unit")
-    return parser.parse_args()
-
-def convert_E(E_ev, unit, threshold_ev=None):
-    if unit == "eV":
-        return E_ev, "Incident Energy [eV]"
-    elif unit == "Ha":
-        return E_ev / AU_TO_EV, "Incident Energy [Ha]"
-    elif unit == "u":
-        if threshold_ev is None:
-            return E_ev, "Incident Energy [eV] (No Thr)"
-        return E_ev / threshold_ev, "Incident Energy [E/I]"
-    return E_ev, "Energy"
-
-def convert_Sig(Sig_cm2, unit):
-    if unit == "cm2":
-        return Sig_cm2, "Cross Section [cm^2]"
-    elif unit == "a02":
-        return Sig_cm2 / A0_SQ_CM2, "Cross Section [a0^2]"
-    elif unit == "pia02":
-        return Sig_cm2 / PI_A0_SQ_CM2, "Cross Section [pi a0^2]"
-    return Sig_cm2, "Cross Section"
-
-def plot_results():
-    args = parse_arguments()
+def get_style_config(style_name):
+    # Returns (convert_E_func, convert_Sig_func, xlabel, ylabel, file_suffix)
     
-    try:
-        with open("results_scan.json", "r") as f:
-            data = json.load(f)
-    except FileNotFoundError:
-        print("Brak pliku results_scan.json.")
+    if style_name == 'atomic':
+        ev_conv = lambda e, thr: e / AU_TO_EV
+        sig_conv = lambda s: s / A0_SQ_CM2
+        return ev_conv, sig_conv, "Incident Energy [Ha]", r"Cross Section [$a_0^2$]", "_atomic"
+        
+    elif style_name == 'article':
+        ev_conv = lambda e, thr: e / thr if thr > 1e-6 else e
+        sig_conv = lambda s: s / PI_A0_SQ_CM2
+        return ev_conv, sig_conv, "Energy [$E/E_{thr}$]", r"Cross Section [$\pi a_0^2$]", "_article"
+        
+    else: # std
+        ev_conv = lambda e, thr: e
+        sig_conv = lambda s: s
+        return ev_conv, sig_conv, "Incident Energy [eV]", r"Cross Section [$cm^2$]", "_std"
+
+def main():
+    style = 'std'
+    if len(sys.argv) > 1:
+        style = sys.argv[1]
+    
+    print(f"Generating plots with style: {style}")
+    data = load_data()
+    if not data:
+        print("No data found in JSON.")
         return
 
-    # Prepare figure
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+    conv_E, conv_S, xlab, ylab, suffix = get_style_config(style)
     
-    # Helper to process one dataset
-    def process_and_plot(ax, key, title, color_base):
-        if key not in data or not data[key]:
-            ax.text(0.5, 0.5, "No Data", ha='center')
-            return
-
+    # 1. Generate Combined Grid Plot
+    keys = list(data.keys())
+    n = len(keys)
+    cols = min(n, 2)
+    rows = math.ceil(n / cols)
+    
+    fig, axes = plt.subplots(rows, cols, figsize=(7*cols, 5*rows))
+    if n == 1: axes = [axes]
+    else: axes = axes.flatten()
+    
+    for idx, key in enumerate(keys):
+        ax = axes[idx]
         pts = data[key]
-        E_ev = np.array([p["energy_eV"] for p in pts])
-        Sig_cm2 = np.array([p["sigma_cm2"] for p in pts])
-        SigMT_cm2 = np.array([p.get("sigma_mtong_cm2", 0.0) for p in pts])
+        if not pts: continue
         
-        # Determine Threshold
-        thr = THRESHOLDS_EV.get(key)
-        if thr is None:
-            # Try finding IP in points
-            if "IP_eV" in pts[0]:
-                thr = pts[0]["IP_eV"]
-            else:
-                thr = 1.0 # fallback
+        # Prepare arrays
+        # Filter zero energy or negative? No, keep all but handle threshold.
+        
+        E_raw = np.array([p["energy_eV"] for p in pts])
+        Sig_raw = np.array([p["sigma_cm2"] for p in pts])
+        SigMT_raw = np.array([p.get("sigma_mtong_cm2", 0.0) for p in pts])
+        
+        # Threshold
+        thr = 1.0 # fallback
+        if "Threshold_eV" in pts[0]: thr = pts[0]["Threshold_eV"]
         
         # Convert
-        X, xlab = convert_E(E_ev, args.E_unit, thr)
-        Y, ylab = convert_Sig(Sig_cm2, args.Sig_unit)
-        Y_MT, _ = convert_Sig(SigMT_cm2, args.Sig_unit)
+        X = [conv_E(e, thr) for e in E_raw]
+        Y = [conv_S(s) for s in Sig_raw]
+        Y_MT = [conv_S(s) for s in SigMT_raw]
         
         # Plot
-        ax.plot(X, Y, 'o-', color=color_base, label='DWBA')
-        ax.plot(X, Y_MT, 's--', color=adjust_lightness(color_base, 0.7), label='DWBA + M-Tong')
+        ax.plot(X, Y, 'o-', linewidth=2, label='DWBA')
+        ax.plot(X, Y_MT, 's--', linewidth=2, label='DWBA + M-Tong')
         
-        ax.set_title(title)
-        ax.set_xlabel(xlab)
-        ax.set_ylabel(ylab)
+        # Formatting
+        readable_title = key.replace("_", " ")
+        ax.set_title(readable_title, fontsize=12, fontweight='bold')
+        ax.set_xlabel(xlab, fontsize=10)
+        ax.set_ylabel(ylab, fontsize=10)
+        ax.legend(fontsize=9)
+        ax.grid(True, linestyle=':', alpha=0.7)
         
-        # Add Threshold marker if relevant (u=1, or E=Thr)
-        if args.E_unit == 'u':
-             ax.axvline(x=1.0, color='k', linestyle=':', label='Threshold')
-        elif args.E_unit == 'eV':
-             ax.axvline(x=thr, color='k', linestyle=':', label=f'Thr={thr:.1f}eV')
-        elif args.E_unit == 'Ha':
-             thr_au = thr / AU_TO_EV
-             ax.axvline(x=thr_au, color='k', linestyle=':', label=f'Thr={thr_au:.2f}Ha')
+        # Mark Threshold if applicable
+        if style == 'article':
+            ax.axvline(1.0, color='red', linestyle='--', alpha=0.5)
+        elif style == 'std':
+            ax.axvline(thr, color='red', linestyle='--', alpha=0.5, label=f'Thr={thr:.1f}eV')
 
-        ax.legend()
-        ax.grid(True)
-
-    # 1. H Excitation
-    process_and_plot(axes[0], "H_Excitation_1s_2p", "H(1s->2p) Excitation", "blue")
-
-    # 2. H Ionization
-    process_and_plot(axes[1], "H_Ionization_1s", "H(1s) Ionization", "red")
-
-    # 3. He+ Ionization
-    process_and_plot(axes[2], "He_Plus_Ionization_1s", "He+(1s) Ionization", "green")
-
+    # Remove empty plots
+    for i in range(n, len(axes)):
+        axes[i].axis('off')
+        
     plt.tight_layout()
-    plt.savefig(args.output)
-    print(f"Plot saved to {args.output}")
-
-def adjust_lightness(color, amount=0.5):
-    import matplotlib.colors as mc
-    import colorsys
-    try:
-        c = mc.cnames[color]
-    except:
-        c = color
-    c = colorsys.rgb_to_hls(*mc.to_rgb(c))
-    return colorsys.hls_to_rgb(c[0], max(0, min(1, amount * c[1])), c[2])
+    out_name = f"plot_combined{suffix}.png"
+    plt.savefig(out_name, dpi=150)
+    print(f"Saved {out_name}")
+    
+    # Optional: Generate individual plots? Use subplots is usually better for overview.
 
 if __name__ == "__main__":
-    plot_results()
+    main()

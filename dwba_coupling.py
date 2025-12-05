@@ -130,6 +130,8 @@ class ChannelAngularInfo:
     L_f: float
     J_i: float
     J_f: float
+    k_i_au: float = 1.0
+    k_f_au: float = 1.0
 
 
 # --- INTERNAL HELPERS ------------------------------------------------------
@@ -186,11 +188,26 @@ def build_angular_coeffs_for_channel(
 ) -> DWBAAngularCoeffs:
     """
     Map radial DWBA integrals I_L -> angular coefficients F_L, G_L.
+    
+    Includes normalization factor to convert from Amplitude-Normalized waves (sin(kr))
+    to Energy-Normalized T-matrix elements required for cross sections.
+    Factor = 2 / (pi * sqrt(ki * kf)).
     """
     F_L: Dict[int, complex] = {}
     G_L: Dict[int, complex] = {}
 
-    for L, I_L_val in I_L_dict.items():
+    ki = float(chan.k_i_au)
+    kf = float(chan.k_f_au)
+    
+    if ki > 1e-12 and kf > 1e-12:
+        norm_fac = 2.0 / (np.pi * np.sqrt(ki * kf))
+    else:
+        norm_fac = 0.0
+
+    for L, I_L_raw in I_L_dict.items():
+        # Apply normalization
+        I_L_val = I_L_raw * norm_fac
+        
         F = _direct_prefactor(L, I_L_val, chan)
         G = _exchange_prefactor(L, I_L_val, chan)
 

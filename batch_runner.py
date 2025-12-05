@@ -1,12 +1,12 @@
 # batch_runner.py
 #
-# Automatisches uruchamianie obliczeń DWBA dla serii energii.
-# Generuje plik JSON z wynikami do późniejszej wizualizacji.
+# Flexible DWBA Scan Runner.
+# Allows user to select predefined sets or define custom scans interactively.
 #
 
 import numpy as np
 import json
-import time
+import os
 from dataclasses import asdict
 
 from driver import (
@@ -20,136 +20,182 @@ from ionization import (
 )
 from potential_core import CorePotentialParams
 
+RESULTS_FILE = "scan_results.json"
 
-def run_excitation_scan(target_name, Z, energy_list, channel_spec: ExcitationChannelSpec):
-    print(f"\n--- Starting Excitation Scan for {target_name} (Z={Z}) ---")
-    print(f"Channel: l_i={channel_spec.l_i} -> l_f={channel_spec.l_f}")
+def get_input_float(prompt, default=None):
+    if default is not None:
+        val = input(f"{prompt} [{default}]: ")
+        if not val.strip(): return default
+    else:
+        val = input(f"{prompt}: ")
+    return float(val)
+
+def get_input_int(prompt, default=None):
+    if default is not None:
+        val = input(f"{prompt} [{default}]: ")
+        if not val.strip(): return default
+    else:
+        val = input(f"{prompt}: ")
+    return int(val)
+
+def load_results():
+    if os.path.exists(RESULTS_FILE):
+        with open(RESULTS_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+def save_results(new_data_dict):
+    current = load_results()
+    current.update(new_data_dict)
+    with open(RESULTS_FILE, "w") as f:
+        json.dump(current, f, indent=2)
+    print(f"Results saved to {RESULTS_FILE}")
+
+def run_scan_excitation():
+    print("\n--- Custom Excitation Scan ---")
+    Z = get_input_float("Nuclear Charge Z", 1.0)
     
-    # Parametry dlad czystego Coulomba (H-like)
+    # Init params
+    print("Initial State:")
+    ni = get_input_int("  n", 1)
+    li = get_input_int("  l", 0)
+    
+    print("Final State:")
+    nf = get_input_int("  n", 2)
+    lf = get_input_int("  l", 0) # e.g. 2s
+    
+    # Energy grid
+    print("Incident Energy Grid (eV):")
+    e_start = get_input_float("  Start", 10.0)
+    e_end   = get_input_float("  End", 200.0)
+    e_step  = get_input_float("  Step", 5.0)
+    
+    energies = np.arange(e_start, e_end + 0.001, e_step)
+    
+    # Build Spec
+    # Note: n_index is usually principal quantum number n for H-like.
+    spec = ExcitationChannelSpec(
+        l_i=li, l_f=lf,
+        n_index_i=ni, n_index_f=nf,
+        N_equiv=1,
+        L_max=10, # default high quality
+        L_i_total=li
+    )
     core_params = CorePotentialParams(Zc=Z, a1=0, a2=0, a3=0, a4=0, a5=0, a6=0)
-    
+
+    key = f"Excitation_Z{Z}_n{ni}l{li}_to_n{nf}l{lf}"
     results = []
     
-    for E in energy_list:
-        print(f"  Calculating E = {E:.2f} eV ...", end=" ", flush=True)
+    print(f"Running scan for {key} ({len(energies)} points)...")
+    
+    for E in energies:
+        if E <= 0.1: continue
+        print(f"E={E:.2f} eV...", end=" ", flush=True)
+        
         try:
-            res = compute_total_excitation_cs(
-                E_incident_eV=E,
-                chan=channel_spec,
-                core_params=core_params,
-                r_max=100.0, # Nieco mniejsze r_max dla szybkości w batchu
-                n_points=2000
-            )
+            res = compute_total_excitation_cs(E, spec, core_params, r_max=100.0, n_points=3000)
             
             if res.ok_open_channel:
-                print(f"OK. Sigma={res.sigma_total_cm2:.2e} cm2")
+                print(f"OK. σ={res.sigma_total_cm2:.2e} cm2")
                 results.append({
                     "energy_eV": E,
                     "sigma_au": res.sigma_total_au,
                     "sigma_cm2": res.sigma_total_cm2,
-                    "sigma_mtong_cm2": res.sigma_mtong_cm2
+                    "sigma_mtong_cm2": res.sigma_mtong_cm2,
+                    "Threshold_eV": res.E_excitation_eV
                 })
             else:
-                print("Closed channel.")
+                print(f"Closed (Thr={res.E_excitation_eV:.2f})")
+                results.append({
+                    "energy_eV": E,
+                    "sigma_au": 0.0,
+                    "sigma_cm2": 0.0,
+                    "sigma_mtong_cm2": 0.0,
+                    "Threshold_eV": res.E_excitation_eV
+                })
         except Exception as e:
             print(f"Error: {e}")
-            
-    return results
 
-def run_ionization_scan(target_name, Z, energy_list, channel_spec: IonizationChannelSpec):
-    print(f"\n--- Starting Ionization Scan for {target_name} (Z={Z}) ---")
+    save_results({key: results})
+
+def run_scan_ionization():
+    print("\n--- Custom Ionization Scan ---")
+    Z = get_input_float("Nuclear Charge Z", 1.0)
     
-    # Parametry dlad czystego Coulomba (H-like)
+    print("Initial State:")
+    ni = get_input_int("  n", 1)
+    li = get_input_int("  l", 0)
+    
+    print("Incident Energy Grid (eV):")
+    e_start = get_input_float("  Start", 15.0)
+    e_end   = get_input_float("  End", 200.0)
+    e_step  = get_input_float("  Step", 10.0)
+    
+    energies = np.arange(e_start, e_end + 0.001, e_step)
+    
+    spec = IonizationChannelSpec(
+        l_i=li,
+        n_index_i=ni,
+        N_equiv=1,
+        l_eject_max=3,
+        L_max=8,
+        L_i_total=li
+    )
     core_params = CorePotentialParams(Zc=Z, a1=0, a2=0, a3=0, a4=0, a5=0, a6=0)
-    
+
+    key = f"Ionization_Z{Z}_n{ni}l{li}"
     results = []
-    
-    for E in energy_list:
-        print(f"  Calculating E = {E:.2f} eV ...", end=" ", flush=True)
+
+    print(f"Running scan for {key} ({len(energies)} points)...")
+
+    for E in energies:
+        print(f"E={E:.2f} eV...", end=" ", flush=True)
         try:
-            # Używamy nieco mniejszego l_eject_max dla szybkości skanu
-            # W driverze domyślnie jest high quality, tu możemy nadpisać jeśli funkcja pozwala,
-            # ale compute_ionization_cs bierze l_eject_max z channel_spec.
+            res = compute_ionization_cs(E, spec, core_params, r_max=100.0, n_points=3000)
             
-            res = compute_ionization_cs(
-                E_incident_eV=E,
-                chan=channel_spec,
-                core_params=core_params,
-                r_max=100.0,
-                n_points=2000
-            )
-            
-            if res.sigma_total_cm2 > 0.0:
-                print(f"OK. Sigma={res.sigma_total_cm2:.2e} cm2")
-                # M-Tong scaling manual calculation for ionization
-                # sigma_scaled = sigma * E / (E + IP)
+            # Manual Check
+            if res.sigma_total_cm2 > 0:
+                print(f"OK. σ={res.sigma_total_cm2:.2e} cm2")
+                # Calc MTong manually
                 ip = res.IP_eV
                 scale = E / (E + ip) if (E + ip) > 0 else 0.0
-                sigma_mtong = res.sigma_total_cm2 * scale
+                mt = res.sigma_total_cm2 * scale
                 
                 results.append({
                     "energy_eV": E,
                     "sigma_au": res.sigma_total_au,
                     "sigma_cm2": res.sigma_total_cm2,
-                    "sigma_mtong_cm2": sigma_mtong,
+                    "sigma_mtong_cm2": mt,
+                    "Threshold_eV": ip, # For Ionization Threshold is IP
                     "IP_eV": ip
                 })
             else:
-                 print("Closed channel.")
+                 print("Closed/Zero")
         except Exception as e:
-             print(f"Error: {e}")
-             import traceback
-             traceback.print_exc()
+            print(f"Error: {e}")
 
-    return results
+    save_results({key: results})
 
 def main():
-    all_data = {}
-    
-    # --- 1. Hydrogen Excitation 1s -> 2p ---
-    # Threshold ~10.2 eV. Scan range 12..100 eV. few points.
-    e_list_ex = [12.0, 15.0, 20.0, 30.0, 50.0, 100.0]
-    
-    spec_h_1s_2p = ExcitationChannelSpec(
-        l_i=0, l_f=1,          # s -> p
-        n_index_i=1, n_index_f=1, # 1s (lowest s), 2p (lowest p)
-        N_equiv=1,
-        L_max=5,
-        L_i_total=0
-    )
-    
-    data_h_ex = run_excitation_scan("H", 1.0, e_list_ex, spec_h_1s_2p)
-    all_data["H_Excitation_1s_2p"] = data_h_ex
-    
-    # --- 2. Hydrogen Ionization 1s -> cont ---
-    # IP ~13.6 eV. Scan range 15..100 eV.
-    e_list_ion = [15.0, 20.0, 30.0, 50.0, 80.0, 120.0, 200.0]
-    
-    spec_h_ion = IonizationChannelSpec(
-        l_i=0, 
-        n_index_i=1, 
-        N_equiv=1, 
-        l_eject_max=3,
-        L_max=5,
-        L_i_total=0
-    )
-    
-    data_h_ion = run_ionization_scan("H", 1.0, e_list_ion, spec_h_ion)
-    all_data["H_Ionization_1s"] = data_h_ion
-
-    # --- 3. He+ Ionization 1s -> cont ---
-    # IP ~54.4 eV. Scan range 60..300 eV.
-    e_list_he = [60.0, 70.0, 90.0, 120.0, 180.0, 250.0, 350.0]
-    
-    # Same spec, but Z=2 in the runner call
-    data_he_ion = run_ionization_scan("He+", 2.0, e_list_he, spec_h_ion)
-    all_data["He_Plus_Ionization_1s"] = data_he_ion
-
-    # Save
-    with open("results_scan.json", "w") as f:
-        json.dump(all_data, f, indent=2)
+    while True:
+        print("\n=== DWBA Batch Scanner ===")
+        print("1. Custom Excitation Scan")
+        print("2. Custom Ionization Scan")
+        print("3. Run Standard Suite (H 1s->2p, H Ion, He+ Ion)")
+        print("q. Quit")
         
-    print("\nBatch scan complete. Results saved to results_scan.json")
+        choice = input("Select: ").strip().lower()
+        if choice == '1':
+            run_scan_excitation()
+        elif choice == '2':
+            run_scan_ionization()
+        elif choice == '3':
+            # Implement standard suite call or call legacy functions
+            print("Not implemented in this flexible version yet. Use custom modes.")
+        elif choice == 'q':
+            break
+        else:
+            print("Invalid.")
 
 if __name__ == "__main__":
     main()

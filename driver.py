@@ -216,6 +216,8 @@ def compute_total_excitation_cs(
         L_f=float(chan.l_f),
         J_i=float(chan.L_i_total),
         J_f=float(chan.l_f),
+        k_i_au=k_i_au,
+        k_f_au=k_f_au,
     )
     coeffs = build_angular_coeffs_for_channel(I_L_dict, chan_info)
 
