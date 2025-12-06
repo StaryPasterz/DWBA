@@ -155,6 +155,11 @@ def compute_total_excitation_cs(
     t4 = time.perf_counter()
 
     # 5. Continuum waves
+    # Charge of the target seen by the scattering electron:
+    # Target = Core + ActiveElectron.
+    # Charge = Z_core - 1.
+    z_ion = core_params.Zc - 1.0
+
     E_final_eV = E_incident_eV - dE_target_eV
 
     k_i_au = float(k_from_E_eV(E_incident_eV)) if E_incident_eV > 0.0 else 0.0
@@ -179,14 +184,16 @@ def compute_total_excitation_cs(
         grid=grid,
         U_channel=U_i,
         l=chan.l_i,
-        E_eV=E_incident_eV
+        E_eV=E_incident_eV,
+        z_ion=z_ion   # Pass ionic charge
     )
 
     chi_f: ContinuumWave = solve_continuum_wave(
         grid=grid,
         U_channel=U_f,
         l=chan.l_f, 
-        E_eV=E_final_eV
+        E_eV=E_final_eV,
+        z_ion=z_ion   # Pass ionic charge
     )
 
     t5 = time.perf_counter()

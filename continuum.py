@@ -65,6 +65,7 @@
 
 from __future__ import annotations
 import numpy as np
+import mpmath
 from dataclasses import dataclass
 from typing import Tuple
 
@@ -186,7 +187,7 @@ def _initial_conditions_regular(r0: float, l: int) -> np.ndarray:
     return np.array([chi0, dchi0], dtype=float)
 
 
-def _fit_asymptotic_phase(
+def _fit_asymptotic_phase_neutral(
     r_tail: np.ndarray,
     chi_tail: np.ndarray,
     l: int,
@@ -250,12 +251,63 @@ def _fit_asymptotic_phase(
 
     return float(A), float(delta_l)
 
+def _fit_asymptotic_phase_coulomb(
+    r_tail: np.ndarray,
+    chi_tail: np.ndarray,
+    l: int,
+    k_au: float,
+    z_ion: float
+) -> Tuple[float, float]:
+    """
+    Fit A * [ F_l(eta, rho) * cos(delta) + G_l(eta, rho) * sin(delta) ]
+    representing A * sin(theta_coulomb + delta).
+    
+    References:
+    F_l ~ sin(kr - lπ/2 + eta ln(2kr) + sigma_l)
+    G_l ~ cos(kr - lπ/2 + eta ln(2kr) + sigma_l)
+    where sigma_l is the Coulomb phase shift arg Gamma(l+1+i eta).
+    """
+    # Sommerfeld parameter eta = - Z_scattering / v
+    # Electron (-1) seeing ion (+z_ion). Potential V ~ -z_ion/r.
+    # eta = - z_ion / k (in a.u., v=k).
+    
+    eta = -z_ion / k_au
+    
+    # Calculate F_l and G_l on the tail using mpmath
+    F_vals = []
+    G_vals = []
+    
+    # Cache float conversion function
+    for r_val in r_tail:
+        rho = k_au * r_val
+        # mpmath.coulombf(l, eta, z)
+        f = float(mpmath.coulombf(l, eta, rho))
+        g = float(mpmath.coulombg(l, eta, rho))
+        F_vals.append(f)
+        G_vals.append(g)
+        
+    F_arr = np.array(F_vals)
+    G_arr = np.array(G_vals)
+    
+    # Fit chi ~ C1 * F + C2 * G
+    # C1 = A cos(delta)
+    # C2 = A sin(delta)
+    
+    M = np.vstack([F_arr, G_arr]).T
+    coeffs, *_ = np.linalg.lstsq(M, chi_tail, rcond=None)
+    c1, c2 = coeffs
+    
+    A = np.sqrt(c1**2 + c2**2)
+    delta_l = np.arctan2(c2, c1)
+    
+    return float(A), float(delta_l)
 
 def solve_continuum_wave(
     grid: RadialGrid,
     U_channel: DistortingPotential,
     l: int,
     E_eV: float,
+    z_ion: float = 0.0,
     tail_fraction: float = 0.1,
     rtol: float = 1e-5,
     atol: float = 1e-7,
@@ -312,6 +364,10 @@ def solve_continuum_wave(
         Must satisfy E_eV > 0 (open channel). If <= 0, the resulting
         k would be imaginary and physical cross section is 0.
         Higher-level logic should check k > 0.
+    z_ion : float
+        Ionic charge seen by the scattering electron at infinity.
+        If z_ion=0 (Neutral target), uses Plane Wave (Bessel) matching.
+        If z_ion>0 (Ionic target), uses Coulomb Wave matching.
     tail_fraction : float
         Fraction (0<tail_fraction<1) of the largest-r interval of the grid
         to use for extracting the asymptotic phase. Default 0.1 → last 10%
@@ -400,8 +456,11 @@ def solve_continuum_wave(
     r_tail = r[tail_slice]
     chi_tail = chi_raw[tail_slice]
 
-    # Fit χ_tail ≈ A sin(k r - lπ/2 + δ_l)
-    A_amp, delta_l = _fit_asymptotic_phase(r_tail, chi_tail, l, k_au)
+    # Decide matching strategy
+    if abs(z_ion) < 1e-3:
+        A_amp, delta_l = _fit_asymptotic_phase_neutral(r_tail, chi_tail, l, k_au)
+    else:
+        A_amp, delta_l = _fit_asymptotic_phase_coulomb(r_tail, chi_tail, l, k_au, z_ion)
 
     if not np.isfinite(A_amp) or not np.isfinite(delta_l) or A_amp == 0.0:
         raise RuntimeError("solve_continuum_wave: failed to extract asymptotic phase/amplitude.")

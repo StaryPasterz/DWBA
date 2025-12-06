@@ -202,9 +202,24 @@ def compute_ionization_cs(
     for E_eject_eV in steps:
         E_scatt_eV = E_total_final_eV - E_eject_eV
         
+        
+        # Charges:
+        # Incident electron sees Target = Core + BoundElectron -> Z_eff = Zc - 1.
+        z_ion_inc = core_params.Zc - 1.0
+        
+        # Final electrons (scattered & ejected) see Core -> Z_eff = Zc.
+        z_ion_final = core_params.Zc
+
         # Oblicz fale
         # Incident (E_inc) w potencjale U_inc
-        chi_i = solve_continuum_wave(grid, U_inc_obj, chan.l_i, E_incident_eV) # Uwaga: l projektila?
+        chi_i = solve_continuum_wave(
+            grid, 
+            U_inc_obj, 
+            chan.l_i, 
+            E_incident_eV,
+            z_ion=z_ion_inc
+        ) 
+        # Uwaga: l projektila?
         # W driverze l_i (małe L) to l targeted electrona. 
         # Projektil ma swoje Partial Waves l_proj. 
         # Wzory DWBA sumują po L (transfer).
@@ -248,11 +263,23 @@ def compute_ionization_cs(
         # To bardzo grube, ale "metoda ta sama co wzbudzenie".
         
         l_scatt = chan.l_i
-        chi_scatt = solve_continuum_wave(grid, U_ion_obj, l_scatt, E_scatt_eV)
+        chi_scatt = solve_continuum_wave(
+            grid, 
+            U_ion_obj, 
+            l_scatt, 
+            E_scatt_eV, 
+            z_ion=z_ion_final
+        )
 
         # Loop over l_eject
         for l_ej in range(chan.l_eject_max + 1):
-             chi_eject = solve_continuum_wave(grid, U_ion_obj, l_ej, E_eject_eV)
+             chi_eject = solve_continuum_wave(
+                 grid, 
+                 U_ion_obj, 
+                 l_ej, 
+                 E_eject_eV,
+                 z_ion=z_ion_final
+             )
              
              # Matrix Elements
              # bound_i = orb_i (Bound)
