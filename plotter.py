@@ -1,13 +1,12 @@
 # plotter.py
 #
-# Universal DWBA Results Plotter.
-# Reads scan_results.json and generates high-quality plots for all datasets found.
+# Universal DWBA Results Plotter (v2).
+# Reads scan_results.json and generates high-quality plots.
 #
-# Usage: python plotter.py [style]
-# Styles:
-#   std     -> E[eV] vs Sigma[cm^2]
-#   atomic  -> E[Ha] vs Sigma[a0^2]
-#   article -> E[u]  vs Sigma[pi a0^2]  (u = E/Threshold)
+# Features:
+#   - Styles (std/atomic/article)
+#   - Left Axis: Cross Sections (DWBA & DWBA+Tong)
+#   - Right Axis: Calibration/Normalization Factor (Twin Axis)
 #
 
 import matplotlib.pyplot as plt
@@ -32,7 +31,7 @@ def load_data():
         return json.load(f)
 
 def get_style_config(style_name):
-    # Returns (convert_E_func, convert_Sig_func, xlabel, ylabel, file_suffix)
+    # Returns (conv_E, conv_S, xlabel, ylabel, suffix)
     
     if style_name == 'atomic':
         ev_conv = lambda e, thr: e / AU_TO_EV
@@ -41,8 +40,8 @@ def get_style_config(style_name):
         
     elif style_name == 'article':
         ev_conv = lambda e, thr: e / thr if thr > 1e-6 else e
-        sig_conv = lambda s: s / PI_A0_SQ_CM2
-        return ev_conv, sig_conv, "Energy [$E/E_{thr}$]", r"Cross Section [$\pi a_0^2$]", "_article"
+        sig_conv = lambda s: s / A0_SQ_CM2
+        return ev_conv, sig_conv, "Energy [$E/E_{thr}$]", r"Cross Section [a.u.]", "_article"
         
     else: # std
         ev_conv = lambda e, thr: e
@@ -62,13 +61,12 @@ def main():
 
     conv_E, conv_S, xlab, ylab, suffix = get_style_config(style)
     
-    # 1. Generate Combined Grid Plot
     keys = list(data.keys())
     n = len(keys)
     cols = min(n, 2)
     rows = math.ceil(n / cols)
     
-    fig, axes = plt.subplots(rows, cols, figsize=(7*cols, 5*rows))
+    fig, axes = plt.subplots(rows, cols, figsize=(8*cols, 6*rows))
     if n == 1: axes = [axes]
     else: axes = axes.flatten()
     
@@ -77,41 +75,56 @@ def main():
         pts = data[key]
         if not pts: continue
         
-        # Prepare arrays
-        # Filter zero energy or negative? No, keep all but handle threshold.
-        
         E_raw = np.array([p["energy_eV"] for p in pts])
         Sig_raw = np.array([p["sigma_cm2"] for p in pts])
         SigMT_raw = np.array([p.get("sigma_mtong_cm2", 0.0) for p in pts])
         
-        # Threshold
-        thr = 1.0 # fallback
-        if "Threshold_eV" in pts[0]: thr = pts[0]["Threshold_eV"]
+        # Calculate Factor (mtong / raw)
+        # Handle zeros safely
+        Factor = np.zeros_like(E_raw)
+        mask = Sig_raw > 1e-50 # Avoid div by zero
+        Factor[mask] = SigMT_raw[mask] / Sig_raw[mask]
         
-        # Convert
+        # For Ionization or Excitation threshold behavior
+        thr = 1.0 
+        if "Threshold_eV" in pts[0]: thr = pts[0]["Threshold_eV"]
+        elif "IP_eV" in pts[0]: thr = pts[0]["IP_eV"]
+        
         X = [conv_E(e, thr) for e in E_raw]
         Y = [conv_S(s) for s in Sig_raw]
         Y_MT = [conv_S(s) for s in SigMT_raw]
         
-        # Plot
-        ax.plot(X, Y, 'o-', linewidth=2, label='DWBA')
-        ax.plot(X, Y_MT, 's--', linewidth=2, label='DWBA + M-Tong')
+        # --- Left Axis (Cross Sections) ---
+        color1 = 'tab:blue'
+        color2 = 'tab:orange'
         
-        # Formatting
-        readable_title = key.replace("_", " ")
-        ax.set_title(readable_title, fontsize=12, fontweight='bold')
-        ax.set_xlabel(xlab, fontsize=10)
-        ax.set_ylabel(ylab, fontsize=10)
-        ax.legend(fontsize=9)
+        l1, = ax.plot(X, Y, 'o-', linewidth=2, color=color1, label='DWBA')
+        l2, = ax.plot(X, Y_MT, 's--', linewidth=2, color=color2, label='DWBA + Calibration')
+        
+        ax.set_xlabel(xlab, fontsize=11)
+        ax.set_ylabel(ylab, fontsize=11)
         ax.grid(True, linestyle=':', alpha=0.7)
+        ax.set_title(key.replace("_", " "), fontsize=12, fontweight='bold')
         
-        # Mark Threshold if applicable
+        # --- Right Axis (Calibration Factor) ---
+        ax2 = ax.twinx()
+        color3 = 'tab:green'
+        l3, = ax2.plot(X, Factor, ':', linewidth=1.5, color=color3, label='Norm. Factor')
+        ax2.set_ylabel("Calibration Factor", fontsize=11, color=color3)
+        ax2.tick_params(axis='y', labelcolor=color3)
+        ax2.set_ylim(0, 1.1) # Factor usually 0..1
+        
+        # Legend (Merge handles)
+        lns = [l1, l2, l3]
+        labs = [l.get_label() for l in lns]
+        ax.legend(lns, labs, loc='best', fontsize=9)
+        
+        # Threshold Mark
         if style == 'article':
             ax.axvline(1.0, color='red', linestyle='--', alpha=0.5)
         elif style == 'std':
-            ax.axvline(thr, color='red', linestyle='--', alpha=0.5, label=f'Thr={thr:.1f}eV')
+             pass 
 
-    # Remove empty plots
     for i in range(n, len(axes)):
         axes[i].axis('off')
         
@@ -119,8 +132,6 @@ def main():
     out_name = f"plot_combined{suffix}.png"
     plt.savefig(out_name, dpi=150)
     print(f"Saved {out_name}")
-    
-    # Optional: Generate individual plots? Use subplots is usually better for overview.
 
 if __name__ == "__main__":
     main()
