@@ -1,12 +1,13 @@
 # batch_runner.py
 #
-# Flexible DWBA Scan Runner.
-# Allows user to select predefined sets or define custom scans interactively.
+# Flexible DWBA Scan Runner (v2).
+# Supports Single/Grid/Custom Energy inputs.
 #
 
 import numpy as np
 import json
 import os
+import sys
 from dataclasses import asdict
 
 from driver import (
@@ -38,10 +39,45 @@ def get_input_int(prompt, default=None):
         val = input(f"{prompt}: ")
     return int(val)
 
+def get_energy_list_interactive():
+    print("\n--- Energy Selection ---")
+    print("1. Single Energy")
+    print("2. Linear Grid (Start, End, Step)")
+    print("3. Custom List (comma separated)")
+    
+    choice = input("Select mode [2]: ").strip()
+    if not choice: choice = '2'
+    
+    if choice == '1':
+        E = get_input_float("Energy [eV]", 50.0)
+        return np.array([E])
+        
+    elif choice == '2':
+        start = get_input_float("  Start [eV]", 10.0)
+        end   = get_input_float("  End   [eV]", 200.0)
+        step  = get_input_float("  Step  [eV]", 5.0)
+        if step <= 0: step = 1.0
+        return np.arange(start, end + 0.0001, step)
+        
+    elif choice == '3':
+        raw = input("Enter energies (e.g. 10.0, 15.5, 20): ")
+        try:
+            vals = [float(x.strip()) for x in raw.split(',')]
+            return np.array(vals)
+        except ValueError:
+            print("Invalid format. Defaulting to 50.0 eV.")
+            return np.array([50.0])
+    
+    print("Invalid choice. Defaulting to Grid 10-200.")
+    return np.arange(10.0, 201.0, 5.0)
+
 def load_results():
     if os.path.exists(RESULTS_FILE):
-        with open(RESULTS_FILE, "r") as f:
-            return json.load(f)
+        try:
+            with open(RESULTS_FILE, "r") as f:
+                return json.load(f)
+        except:
+            return {}
     return {}
 
 def save_results(new_data_dict):
@@ -55,30 +91,21 @@ def run_scan_excitation():
     print("\n--- Custom Excitation Scan ---")
     Z = get_input_float("Nuclear Charge Z", 1.0)
     
-    # Init params
     print("Initial State:")
     ni = get_input_int("  n", 1)
     li = get_input_int("  l", 0)
     
     print("Final State:")
     nf = get_input_int("  n", 2)
-    lf = get_input_int("  l", 0) # e.g. 2s
+    lf = get_input_int("  l", 0)
     
-    # Energy grid
-    print("Incident Energy Grid (eV):")
-    e_start = get_input_float("  Start", 10.0)
-    e_end   = get_input_float("  End", 200.0)
-    e_step  = get_input_float("  Step", 5.0)
+    energies = get_energy_list_interactive()
     
-    energies = np.arange(e_start, e_end + 0.001, e_step)
-    
-    # Build Spec
-    # Note: n_index is usually principal quantum number n for H-like.
     spec = ExcitationChannelSpec(
         l_i=li, l_f=lf,
         n_index_i=ni, n_index_f=nf,
         N_equiv=1,
-        L_max=10, # default high quality
+        L_max=10, 
         L_i_total=li
     )
     core_params = CorePotentialParams(Zc=Z, a1=0, a2=0, a3=0, a4=0, a5=0, a6=0)
@@ -89,14 +116,12 @@ def run_scan_excitation():
     print(f"Running scan for {key} ({len(energies)} points)...")
     
     for E in energies:
-        if E <= 0.1: continue
+        if E <= 0.01: continue
         print(f"E={E:.2f} eV...", end=" ", flush=True)
-        
         try:
             res = compute_total_excitation_cs(E, spec, core_params, r_max=100.0, n_points=3000)
-            
             if res.ok_open_channel:
-                print(f"OK. σ={res.sigma_total_cm2:.2e} cm2")
+                print(f"OK. σ={res.sigma_total_cm2:.2e} cm2 ({res.sigma_total_au:.2e} au)")
                 results.append({
                     "energy_eV": E,
                     "sigma_au": res.sigma_total_au,
@@ -126,12 +151,7 @@ def run_scan_ionization():
     ni = get_input_int("  n", 1)
     li = get_input_int("  l", 0)
     
-    print("Incident Energy Grid (eV):")
-    e_start = get_input_float("  Start", 15.0)
-    e_end   = get_input_float("  End", 200.0)
-    e_step  = get_input_float("  Step", 10.0)
-    
-    energies = np.arange(e_start, e_end + 0.001, e_step)
+    energies = get_energy_list_interactive()
     
     spec = IonizationChannelSpec(
         l_i=li,
@@ -153,10 +173,8 @@ def run_scan_ionization():
         try:
             res = compute_ionization_cs(E, spec, core_params, r_max=100.0, n_points=3000)
             
-            # Manual Check
             if res.sigma_total_cm2 > 0:
                 print(f"OK. σ={res.sigma_total_cm2:.2e} cm2")
-                # Calc MTong manually
                 ip = res.IP_eV
                 scale = E / (E + ip) if (E + ip) > 0 else 0.0
                 mt = res.sigma_total_cm2 * scale
@@ -166,7 +184,7 @@ def run_scan_ionization():
                     "sigma_au": res.sigma_total_au,
                     "sigma_cm2": res.sigma_total_cm2,
                     "sigma_mtong_cm2": mt,
-                    "Threshold_eV": ip, # For Ionization Threshold is IP
+                    "Threshold_eV": ip,
                     "IP_eV": ip
                 })
             else:
@@ -179,20 +197,18 @@ def run_scan_ionization():
 def main():
     while True:
         print("\n=== DWBA Batch Scanner ===")
-        print("1. Custom Excitation Scan")
-        print("2. Custom Ionization Scan")
-        print("3. Run Standard Suite (H 1s->2p, H Ion, He+ Ion)")
-        print("q. Quit")
+        print("1. Custom Excitation Scan (Interactive Energy)")
+        print("2. Custom Ionization Scan (Interactive Energy)")
+        print("3. Quit")
         
-        choice = input("Select: ").strip().lower()
+        choice = input("Select [1]: ").strip()
+        if not choice: choice = '1'
+        
         if choice == '1':
             run_scan_excitation()
         elif choice == '2':
             run_scan_ionization()
-        elif choice == '3':
-            # Implement standard suite call or call legacy functions
-            print("Not implemented in this flexible version yet. Use custom modes.")
-        elif choice == 'q':
+        elif choice == '3' or choice.lower() == 'q':
             break
         else:
             print("Invalid.")
