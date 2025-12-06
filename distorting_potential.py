@@ -253,14 +253,77 @@ def hartree_potential_from_orbital(
     return V_H
 
 
-def U_distorting(
-    V_core_array: np.ndarray,
-    V_H_array: np.ndarray
+
+def furness_mccarthy_exchange_potential(
+    grid: RadialGrid,
+    rho_spher: np.ndarray,
+    E_beam_au: float,
+    V_static: np.ndarray
 ) -> np.ndarray:
     """
-    Build the distorted potential U_j(r) for a given channel j:
+    Compute the local equivalent exchange potential V_ex(r) using the
+    Furness-McCarthy (FM) approximation.
 
-        U_j(r) = V_{A+}(r) + V_H^{(j)}(r)
+    Ref: Furness, J. B., & McCarthy, I. E. (1973). J. Phys. B, 6, 2280.
+    
+    Formula:
+        V_ex(r) = 0.5 * [ E - V_stat(r) - sqrt( (E - V_stat(r))^2 + 4π ρ(r) ) ]
+    
+    where:
+    - E is the total energy of the scattering electron (E_beam_au).
+    - V_stat(r) is the static potential seen by the electron (Core + Hartree).
+      V_stat(r) = V_core(r) + V_H(r).
+    - ρ(r) is the electron density of the bound state.
+      NOTE: The density normally used is the *total* electron density of the target.
+      In our SAE approx for H/He+, this is just the density of the 1 bound electron.
+      ρ(r) = |Φ(r)|^2 = |u(r)/r|^2.
+      
+    This approximation yields a local potential that mimics the non-local exchange operator.
+
+    Parameters
+    ----------
+    grid : RadialGrid
+        Radial grid.
+    rho_spher : np.ndarray
+        Spherical electron density rho(r) = |u(r)/r|^2.
+        Units: 1/bohr^3.
+    E_beam_au : float
+        Energy of the scattering electron in Hartree.
+        Can be negative (for bound states) or positive (continuum).
+        Typically use k^2/2.
+    V_static : np.ndarray
+        The total static potential (V_core + V_Hartree) in Hartree.
+
+    Returns
+    -------
+    V_ex : np.ndarray
+        Exchange potential in Hartree.
+    """
+    # Helper for numerical safety inside sqrt
+    # square_term = (E - V_stat)^2 + 4pi * rho
+    
+    diff = E_beam_au - V_static
+    term_sq = diff**2 + 4.0 * np.pi * rho_spher
+    
+    # V_ex = 0.5 * (diff - sqrt(term_sq))
+    V_ex = 0.5 * (diff - np.sqrt(term_sq))
+    
+    return V_ex
+
+
+def U_distorting(
+    V_core_array: np.ndarray,
+    V_H_array: np.ndarray,
+    orbital: Optional[BoundOrbital] = None,
+    grid: Optional[RadialGrid] = None,
+    E_beam_au: Optional[float] = None
+) -> np.ndarray:
+    """
+    Build the distorted potential U_j(r) for a given channel j.
+    
+    Now supports Static-Exchange via Furness-McCarthy if orbital/energy provided.
+
+        U_j(r) = V_{A+}(r) + V_H^{(j)}(r) + V_ex^{(j)}(r)
 
     with:
     - V_{A+}(r) from the SAE core potential (potential_core.V_core_on_grid),
@@ -281,10 +344,17 @@ def U_distorting(
 
     Parameters
     ----------
-    V_core_array : np.ndarray, shape (N,)
-        Core potential in Hartree.
+    V_core_array : np.ndarray
+        Core potential V_{A+}(r) in Hartree.
     V_H_array : np.ndarray, shape (N,)
-        Hartree potential for the specific orbital, in Hartree.
+        Hartree potential V_H(r).
+    orbital : BoundOrbital, optional
+        The bound orbital active in this channel. Required for Exchange.
+    grid : RadialGrid, optional
+        Required for Exchange calculation (to convert u->rho).
+    E_beam_au : float, optional
+        Scattering energy E = k^2/2. Required for Exchange.
+        If None, we default to Static-Only (classic DWBA without exchange).
 
     Returns
     -------
@@ -298,9 +368,32 @@ def U_distorting(
     """
     if V_core_array.shape != V_H_array.shape:
         raise ValueError("U_distorting: shape mismatch.")
-    U = V_core_array + V_H_array
+    
+    V_static = V_core_array + V_H_array
+    
+    if orbital is not None and grid is not None and E_beam_au is not None:
+        # --- Compute Exchange ---
+        # 1. Density rho(r) = |u(r)/r|^2
+        r = grid.r
+        # Avoid division by zero at r=0 logic (our grid starts > 0 usually)
+        u = orbital.u_of_r
+        # Safety for tiny r
+        r_saf = np.maximum(r, 1e-12)
+        rho = (np.abs(u) / r_saf)**2
+        
+        V_ex = furness_mccarthy_exchange_potential(grid, rho, E_beam_au, V_static)
+        
+        U = V_static + V_ex
+    else:
+        # Static only
+        U = V_static
+
     if not np.all(np.isfinite(U)):
+        # Provide fallback or error?
+        # Sometimes FM can develop issues if E is very negative?
+        # But here usually it's fine.
         raise ValueError("U_distorting: produced non-finite values.")
+        
     return U
 
 
@@ -308,9 +401,22 @@ def build_distorting_potentials(
     grid: RadialGrid,
     V_core_array: np.ndarray,
     orbital_initial: BoundOrbital,
-    orbital_final: BoundOrbital
+    orbital_final: BoundOrbital,
+    k_i_au: float = 0.5,
+    k_f_au: float = 0.5
 ) -> Tuple[DistortingPotential, DistortingPotential]:
     """
+    Construct U_i(r) and U_f(r) including Exchange (Furness-McCarthy).
+    
+    Now requires k_i and k_f (momenta) to calculate the exchange term energy.
+    E_i = k_i^2 / 2
+    E_f = k_f^2 / 2
+    
+    NOTE: If k_i or k_f are not provided (legacy calls), we might default to 
+    something or static-only?
+    Actually, let's enforce passing them or careful defaults. 
+    The function signature changed! We need to update callers.
+
     Convenience helper:
     Given the core potential V_{A+}(r) and two bound orbitals
     (initial Φ_i and final Φ_f), construct BOTH distorted-wave
@@ -365,19 +471,22 @@ def build_distorting_potentials(
     if V_core_array.shape != r.shape:
         raise ValueError("build_distorting_potentials: V_core_array/grid mismatch.")
 
+    # energies
+    E_i = 0.5 * k_i_au**2
+    E_f = 0.5 * k_f_au**2
+
     # Hartree potentials
     V_H_i = hartree_potential_from_orbital(grid, orbital_initial)
     V_H_f = hartree_potential_from_orbital(grid, orbital_final)
 
-    # Distorting potentials
-    U_i_arr = U_distorting(V_core_array, V_H_i)
-    U_f_arr = U_distorting(V_core_array, V_H_f)
+    # Distorting potentials (Static + Exchange)
+    U_i_arr = U_distorting(V_core_array, V_H_i, orbital=orbital_initial, grid=grid, E_beam_au=E_i)
+    U_f_arr = U_distorting(V_core_array, V_H_f, orbital=orbital_final, grid=grid, E_beam_au=E_f)
 
     U_i = DistortingPotential(U_of_r=U_i_arr, V_hartree_of_r=V_H_i)
     U_f = DistortingPotential(U_of_r=U_f_arr, V_hartree_of_r=V_H_f)
 
     return U_i, U_f
-
 
 def inspect_distorting_potential(
     grid: RadialGrid,

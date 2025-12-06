@@ -140,34 +140,33 @@ def compute_total_excitation_cs(
     orb_i = _pick_bound_orbital(tuple(states_i), chan.n_index_i)
     orb_f = _pick_bound_orbital(tuple(states_f), chan.n_index_f)
     
-    dE_target_au = _compute_excitation_energy_au(orb_i, orb_f)
-    dE_target_eV = dE_target_au / ev_to_au(1.0)
-
-    t3 = time.perf_counter()
-
-    # 4. Distorting potentials
-    U_i, U_f = build_distorting_potentials(
-        grid=grid,
-        V_core_array=V_core,
-        orbital_initial=orb_i,
-        orbital_final=orb_f
-    )
-    t4 = time.perf_counter()
-
-    # 5. Continuum waves
+    # 4. Asymptotic Kinematics (Needed for Exchange Potential)
     # Effective Ionic Charge (z_ion) for Asymptotic Matching:
-    # The incident/scattered electron sees the target as a whole.
-    # Target = Core (+Zc) + Bound Active Electron (-1)
-    # Net Charge = Zc - 1.
-    # This 'z_ion' is passed to the continuum solver to select the correct
-    # asymptotic behavior (Coulomb vs Bessel).
+    # Target = Core (+Zc) + Bound Active Electron (-1) => Net Charge = Zc - 1.
     z_ion = core_params.Zc - 1.0
 
+    dE_target_au = _compute_excitation_energy_au(orb_i, orb_f)
+    dE_target_eV = dE_target_au / ev_to_au(1.0)
     E_final_eV = E_incident_eV - dE_target_eV
 
     k_i_au = float(k_from_E_eV(E_incident_eV)) if E_incident_eV > 0.0 else 0.0
     k_f_au = float(k_from_E_eV(E_final_eV))    if E_final_eV    > 0.0 else 0.0
 
+    t3 = time.perf_counter()
+
+    # 5. Distorting potentials (Now with Exchange!)
+    U_i, U_f = build_distorting_potentials(
+        grid=grid,
+        V_core_array=V_core,
+        orbital_initial=orb_i,
+        orbital_final=orb_f,
+        k_i_au=k_i_au,
+        k_f_au=k_f_au
+    )
+    t4 = time.perf_counter()
+
+    # 6. Continuum waves
+    
     channel_open = (E_final_eV > 0.0) and (k_i_au > 0.0) and (k_f_au > 0.0)
 
     if not channel_open:
@@ -201,7 +200,7 @@ def compute_total_excitation_cs(
 
     t5 = time.perf_counter()
 
-    # 6. Radial integrals
+    # 7. Radial integrals
     radial_ints: RadialDWBAIntegrals = radial_ME_all_L(
         grid=grid,
         V_core_array=V_core,
@@ -212,11 +211,10 @@ def compute_total_excitation_cs(
         cont_f=chi_f,
         L_max=chan.L_max
     )
-    I_L_dict: Dict[int, float] = radial_ints.I_L
-
+    
     t6 = time.perf_counter()
 
-    # 7. Angular coefficients
+    # 8. Angular coefficients
     chan_info = ChannelAngularInfo(
         l_i=chan.l_i,
         l_f=chan.l_f,
@@ -229,7 +227,13 @@ def compute_total_excitation_cs(
         k_i_au=k_i_au,
         k_f_au=k_f_au,
     )
-    coeffs = build_angular_coeffs_for_channel(I_L_dict, chan_info)
+    
+    coeffs = build_angular_coeffs_for_channel(
+        I_L_direct=radial_ints.I_L_direct,
+        I_L_exchange=radial_ints.I_L_exchange,
+        chan=chan_info
+    )
+
 
     # 8. Amplitudes and Cross Sections
     theta_grid = np.linspace(0.0, np.pi, 400)

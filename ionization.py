@@ -172,10 +172,11 @@ def compute_ionization_cs(
     #    We use the bare core potential V_core (which represents the ion).
     #    U_ion = V_core
     
-    # Construct U_inc using the standard builder. 
-    # We pass orb_i as both initial and final just to satisfy the function signature,
-    # but we only use the resulting `U_i` (incident potential).
-    U_inc_obj, _ = build_distorting_potentials(grid, V_core, orb_i, orb_i)
+    # Construct U_inc using the standard builder.
+    k_i_au = float(k_from_E_eV(E_incident_eV)) if E_incident_eV > 0 else 0.5
+    
+    # Passing k_i_au allows exchange potential for incident channel.
+    U_inc_obj, _ = build_distorting_potentials(grid, V_core, orb_i, orb_i, k_i_au=k_i_au)
     
     # Construct U_ion manually (Pure core potential, no Hartree screening from active electron)
     U_ion_obj = DistortingPotential(U_of_r=V_core, V_hartree_of_r=np.zeros_like(V_core))
@@ -263,7 +264,12 @@ def compute_ionization_cs(
                  J_i=float(chan.L_i_total), J_f=float(l_ej)
              )
              
-             coeffs = build_angular_coeffs_for_channel(ints.I_L, chan_info)
+             coeffs = build_angular_coeffs_for_channel(
+                 I_L_direct=ints.I_L_direct,
+                 I_L_exchange=ints.I_L_exchange,
+                 chan=chan_info
+             )
+
              
              # Differential Cross Section (Incident Angle Integration)
              # -----------------------------------------------------

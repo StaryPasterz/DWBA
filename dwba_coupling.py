@@ -202,8 +202,10 @@ def _exchange_prefactor(L: int, I_L: float, chan: ChannelAngularInfo) -> complex
 
 # --- PUBLIC FUNCTION -------------------------------------------------------
 
+
 def build_angular_coeffs_for_channel(
-    I_L_dict: Dict[int, float],
+    I_L_direct: Dict[int, float],
+    I_L_exchange: Dict[int, float],
     chan: ChannelAngularInfo
 ) -> DWBAAngularCoeffs:
     """
@@ -212,6 +214,19 @@ def build_angular_coeffs_for_channel(
     Includes normalization factor to convert from Amplitude-Normalized waves (sin(kr))
     to Energy-Normalized T-matrix elements required for cross sections.
     Factor = 2 / (pi * sqrt(ki * kf)).
+    
+    Parameters
+    ----------
+    I_L_direct : Dict[int, float]
+        Radial integrals for Direct amplitude.
+    I_L_exchange : Dict[int, float]
+        Radial integrals for Exchange amplitude.
+    chan : ChannelAngularInfo
+        Quantum numbers.
+        
+    Returns
+    -------
+    DWBAAngularCoeffs
     """
     F_L: Dict[int, complex] = {}
     G_L: Dict[int, complex] = {}
@@ -224,17 +239,19 @@ def build_angular_coeffs_for_channel(
     else:
         norm_fac = 0.0
 
-    for L, I_L_raw in I_L_dict.items():
-        # Apply normalization
-        I_L_val = I_L_raw * norm_fac
-        
-        F = _direct_prefactor(L, I_L_val, chan)
-        G = _exchange_prefactor(L, I_L_val, chan)
-
+    # Direct F_L
+    for L, I_val_raw in I_L_direct.items():
+        I_val = I_val_raw * norm_fac
+        F = _direct_prefactor(L, I_val, chan)
         if abs(F.real) < 1e-18 and abs(F.imag) < 1e-18: F = 0j
-        if abs(G.real) < 1e-18 and abs(G.imag) < 1e-18: G = 0j
-
         F_L[L] = complex(F)
+        
+    # Exchange G_L
+    for L, I_val_raw in I_L_exchange.items():
+        I_val = I_val_raw * norm_fac
+        G = _exchange_prefactor(L, I_val, chan)
+        if abs(G.real) < 1e-18 and abs(G.imag) < 1e-18: G = 0j
         G_L[L] = complex(G)
 
     return DWBAAngularCoeffs(F_L=F_L, G_L=G_L)
+
