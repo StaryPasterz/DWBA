@@ -418,23 +418,23 @@ def solve_bound_states(
     H_nonsym = _assemble_hamiltonian_sparse(grid, V_eff)
     Nint = N - 2
     
-    # Symetryzacja przez wagi (w_trapz na interior):
-    # Macierz symetryczna S = W * H_nonsym
-    # Problem własny: S u = E W u
-    # Gdzie W = diag(w_i)
-    # Wagi z grid.w_trapz odpowiadają dokładnie (h_minus + h_plus)/2.
-    # Używamy wag dla punktów wewnętrznych (indices 1..N-2).
+    # Symmetrization via weights (w_trapz on interior):
+    # Symmetric matrix S = W * H_nonsym
+    # Eigenproblem: S u = E W u
+    # Where W = diag(w_i)
+    # The weights from grid.w_trapz correspond exactly to (h_minus + h_plus)/2.
+    # We use weights for interior points (indices 1..N-2).
     
     weights_inner = grid.w_trapz[1:-1]
     W_mat = diags(weights_inner, 0, shape=(Nint, Nint), format='csr')
     
-    # Mnożenie H_nonsym przez wagi wierszowo
+    # Multiply H_nonsym by weights row-wise
     H_sym = W_mat @ H_nonsym
     
-    # Upewnijmy się, że H_sym jest numerycznie symetryczna (usuń błędy zaokrągleń)
-    # H_sym = (H_sym + H_sym.T) / 2.0  <-- dla pewności, choć matematycznie powinna być.
-    # W praktyce scipy.sparse product może nie dać idealnej symetrii w strukturze.
-    # Ale teoretycznie dla tego schematu 3-pkt jest symetryczna.
+    # Ensure H_sym is numerically symmetric (remove roundoff errors)
+    # H_sym = (H_sym + H_sym.T) / 2.0  <-- just to be sure, though mathematically it should be.
+    # In practice scipy.sparse product might not yield perfect symmetry structure.
+    # Theoretically for this 3-point scheme it is symmetric.
     
     k_req = min(n_states_max, Nint - 1)
     if k_req < 1:

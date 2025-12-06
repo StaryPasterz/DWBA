@@ -58,8 +58,8 @@ class CorePotentialParams:
         Typically a2,a4,a6 > 0 (decay rates); magnitudes of a1,a3,a5
         control the strength of each screening term.
 
-    # Zeff_large powinno być ~ Zc (dla Ne⁺ ~2),
-    # nie ~1. Jeżeli to nie wychodzi, parametry są złe.
+    # Zeff_large should be approx Zc (e.g. ~2 for Ne+),
+    # not ~1. If this is not the case, parameters are incorrect.
 
     """
     Zc: float
@@ -229,10 +229,10 @@ def inspect_core_potential(
     Notes
     -----
     Typical expectations:
-    - Zeff_large ~ 1  (so V ~ -1/r asymptotycznie).
-    - Zeff_small should be close to rzeczywisty ładunek jądra (np. ~10 dla Ne),
-      bo blisko jądra ekranowanie zanika.
-      Jeśli to jest kompletnie od czapy, parametry a1..a6 są złe.
+    - Zeff_large ~ 1  (so V ~ -1/r asymptotically).
+    - Zeff_small should be close to the actual nuclear charge (e.g. ~10 for Ne),
+      because screening vanishes near the nucleus.
+      If this is completely off, parameters a1..a6 are incorrect.
     """
     r = grid.r
     if V_core_array.shape != r.shape:

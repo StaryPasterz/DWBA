@@ -158,60 +158,47 @@ def compute_ionization_cs(
     
     sdcs_values = [] # Single Differential CS values dSigma/dE
 
-    # Potencjały zniekształcające (U_i)
-    # Dla jonizacji:
-    #   U_i (inc) widzi neutralny atom (V_core screening przez orb_i).
-    #   U_f (scatt i eject) widzą JON (+1).
-    #   W przybliżeniu DWBA w driverze mamy build_distorting_potentials.
-    #   Tutaj, 'orbital_final' nie istnieje w sensie bound.
-    #   Użyjemy 'orbital_initial' do budowy U_i. 
-    #   Dla U_eject i U_scatt (kanał wyjściowy) potencjał to 'V_ion'.
-    #   V_ion = V_core (zakładając że V_core to gołe jądro? Nie, V_core w potential_core to 
-    #           zwykle effective core potential w tym kodzie.
-    #           JEŚLI V_core_on_grid zwraca potencjał "jonu resztkowego" (np. A+), 
-    #           to to jest to co widzi ejected e-.
-    #           JEŚLI V_core_on_grid zwraca potencjał całego atomu? -> Nie, 
-    #           zwykle V_core to potential rdzenia (closed shells).
-    #           Active electron siedzi w V_core.
-    #           Więc U_ion = V_core.
-    #           U_atom = V_core + V_hartree(orb_i).
+    # Distorting Potentials Setup
+    # ---------------------------
+    # We need two distinct distorting potentials:
+    # 1. U_inc (Incident Channel): 
+    #    The incident electron sees a NEUTRAL atom (Core + Bound Electron).
+    #    We model this using the initial bound orbital 'orb_i' to calculate Hartree screening.
+    #    U_inc = V_core + V_Hartree(orb_i)
     
-    # Zbudujmy U_i (widziany przez projectile incident)
-    # Funkcja build_distorting_potentials wymaga orbital_initial i orbital_final.
-    # Tu podamy orbital_initial jako initial, a jako final... hack: też initial?
-    # W distorting_potential.py:
-    #    U_i = V_core + V_H(orb_i)  <-- to jest potencjał atomu neutralnego (zgrubnie).
-    #    U_f = V_core + V_H(orb_f)
-    # My chcemy U_f = V_core (dla obu elektronów wyjściowych pędzacych w polu jonu).
-    # Więc U_f = V_core.
+    # 2. U_ion (Final Channel - Scattered & Ejected):
+    #    Both outgoing electrons move in the field of the RESIDUAL ION.
+    #    The bound electron is removed, so V_Hartree is effectively zero (or simplified).
+    #    We use the bare core potential V_core (which represents the ion).
+    #    U_ion = V_core
     
-    # Ręcznie zbudujmy U_ion (czyli V_core).
-    # I U_atom (V_core + screening).
-    
-    # Użyjemy distorting_potential tylko do U_i.
-    # Ponieważ build_distorting_potentials zwraca (U_i, U_f), możemy podać orb_f = orb_i (dummy),
-    # a potem po prostu olać U_f i użyć 'czystego' V_core jako potencjału dla fal wyjściowych.
-    
-    # dummy call to get U_i constructed correctly with Hartree
+    # Construct U_inc using the standard builder. 
+    # We pass orb_i as both initial and final just to satisfy the function signature,
+    # but we only use the resulting `U_i` (incident potential).
     U_inc_obj, _ = build_distorting_potentials(grid, V_core, orb_i, orb_i)
     
-    # Stwórzmy obiekt DistortingPotential dla jonu (U = V_core)
+    # Construct U_ion manually (Pure core potential, no Hartree screening from active electron)
     U_ion_obj = DistortingPotential(U_of_r=V_core, V_hartree_of_r=np.zeros_like(V_core))
 
     
     for E_eject_eV in steps:
         E_scatt_eV = E_total_final_eV - E_eject_eV
         
-        
-        # Charges:
-        # Incident electron sees Target = Core + BoundElectron -> Z_eff = Zc - 1.
+        # Effective Charges (Z_eff) for Coulomb Asymptotics
+        # -----------------------------------------------
+        # 1. Incident Electron:
+        #    Sees [Core (+Zc) + Bound Electron (-1)] => Net Charge = Zc - 1.
+        #    This is the "Z_ion" parameter for the asymptotic Coulomb matching.
         z_ion_inc = core_params.Zc - 1.0
         
-        # Final electrons (scattered & ejected) see Core -> Z_eff = Zc.
+        # 2. Final Electrons (Scattered and Ejected):
+        #    See [Core (+Zc)] => Net Charge = Zc.
         z_ion_final = core_params.Zc
 
-        # Oblicz fale
-        # Incident (E_inc) w potencjale U_inc
+        # Calculate Continuum Waves
+        # -------------------------
+        
+        # 1. Incoming Wave (Incident Projectile)
         chi_i = solve_continuum_wave(
             grid, 
             U_inc_obj, 
@@ -219,50 +206,15 @@ def compute_ionization_cs(
             E_incident_eV,
             z_ion=z_ion_inc
         ) 
-        # Uwaga: l projektila?
-        # W driverze l_i (małe L) to l targeted electrona. 
-        # Projektil ma swoje Partial Waves l_proj. 
-        # Wzory DWBA sumują po L (transfer).
-        # Driver upraszcza: zakłada "dominującą" falę projektila? 
-        # W driver.py widzę:
-        #    chi_i = solve( ... l=chan.l_i ... )
-        # To jest uproszczenie! Prawdziwe DWBA sumuje po partial waves projektila l_p_i, l_p_f.
-        # Skoro mamy trzymać się "metody z drivera/artykułu", powielam to uproszczenie:
-        # Projektil ma to samo l co bound state? To dziwne, ale konsekwentne z driver.py.
-        # Może 'l_i' w driverze to właśnie partial wave projektila?
-        # Chan spec w driverze: l_i "Orbital angular momentum l of the initial bound electron state".
-        # Ale w solve_continuum_wave przekazujemy to jako l.
-        # To sugeruje, że driver zakłada specyficzną geometrię "matching l".
-        # Nie będę tego zmieniał (trzymam się konwencji z drivera).
+        # Note on Partial Waves:
+        # The DWBA driver primarily considers the partial wave L corresponding to the target symmetry.
+        # Ideally, one sums over all projectile partial waves (l_proj). 
+        # Here we follow the driver's convention of using l=chan.l_i as a representative mode.
         
-        # Fale wyjściowe:
-        # Ejected (E_eject) w potencjale JONU.
-        # Sumujemy po l_eject?
-        # Dla jonizacji całkowitej zwykle całkuje się po kątach i sumuje po l_eject.
-        
-        # Aby użyć radial_ME_all_L, musimy zdefiniować "bound_f" jako falę ejected.
-        # Pętla po l_eject (od 0 do l_max).
-        
+        # 2. Scattered Wave (Projectile after collision)
+        # We assume the projectile scatters into a similar angular momentum channel.
         sigma_for_this_energy = 0.0
-        
-        # Projektil scattered:
-        # Zakładamy l_scatt = l_f ? W driverze l_f to l bound state final.
-        # Tu nie mamy bound state final.
-        # Przyjmiemy założenie, że scattered projectile ma to samo l co ejected? Albo loop?
-        # Uproszczenie: l_scatt = l_i (zachowanie l projektila? Born approx często l=0->0?).
-        # Bez wglądu w PNG 8-9 (szczegóły) trudno zgadnąć.
-        # Zrobię loop po l_eject, a l_scatt ustawię na l_i (jako "elastic-like" behaviour dla projectile? Słabe).
-        # Wróćmy do drivera dla excitation. Tam l_f (projektila) było brane jako l_f (bound).
-        # Czyli projektil "dziedziczył" moment pędu orbitalu? To by wskazywało na rezonansowe zachowanie,
-        # albo błąd w mojej interpretacji.
-        # Wczytajmy się w driver.py linia 377:
-        # "UWAGA: w zasadzie częściowa fala pocisku nie MUSI mieć to samo l co orbital celu...
-        #  Ten driver zakłada na razie pojedynczą dominującą składową l=chan.l_i dla uproszczenia."
-        # OK, czyli to placeholder. Zastosuję ten sam placeholder dla jonizacji.
-        # l_scatt = l_inc = l_i (target). l_eject = l_i (target).
-        # To bardzo grube, ale "metoda ta sama co wzbudzenie".
-        
-        l_scatt = chan.l_i
+        l_scatt = chan.l_i 
         chi_scatt = solve_continuum_wave(
             grid, 
             U_ion_obj, 
@@ -271,7 +223,8 @@ def compute_ionization_cs(
             z_ion=z_ion_final
         )
 
-        # Loop over l_eject
+        # 3. Ejected Wave (The electron knocked out)
+        # We sum over ejected angular momenta l_eject.
         for l_ej in range(chan.l_eject_max + 1):
              chi_eject = solve_continuum_wave(
                  grid, 
@@ -281,28 +234,27 @@ def compute_ionization_cs(
                  z_ion=z_ion_final
              )
              
-             # Matrix Elements
-             # bound_i = orb_i (Bound)
-             # bound_f = chi_eject (Continuum treated as Bound)
-             
-             # Ważne: Radial Integrals I_L.
-             # W radial_ME_kernel całkują chi_f(r1)*chi_i(r1)...
-             # chi_i (proj, inc), chi_f (proj, scatt).
-             # u_i (bound), u_f (bound/eject).
-             # Zgadza się.
+             # Matrix Elements Calculation
+             # ---------------------------
+             # Integration: < chi_scatt(r1) chi_eject(r2) | 1/r12 | chi_i(r1) phi_bound(r2) >
+             # Note that 'radial_ME_all_L' expects:
+             #   bound_i -> Initial bound state (phi_bound)
+             #   bound_f -> Final "bound-like" state. For ionization, this is the Ejected Continuum Wave.
+             #   cont_i  -> Incident projectile
+             #   cont_f  -> Scattered projectile
              
              ints = radial_ME_all_L(
                  grid, V_core, U_inc_obj.U_of_r,
                  bound_i=orb_i,
-                 bound_f=chi_eject, # !!! Ejected wave here
+                 bound_f=chi_eject, # Passing ContinuumWave as bound_f is valid (polymorphism)
                  cont_i=chi_i,
                  cont_f=chi_scatt,
                  L_max=chan.L_max
              )
              
-             # Angular coeffs placeholder
-             # Musimy stworzyć dummy channel info
-             # l_f tutaj to l_eject
+             # Angular Coefficients
+             # --------------------
+             # Provide placeholder angular info consistent with the transfer L
              chan_info = ChannelAngularInfo(
                  l_i=chan.l_i,
                  l_f=l_ej,
@@ -313,20 +265,8 @@ def compute_ionization_cs(
              
              coeffs = build_angular_coeffs_for_channel(ints.I_L, chan_info)
              
-             # DCS theta
-             # Integracja po kątach
-             # Problem: dcs_dwba liczy dSigma/dOmega (projektila).
-             # Dla jonizacji mamy d^3 Sigma / dOmega_A dOmega_B dE.
-             # Całkujemy po wszystkich kątach?
-             # Metoda "Total Ionization Cross Section" w DWBA zwykle sprowadza się do sumy |T|^2.
-             # Użyjmy istniejącego `compute_sigma_dwba` logic (integration over theta_scatt).
-             # Brakuje całkowania po kątach elektronu wyrzucanego.
-             # W aproksymacji single-channel partial wave (gdzie l_eject jest fixed), 
-             # kąty el. wyrzucanego są "wcałkowane" w definicję σ dla danej fali cząstkowej?
-             # Zwykle T_{fi} ma indeksy l_scatt, l_eject.
-             # Suma po l_scatt, l_eject daje całkowity przekrój. 
-             # Funkcja sigma_au_to_cm2 jest liniowa.
-             
+             # Differential Cross Section (Incident Angle Integration)
+             # -----------------------------------------------------
              theta_grid = np.linspace(0, np.pi, 200)
              f_th, g_th = f_theta_from_coeffs(np.cos(theta_grid), coeffs)
              dcs = dcs_dwba(theta_grid, f_th, g_th, chi_i.k_au, chi_scatt.k_au, chan.L_i_total, chan.N_equiv)

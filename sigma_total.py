@@ -61,7 +61,21 @@ def dcs_dwba(
 ) -> np.ndarray:
     """
     Compute differential cross section dsigma/dOmega.
-    Weighted sum of singlet (1/4) and triplet (3/4) channels.
+    
+    Spin Statistics:
+    For unpolarized electrons incident on a target (averaged over initial spins,
+    summed over final spins), the cross section is a weighted sum of
+    singlet (S=0) and triplet (S=1) scattering channels.
+    
+    Weights:
+      Triplet (3/4): |f - g|^2
+      Singlet (1/4): |f + g|^2
+      
+    Formula:
+      dσ/dΩ = (k_f / k_i) * (N_equiv / (2L_i + 1)) * [ 1/4 |f+g|^2 + 3/4 |f-g|^2 ]
+      
+    where N_equiv is the number of equivalent electrons in the subshell,
+    and (2L_i + 1) is the statistical weight of the initial target state.
     """
     if k_i_au <= 0.0 or k_f_au <= 0.0:
         return np.zeros_like(theta_grid, dtype=float)

@@ -138,11 +138,18 @@ class ChannelAngularInfo:
 
 def _direct_prefactor(L: int, I_L: float, chan: ChannelAngularInfo) -> complex:
     """
-    Calculate Direct Amplitude coefficient for multipole rank L.
+    Calculate Direct Amplitude coefficient F_L for multipole rank L.
     
+    The direct amplitude f(θ) is expanded as:
+         f(θ) = Σ_L F_L P_L(cos θ)
+    
+    Formula:
     F_L  = (-1)^(l_f) * sqrt[(2 l_f + 1)(2 l_i + 1)]
            * ( l_f   L   l_i )
            * ( 0     0    0  ) * I_L
+           
+    where the 3j symbol ensures triangle inequality and parity selection rules.
+    This corresponds to the multipole expansion of the Coulomb interaction 1/r12.
     """
     li = float(chan.l_i)
     lf = float(chan.l_f)
@@ -162,8 +169,21 @@ def _direct_prefactor(L: int, I_L: float, chan: ChannelAngularInfo) -> complex:
 
 def _exchange_prefactor(L: int, I_L: float, chan: ChannelAngularInfo) -> complex:
     """
-    Calculate Exchange Amplitude coefficient.
-    Assuming same angular structure as Direct (Multipole Expansion approximation).
+    Calculate Exchange Amplitude coefficient G_L.
+    
+    The exchange amplitude g(θ) is expanded as:
+         g(θ) = Σ_L G_L P_L(cos θ)
+         
+    Formula (Multipole Expansion approximation for Exchange):
+    G_L  = (-1)^(l_i + l_f + L) * sqrt[(2 l_f + 1)(2 l_i + 1)]
+           * ( l_f   L   l_i )
+           * ( 0     0    0  ) * I_L
+           
+    Note: The radial integral I_L for exchange involves overlapping densities
+    and is distinct from the direct I_L, but the angular geometry factor
+    is typically structurally similar in the simple partial wave expansion
+    (often called the Ochkur approximation or similar high-energy limits 
+    if simplified, but here we treat it with full partial wave coupling).
     """
     li = float(chan.l_i)
     lf = float(chan.l_f)

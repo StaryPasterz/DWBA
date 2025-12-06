@@ -309,8 +309,8 @@ def solve_continuum_wave(
     E_eV: float,
     z_ion: float = 0.0,
     tail_fraction: float = 0.1,
-    rtol: float = 1e-5,
-    atol: float = 1e-7,
+    rtol: float = 1e-6,
+    atol: float = 1e-8,
 ) -> ContinuumWave:
     """
     Solve for the distorted-wave scattering solution χ_l(k,r) in channel j.
@@ -336,9 +336,9 @@ def solve_continuum_wave(
 
     - Asymptotically, U_j(r) ~ 0, so:
         χ_l(k,r) ~ A sin(k r - l π/2 + δ_l)
-      We fit A and δ_l from the numerical tail, then renormalizujemy χ
-      tak, żeby A = 1. Wtedy χ_l ma standardową normalizację fazową
-      używaną w DWBA.
+      We fit A and δ_l from the numerical tail, then renormalize χ
+      so that A = 1. Thus χ_l has the standard phase normalization
+      used in DWBA.
 
     Numerics:
     ---------
@@ -346,9 +346,9 @@ def solve_continuum_wave(
     2. We integrate outward with solve_ivp from r_min to r_max on a dense
        set of internal points.
     3. We sample χ(r) back on grid.r (to stay consistent everywhere).
-    4. We fit the tail (ostatnie tail_fraction siatki) do sinusa.
-    5. Dzielimy χ przez dopasowaną amplitudę A, żeby asymptotyczna
-       amplituda = 1, i zapisujemy δ_l.
+    4. We fit the tail (last tail_fraction of the grid) to a sine/cosine.
+    5. We divide χ by the fitted amplitude A, so the asymptotic
+       amplitude = 1, and store δ_l.
 
     Parameters
     ----------

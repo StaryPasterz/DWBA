@@ -88,87 +88,6 @@ class RadialDWBAIntegrals:
     I_L: Dict[int, float]
 
 
-def _kernel_row_A_L(
-    r1_val: float,
-    r_grid: np.ndarray,
-    L: int,
-    V_core_r1: float,
-    U_i_r1: float
-) -> np.ndarray:
-    """
-    Build A_L(r1, r2_j) for *fixed* r1 and all r2_j on the grid,
-    without allocating the full N x N kernel.
-
-    Theory:
-        A_L(r1,r2) = r_<^L / r_>^{L+1} + [V_core(r1) - U_i(r1)] δ_{L,0}
-
-    where:
-        r_< = min(r1, r2),
-        r_> = max(r1, r2).
-
-    For a given r1:
-        For each r2:
-            if r2 <= r1:
-                r_< = r2, r_> = r1
-            else:
-                r_< = r1, r_> = r2
-
-    We vectorize this for speed.
-
-    Parameters
-    ----------
-    r1_val : float
-        Fixed radius r1.
-    r_grid : np.ndarray, shape (N,)
-        All radii r2.
-    L : int
-        Multipole rank.
-    V_core_r1 : float
-        V_core(r1) in Hartree.
-    U_i_r1 : float
-        U_i(r1) in Hartree. (Entrance-channel distorted potential.)
-        Appears only in monopole correction.
-
-    Returns
-    -------
-    Arow : np.ndarray, shape (N,)
-        Values of A_L(r1, r2_j) for all j.
-
-    Notes
-    -----
-    Units: in atomic units, Coulomb kernel 1/|r1-r2| has dimensions 1/length.
-    After angular reduction and integration with u,χ (which themselves have
-    dimensions ~ length^(1/2)), final amplitude is dimensionless up to
-    standard scattering normalization factors. We'll assemble those later.
-    """
-    r2 = r_grid
-
-    # r_< and r_> arrays
-    r_less = np.minimum(r1_val, r2)
-    r_gtr = np.maximum(r1_val, r2)
-
-    # Coulomb multipole kernel r_<^L / r_>^(L+1)
-    with np.errstate(divide='ignore', invalid='ignore'):
-        base_kernel = (r_less ** L) / (r_gtr ** (L + 1))
-
-    # numeric safety near r=0: our grid never includes r=0, so no true singularity;
-    # but if r1_val is extremely small, r_gtr can also be extremely small.
-    # In practice r_min ~ 1e-5, so it's fine.
-    # Still, replace any NaN/inf from roundoff with 0.
-    bad = ~np.isfinite(base_kernel)
-    if np.any(bad):
-        base_kernel[bad] = 0.0
-
-    if L == 0:
-        # add [V_core(r1)-U_i(r1)] term
-        correction = (V_core_r1 - U_i_r1)
-        Arow = base_kernel + correction
-    else:
-        Arow = base_kernel
-
-    return Arow
-
-
 def radial_ME_single_L(
     grid: RadialGrid,
     V_core_array: np.ndarray,
@@ -180,72 +99,20 @@ def radial_ME_single_L(
     L: int
 ) -> float:
     """
-    Compute the radial DWBA integral I_L for given multipole L.
+    Compute the radial DWBA integral I_L for given multipole L using optimized vectorization.
 
-    Discretized version of:
-        I_L =
-        ∫ dr1 ∫ dr2
-        χ_f(r1) u_f(r2) A_L(r1,r2) u_i(r2) χ_i(r1)
+    I_L = ∫ dr1 ∫ dr2 [ χ_f(r1) χ_i(r1) ] * A_L(r1,r2) * [ u_f(r2) u_i(r2) ]
 
-    with
-        A_L(r1,r2) = r_<^L / r_>^{L+1}
-                     + [V_core(r1) - U_i(r1)] δ_{L,0}
-
-    Numerically we evaluate:
-        I_L ≈ Σ_i w_i χ_f[i] χ_i[i]
-                  * [ Σ_j w_j u_f[j] u_i[j] A_L(r_i, r_j) ]
-
-    gdzie:
-        - w_i, w_j to wagi całkowania trapezowego z grid.w_trapz,
-        - wszystko jest próbnikowane na tej samej siatce radialnej.
-
-    Zwracamy liczbę rzeczywistą (float64).
-
-    Parametry
-    ---------
-    grid : RadialGrid
-        Siatka radialna (r, w_trapz).
-    V_core_array : np.ndarray, shape (N,)
-        V_{A+}(r) w Hartree na siatce grid.r.
-    U_i_array : np.ndarray, shape (N,)
-        Potencjał zniekształcający kanału wejściowego U_i(r) w Hartree,
-        na tej samej siatce. (Występuje w części δ_{L,0}.)
-    bound_i : BoundOrbital
-        Orbital związany stanu początkowego Φ_i (u_i(r)).
-    bound_i: BoundOrbital
-        Orbital związany stanu początkowego Φ_i (u_i(r)).
-    bound_f : Union[BoundOrbital, ContinuumWave]
-        Orbital stanu końcowego Φ_f.
-        - Dla wzbudzenia: BoundOrbital (u_f(r)).
-        - Dla jonizacji: ContinuumWave (chi_eject(r)).
-    cont_i : ContinuumWave
-        Fala rozpraszania w kanale wejściowym χ_i(r).
-        UWAGA: musi być policzona przy energii wejściowej elektron/pocisk.
-    cont_f : ContinuumWave
-        Fala rozpraszania w kanale wyjściowym χ_f(r),
-        przy energii wyjściowej (po utracie ΔE).
-    L : int
-        Rząd multipola (L_T w artykule). L = 0,1,2,...
-
-    Zwraca
-    -------
-    I_L : float
-        Wartość radialnej całki dla multipola L.
-
-    Błędy
-    -----
-    ValueError, jeśli kształty nie pasują albo są NaNy.
-
-    Uwaga fizyczna
-    --------------
-    To jest *radialna* część amplitudy DWBA. Pełna amplituda (f i g
-    w artykule) ma dodatkowo współczynniki kątowe (Clebsch-Gordan,
-    Wigner 3j, 6j, fazy (-1)^...), spinowe itp., które zależą
-    od konkretnego przejścia (ℓ_i -> ℓ_f). Te współczynniki
-    zrobimy później na poziomie wyżej.
+    Optimization:
+    - We broadcast r1 (col) and r2 (row) to build A_L matrix (N x N).
+    - We compute the double integral as a vector-matrix-vector product.
+    
+    Memory usage:
+    - A_L matrix: N*N * 8 bytes. For N=5000: ~25M * 8 = 200MB. Acceptable.
     """
     r = grid.r
     w = grid.w_trapz
+    
     if not (r.shape == w.shape == V_core_array.shape == U_i_array.shape):
         raise ValueError("radial_ME_single_L: grid/core/U_i shape mismatch.")
 
@@ -257,39 +124,74 @@ def radial_ME_single_L(
     if not (u_i.shape == u_f.shape == chi_i.shape == chi_f.shape == r.shape):
         raise ValueError("radial_ME_single_L: wavefunction/grid shape mismatch.")
 
-    # wejściowa część (czynnik od r1):
-    # outer_factor[i] = w[i] * χ_f[i] * χ_i[i]
-    outer_factor = w * chi_f * chi_i
+    # 1. Precompute densities (including weights for integration)
+    # The radial integral I_L separates into an integral over r1 and r2.
+    # We define "densities" that absorb the integration weights w_trapz.
+    # 
+    # rho1(r1) = w(r1) * chi_f(r1) * chi_i(r1)    (Scattering density)
+    # rho2(r2) = w(r2) * u_f(r2) * u_i(r2)        (Bound-state density)
+    
+    rho1 = w * chi_f * chi_i
+    rho2 = w * u_f * u_i
+    
+    # 2. Construct Kernel Matrix A_L(r1, r2)
+    # The interaction kernel A_L(r1, r2) arises from the multipole expansion of 1/|r1-r2|.
+    #
+    # Formula:
+    #    A_L(r1, r2) = r_<^L / r_>^{L+1}  +  [ V_core(r1) - U_i(r1) ] * delta_{L,0}
+    #
+    # We use NumPy broadcasting to create an (N x N) matrix where:
+    # - rows correspond to r1
+    # - columns correspond to r2 (or vice versa, depending on indexing).
+    #
+    # Here:
+    # r1_col shape (N, 1) -> Represents r1
+    # r2_row shape (1, N) -> Represents r2
+    
+    r1_col = r[:, np.newaxis]
+    r2_row = r[np.newaxis, :]
+    
+    # Identify r_< (min) and r_> (max) for each pair (r1, r2)
+    r_less = np.minimum(r1_col, r2_row)
+    r_gtr  = np.maximum(r1_col, r2_row)
+    
+    # Calculate the Coulomb multipole term: r_<^L / r_>^(L+1)
+    # We use errstate to safely handle the potential singularity at r=0 (though grid starts >0).
+    with np.errstate(divide='ignore', invalid='ignore'):
+         kernel = (r_less ** L) / (r_gtr ** (L + 1))
+    
+    # Sanitize kernel (replace NaNs/Infs with 0 if any appear)
+    if not np.all(np.isfinite(kernel)):
+        kernel[~np.isfinite(kernel)] = 0.0
 
-    # wewnętrzna część (czynnik od r2):
-    # inner_base[j] = w[j] * u_f[j] * u_i[j]
-    inner_base = w * u_f * u_i
+    # Monopole Correction (L=0)
+    # The term [ V_core(r1) - U_i(r1) ] appears only for L=0 (spherical orthogonality).
+    # This term depends ONLY on r1, so it is constant across all r2 (columns).
+    if L == 0:
+        # V_core_array, U_i_array are 1D arrays of size N (function of r1).
+        # We broadcast them to (N, 1) to add to the (N, N) kernel matrix.
+        correction = (V_core_array - U_i_array)[:, np.newaxis]
+        kernel += correction
 
-    I_L_accum = 0.0
-
-    # stream po i:
-    for i in range(r.size):
-        r1 = r[i]
-        # zbuduj A_L(r1, r2_j) dla wszystkich j
-        Arow = _kernel_row_A_L(
-            r1_val=r1,
-            r_grid=r,
-            L=L,
-            V_core_r1=V_core_array[i],
-            U_i_r1=U_i_array[i]
-        )
-        # składamy wewnętrzną sumę po r2:
-        # inner_sum_i = Σ_j inner_base[j] * A_L(r1, r2_j)
-        inner_sum_i = float(np.dot(inner_base, Arow))
-
-        # dorzucamy do całki z czynnikiem outer_factor[i]
-        I_L_accum += outer_factor[i] * inner_sum_i
-
-    # sanity
-    if not np.isfinite(I_L_accum):
-        raise ValueError("radial_ME_single_L: non-finite result (overflow/NaN).")
-
-    return float(I_L_accum)
+    # 3. Double Integration
+    # We want to compute:
+    #    I_L = Sum_{i,j} rho1[i] * A_L[i,j] * rho2[j]
+    #
+    # In matrix notation: I_L = rho1^T @ A_L @ rho2
+    #
+    # Step 3a: Integrate over r2 (inner integral)
+    # This computes the potential V_L(r1) induced by rho2(r2).
+    # integrated_r2[i] = Sum_j A_L[i,j] * rho2[j]
+    integrated_r2 = np.dot(kernel, rho2)
+    
+    # Step 3b: Integrate over r1 (outer integral)
+    # I_L = Sum_i rho1[i] * integrated_r2[i]
+    I_L = np.dot(rho1, integrated_r2)
+    
+    if not np.isfinite(I_L):
+        raise ValueError("radial_ME_single_L: non-finite result detected.")
+        
+    return float(I_L)
 
 
 def radial_ME_all_L(

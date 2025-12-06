@@ -385,34 +385,34 @@ def inspect_distorting_potential(
     n_preview: int = 5
 ) -> Tuple[float, float]:
     """
-    Diagnostic helper, analogous do inspect_core_potential().
+    diagnostic helper, analogous to inspect_core_potential().
 
-    Sprawdza zachowanie potencjału zniekształcającego przy małym r i dużym r.
+    Checks the behavior of the distorting potential at small r and large r.
 
-    Z punktu widzenia artykułu:
-    - przy bardzo dużym r chcemy U(r)->0,
-    - blisko jądra U(r) ≈ V_core(r) + duża dodatnia część Hartree,
-      więc może nie być trywialne w znaku.
+    From the article's perspective:
+    - at very large r, we require U(r) -> 0,
+    - close to the nucleus, U(r) approx V_core(r) + large positive Hartree part,
+      so the sign might be non-trivial.
 
     Parameters
     ----------
     grid : RadialGrid
         Radial grid.
     U : DistortingPotential
-        Wynik build_distorting_potentials(...).
+        Result from build_distorting_potentials(...).
     n_preview : int
-        Ile pierwszych/ostatnich punktów chcemy użyć do oszacowania.
+        Number of first/last points to use for estimation.
 
     Returns
     -------
     (U_small, U_large) : tuple of floats
-        Przybliżona wartość U(r) na najmniejszym i największym r siatki.
-        To jest szybki sanity check.
+        Approximate value of U(r) at the smallest and largest grid r.
+        This provides a quick sanity check.
 
     Notes
     -----
-    Fizycznie oczekujemy:
-    - |U_large| << |V_core_large|, powinno iść do zera.
+    Physically we expect:
+    - |U_large| << |V_core_large|, it should go to zero asymptotically.
     """
     r = grid.r
     n_preview = max(1, min(n_preview, r.size))

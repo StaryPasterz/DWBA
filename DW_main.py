@@ -92,6 +92,10 @@ def get_energy_list_interactive():
 # --- Data Management ---
 
 def load_results(filename):
+    """
+    Load existing results from a JSON file.
+    Returns an empty dict if file does not exist or is corrupt.
+    """
     if os.path.exists(filename):
         try:
             with open(filename, "r") as f:
@@ -101,6 +105,10 @@ def load_results(filename):
     return {}
 
 def save_results(filename, new_data_dict):
+    """
+    Update and save results to JSON.
+    Merges new_data_dict into existing data (by key) to prevent data loss.
+    """
     current = load_results(filename)
     current.update(new_data_dict)
     with open(filename, "w") as f:
@@ -108,6 +116,10 @@ def save_results(filename, new_data_dict):
     print(f"\n[INFO] Results saved to {filename}")
 
 def check_file_exists_warning(filename):
+    """
+    Warn the user if the output file already exists.
+    Returns True if user wants to continue (append), False to abort.
+    """
     if os.path.exists(filename):
         print(f"\n[WARNING] File '{filename}' already exists!")
         print("New results will be appended/merged into this file.")
@@ -119,6 +131,15 @@ def check_file_exists_warning(filename):
 # --- Calculation Routines ---
 
 def run_scan_excitation(run_name):
+    """
+    Interactive workflow for Excitation Cross Section calculation.
+    
+    Steps:
+    1. Ask user for Nuclear Charge (Z) and quantum numbers (n, l) for Initial/Final states.
+    2. Define the energy grid (Single point, Linear, or Custom list).
+    3. Loop over energies, calling `compute_total_excitation_cs`.
+    4. Save results to `results_{run_name}_exc.json`.
+    """
     filename = f"results_{run_name}_exc.json"
     
     # Pre-check if we haven't already
@@ -130,7 +151,7 @@ def run_scan_excitation(run_name):
 
     print("\n=== EXCITATION CALCULATION ===")
     Z = get_input_float("Nuclear Charge Z", 1.0)
-    
+      
     print("Initial State:")
     ni = get_input_int("  n", 1)
     li = get_input_int("  l", 0)
@@ -185,7 +206,18 @@ def run_scan_excitation(run_name):
     save_results(filename, {key: results})
     print("Calculation complete.")
 
+
 def run_scan_ionization(run_name):
+    """
+    Interactive workflow for Ionization Cross Section calculation.
+    
+    Steps:
+    1. Ask user for Target parameters.
+    2. Define energy grid.
+    3. Loop over incident energies.
+    4. Provide M-Tong scaling (BE-scaling) output for comparison.
+    5. Save results to `results_{run_name}_ion.json`.
+    """
     filename = f"results_{run_name}_ion.json"
     
     if not check_file_exists_warning(filename):

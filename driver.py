@@ -116,7 +116,7 @@ def compute_total_excitation_cs(
     core_params: CorePotentialParams,
     r_min: float = 1e-5,
     r_max: float = 200.0,
-    n_points: int = 4000,
+    n_points: int = 5000,
 ) -> DWBAResult:
     """
     Main high-level function.
@@ -155,9 +155,12 @@ def compute_total_excitation_cs(
     t4 = time.perf_counter()
 
     # 5. Continuum waves
-    # Charge of the target seen by the scattering electron:
-    # Target = Core + ActiveElectron.
-    # Charge = Z_core - 1.
+    # Effective Ionic Charge (z_ion) for Asymptotic Matching:
+    # The incident/scattered electron sees the target as a whole.
+    # Target = Core (+Zc) + Bound Active Electron (-1)
+    # Net Charge = Zc - 1.
+    # This 'z_ion' is passed to the continuum solver to select the correct
+    # asymptotic behavior (Coulomb vs Bessel).
     z_ion = core_params.Zc - 1.0
 
     E_final_eV = E_incident_eV - dE_target_eV
