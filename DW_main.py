@@ -9,13 +9,14 @@ Modes:
 3. Generate Plots (Visualize previously saved results)
 4. Quit
 
-All results are saved to 'scan_results.json'.
+Results are saved to 'results_[RUN_NAME]_[TYPE].json'.
 """
 
 import numpy as np
 import json
 import os
 import sys
+import glob
 from dataclasses import asdict
 
 from driver import (
@@ -29,8 +30,6 @@ from ionization import (
 )
 from potential_core import CorePotentialParams
 import plotter # Import plotter module
-
-RESULTS_FILE = "scan_results.json"
 
 # --- Input Helpers ---
 
@@ -92,26 +91,44 @@ def get_energy_list_interactive():
 
 # --- Data Management ---
 
-def load_results():
-    if os.path.exists(RESULTS_FILE):
+def load_results(filename):
+    if os.path.exists(filename):
         try:
-            with open(RESULTS_FILE, "r") as f:
+            with open(filename, "r") as f:
                 return json.load(f)
         except:
             return {}
     return {}
 
-def save_results(new_data_dict):
-    current = load_results()
+def save_results(filename, new_data_dict):
+    current = load_results(filename)
     current.update(new_data_dict)
-    with open(RESULTS_FILE, "w") as f:
+    with open(filename, "w") as f:
         json.dump(current, f, indent=2)
-    print(f"\n[INFO] Results saved to {RESULTS_FILE}")
+    print(f"\n[INFO] Results saved to {filename}")
+
+def check_file_exists_warning(filename):
+    if os.path.exists(filename):
+        print(f"\n[WARNING] File '{filename}' already exists!")
+        print("New results will be appended/merged into this file.")
+        confirm = input("Continue? (y/N): ").strip().lower()
+        if confirm != 'y':
+            return False
+    return True
 
 # --- Calculation Routines ---
 
-def run_scan_excitation():
-    print("\n=== EXCITAION CALCULATION ===")
+def run_scan_excitation(run_name):
+    filename = f"results_{run_name}_exc.json"
+    
+    # Pre-check if we haven't already
+    # But usually we just append. Let's just warn if it's the first write?
+    # Actually, let's warn at the start of calculation if file exists.
+    if not check_file_exists_warning(filename):
+        print("Aborting calculation.")
+        return
+
+    print("\n=== EXCITATION CALCULATION ===")
     Z = get_input_float("Nuclear Charge Z", 1.0)
     
     print("Initial State:")
@@ -131,6 +148,7 @@ def run_scan_excitation():
         L_max=10, 
         L_i_total=li
     )
+    # Default core params (Coulomb only), logic could be extended for Ne+ etc.
     core_params = CorePotentialParams(Zc=Z, a1=0, a2=0, a3=0, a4=0, a5=0, a6=0)
 
     key = f"Excitation_Z{Z}_n{ni}l{li}_to_n{nf}l{lf}"
@@ -164,10 +182,16 @@ def run_scan_excitation():
         except Exception as e:
             print(f"Error: {e}")
 
-    save_results({key: results})
+    save_results(filename, {key: results})
     print("Calculation complete.")
 
-def run_scan_ionization():
+def run_scan_ionization(run_name):
+    filename = f"results_{run_name}_ion.json"
+    
+    if not check_file_exists_warning(filename):
+        print("Aborting calculation.")
+        return
+
     print("\n=== IONIZATION CALCULATION ===")
     Z = get_input_float("Nuclear Charge Z", 1.0)
     
@@ -216,14 +240,37 @@ def run_scan_ionization():
         except Exception as e:
             print(f"Error: {e}")
 
-    save_results({key: results})
+    save_results(filename, {key: results})
     print("Calculation complete.")
 
 # --- Visualization ---
 
 def run_visualization():
     print("\n=== PLOT GENERATION ===")
-    print("Select Style:")
+    
+    # List JSON files
+    files = glob.glob("*.json")
+    if not files:
+        print("No .json result files found in current directory.")
+        return
+        
+    print("Available Result Files:")
+    for idx, f in enumerate(files):
+        print(f"{idx+1}. {f}")
+        
+    print("0. Cancel")
+    
+    try:
+        choice_idx = int(input("Select file number: ")) - 1
+    except ValueError:
+        return
+        
+    if choice_idx < 0 or choice_idx >= len(files):
+        return
+        
+    selected_file = files[choice_idx]
+    
+    print("\nSelect Style:")
     print("1. Standard (eV / cm^2)")
     print("2. Atomic (Ha / a0^2)")
     print("3. Article (E/Thr / pi*a0^2)")
@@ -240,22 +287,15 @@ def run_visualization():
     }
     style = style_map.get(choice, 'std')
     
-    # We can invoke plotter module directly if we adapt it, 
-    # but plotter.py uses sys.argv in main.
-    # Cleaner way: Call plotter logic function. 
-    # But plotter main() is monolithic.
-    # I will rely on os.system for simplicity or rewrite plotter call.
-    # Actually, importing plotter and calling main() with sys.argv patched is Pythonic enough for this script.
+    print(f"Generating plot from '{selected_file}' with style '{style}'...")
     
-    print(f"Generating plot with style '{style}'...")
-    
-    # Backup argv
+    # Pass arguments to plotter
     old_argv = sys.argv
-    sys.argv = ["plotter.py", style]
+    sys.argv = ["plotter.py", style, selected_file]
     try:
         plotter.main()
     except SystemExit:
-        pass # Plotter might exit, catch it
+        pass 
     except Exception as e:
         print(f"Plotter Error: {e}")
     finally:
@@ -264,23 +304,40 @@ def run_visualization():
 # --- Main Loop ---
 
 def main():
+    print("\n===========================================")
+    print("   DWBA CALCULATION SUITE - UNIFIED V2")
+    print("===========================================")
+    
+    run_name = input("Enter Simulation Name (e.g. 'run1'): ").strip()
+    if not run_name:
+        run_name = "default"
+        print("Using name: 'default'")
+        
+    print(f"Active Run Name: {run_name}")
+    print(f"Outputs will be: results_{run_name}_exc.json / results_{run_name}_ion.json")
+
     while True:
-        print("\n===========================================")
-        print("   DWBA CALCULATION SUITE - UNIFIED V1")
-        print("===========================================")
+        print("\n--- Main Menu ---")
+        print(f"Current Run: {run_name}")
         print("1. Calculate Excitation Cross Sections")
         print("2. Calculate Ionization Cross Sections")
-        print("3. Generate Plots (from 'scan_results.json')")
+        print("3. Generate Plots (Load any file)")
+        print("4. Change Run Name")
         print("q. Quit")
         
         choice = input("\nSelect Mode: ").strip().lower()
         
         if choice == '1':
-            run_scan_excitation()
+            run_scan_excitation(run_name)
         elif choice == '2':
-            run_scan_ionization()
+            run_scan_ionization(run_name)
         elif choice == '3':
             run_visualization()
+        elif choice == '4':
+            new_name = input("Enter new Simulation Name: ").strip()
+            if new_name:
+                run_name = new_name
+                print(f"Run Name changed to: {run_name}")
         elif choice == 'q':
             print("Goodbye.")
             break

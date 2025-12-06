@@ -23,11 +23,11 @@ AU_TO_EV = 27.211386245988
 A0_SQ_CM2 = 2.8002852e-17
 PI_A0_SQ_CM2 = np.pi * A0_SQ_CM2
 
-def load_data():
-    if not os.path.exists(RESULTS_FILE):
-        print(f"File {RESULTS_FILE} not found.")
-        sys.exit(1)
-    with open(RESULTS_FILE, "r") as f:
+def load_data(filename):
+    if not os.path.exists(filename):
+        print(f"File {filename} not found.")
+        return {}
+    with open(filename, "r") as f:
         return json.load(f)
 
 def get_style_config(style_name):
@@ -55,11 +55,18 @@ def get_style_config(style_name):
 
 def main():
     style = 'std'
+    input_file = RESULTS_FILE
+    
+    # Parse arguments: [script, style, input_file]
     if len(sys.argv) > 1:
         style = sys.argv[1]
+    if len(sys.argv) > 2:
+        input_file = sys.argv[2]
     
     print(f"Generating plots with style: {style}")
-    data = load_data()
+    print(f"Reading from: {input_file}")
+    
+    data = load_data(input_file)
     if not data:
         print("No data found in JSON.")
         return
@@ -130,11 +137,24 @@ def main():
         elif style == 'std':
              pass 
 
-    for i in range(n, len(axes)):
-        axes[i].axis('off')
+    # Handle empty subplots
+    if len(axes) > n:
+        for i in range(n, len(axes)):
+            axes[i].axis('off')
         
     plt.tight_layout()
-    out_name = f"plot_combined{suffix}.png"
+    
+    # Derive output filename
+    # e.g. results_run1_exc.json -> plot_run1_exc_std.png
+    base = os.path.splitext(os.path.basename(input_file))[0]
+    
+    # Heuristic for nicer names
+    if base.startswith("results_"):
+        base = base.replace("results_", "plot_", 1)
+    else:
+        base = f"plot_{base}"
+        
+    out_name = f"{base}{suffix}.png"
     plt.savefig(out_name, dpi=150)
     print(f"Saved {out_name}")
 
