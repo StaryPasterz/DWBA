@@ -76,6 +76,19 @@ def dcs_dwba(
       
     where N_equiv is the number of equivalent electrons in the subshell,
     and (2L_i + 1) is the statistical weight of the initial target state.
+
+    Convergence Note:
+    -----------------
+    The partial wave series for f(theta) and g(theta) can be slow to converge,
+    especially for:
+    1. Small angles (forward scattering).
+    2. High energies.
+    3. Dipole-allowed transitions (long-range 1/r^2 interaction).
+    
+    In professional codes (like CCC or standard DWBA), a "Born Top-Up" procedure is often used
+    to analytically complete the sum for high L using the Plane Wave Born Approximation.
+    Current implementation sums only up to L_max provided in the channel spec.
+    User should ensure L_max is sufficient (e.g. L_max=10-20 for low energy, higher for high energy).
     """
     if k_i_au <= 0.0 or k_f_au <= 0.0:
         return np.zeros_like(theta_grid, dtype=float)

@@ -1,64 +1,46 @@
 # dwba_matrix_elements.py
 #
-# Radial DWBA matrix elements for electron-impact excitation,
-# following the formulation in the article.
+# Radial DWBA matrix elements for electron-impact excitation and ionization.
 #
-# Goal:
-#   For a given transition Φ_i -> Φ_f in the target and given
-#   distorted-wave scattering states χ_i(k_i,r), χ_f(k_f,r),
-#   compute the *radial* integrals I_L that appear in the DWBA
-#   amplitudes (direct and exchange).
+# THEORY & PHYSICS
+# ----------------
+# This module computes the radial integrals I_L involved in the T-matrix amplitudes.
 #
-# Theory recap (atomic units):
+# The T-matrix elements for a transition i -> f are defined as:
 #
-#   V_i(r1,r2) =
-#       1/|r1 - r2|  +  [ V_core(r1) - U_i(r1) ]
+#   T_{fi} = < chi_f(r1) psi_f(r2..N) | V - U_f | A { psi_i(r2..N) chi_i(r1) } >
 #
-#   1/|r1 - r2| multipole expansion =>
+# In the Distorted Wave Born Approximation (DWBA) with a Single-Active-Electron (SAE) model:
+# - psi_i, psi_f are target bound states (BoundOrbital).
+# - chi_i, chi_f are distorted waves (ContinuumWave) for the projectile.
+# - The interaction V is the Coulomb interaction 1/r12.
 #
-#       1/|r1-r2| =
-#         4π Σ_{L,M} [ r_<^L / r_>^{L+1} ] Y_{LM}^*(Ω1) Y_{LM}(Ω2)
+# We compute two types of radial integrals corresponding to Direct and Exchange amplitudes:
 #
-# After angular reduction (spherical harmonics algebra, Clebsch-Gordan,
-# Wigner 3j/6j factors), the DWBA "direct" amplitude f involves radial
-# integrals of the general form:
+# 1. DIRECT Integral (I_L^D):
+#    Arises from the term where electrons are NOT swapped.
+#    I_L^D = Integral[ dr1 dr2  chi_f(r1) chi_i(r1) * (r_<^L / r_>^{L+1}) * u_f(r2) u_i(r2) ]
+#    * Corrections: For L=0, we add the orthogonality term [V_core(r1) - U_i(r1)] * chi_f * chi_i * delta(orthog).
 #
-#   I_L =
-#     ∫_0^∞ dr1 ∫_0^∞ dr2
-#       χ_f(r1) u_f(r2)
-#       A_L(r1,r2)
-#       u_i(r2) χ_i(r1)
+# 2. EXCHANGE Integral (I_L^E):
+#    Arises from the term where the projectile electron is swapped with the target electron.
+#    I_L^E = Integral[ dr1 dr2  chi_f(r2) chi_i(r1) * (r_<^L / r_>^{L+1}) * u_f(r1) u_i(r2) ]
+#          = Integral[ dr1 dr2  (u_f(r1) chi_i(r1)) * (r_<^L / r_>^{L+1}) * (chi_f(r2) u_i(r2)) ]
 #
-# where
+# UNITS
+# -----
+# - All inputs and outputs are in HARTREE atomic units.
+# - Lengths: Bohr radii (a0).
+# - Energies: Hartree (Ha).
+# - Probabilities/Integrals: Consistent with wavefunctions normalized to 1 (bound) or unit amplitude (continuum).
 #
-#   A_L(r1,r2) = r_<^L / r_>^{L+1}
-#                + [V_core(r1) - U_i(r1)] δ_{L,0}
+# IMPLEMENTATION NOTES
+# --------------------
+# - This module focuses solely on the radial part. Angular factors (3j/6j symbols) are applied in `dwba_coupling.py`.
+# - Integration is performed using matrix-vector multiplication for efficiency on non-uniform grids.
+# - We utilize the multipole expansion of 1/r12:  Sum_L (r_<^L / r_>^{L+1}) P_L(cos theta).
 #
-# and u_i, u_f are reduced radial bound states (from bound_states.py),
-# χ_i, χ_f are distorted-wave continuum solutions (from continuum.py),
-# V_core is the SAE core potential (potential_core.py),
-# U_i is the entrance-channel distorted potential (distorting_potential.py).
-#
-# NOTE:
-#   The angular algebra (which builds the physical scattering amplitudes
-#   f and g, i.e. direct and exchange, including spin-statistics factors
-#   and Wigner symbols) is NOT done here. That depends on (l_i, l_f, L, S, ...)
-#   and we will handle it in a higher-level function once we encode the
-#   exact coupling from the article.
-#
-# In this file we provide:
-#
-#   - radial_ME_single_L(...) : compute I_L for a single multipole L
-#     using stable streamed integration on a nonuniform grid.
-#
-#   - radial_ME_all_L(...)    : compute all I_L for L=0..L_max.
-#
-# This is the numerically heavy part; everything else in DWBA sits on top.
-#
-# All arrays are assumed real (the article treats χ as real distorted
-# waves with a phase shift, not explicitly complex Coulomb waves).
-#
-# Units: atomic units throughout.
+
 
 
 from __future__ import annotations

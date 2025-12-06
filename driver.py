@@ -2,11 +2,23 @@
 #
 # High-level orchestration for DWBA excitation calculations.
 #
-# Units:
-#   - Internally everything is atomic units (hartree for energies, bohr for length).
-#   - User-facing energy is in eV.
-#   - Cross sections reported in both a0^2 and cm^2.
+# DESCRIPTION
+# -----------
+# This module acts as the computation engine for electron-impact excitation cross sections.
+# It coordinates the entire pipeline:
+# 1. Calculation of Target Bound States (Initial & Final).
+# 2. Construction of Distorted Potentials (Static-Exchange).
+# 3. Solving for Continuum Scattering Waves (Distorted Waves).
+# 4. Computation of Radial T-Matrix Integrals (Direct & Exchange).
+# 5. Angular Coupling and Cross Section Evaluation.
+# 6. Application of BE-Scaling (M-Tong method) for improved accuracy near threshold.
 #
+# UNITS
+# -----
+# - Internal Physics: Hartree Atomic Units (energy in Ha, length in a0).
+# - Input/Output API: Energy in eV, Cross Sections in cm^2 (and a0^2).
+#
+
 
 from __future__ import annotations
 import numpy as np
