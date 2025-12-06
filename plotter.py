@@ -43,6 +43,11 @@ def get_style_config(style_name):
         sig_conv = lambda s: s / A0_SQ_CM2
         return ev_conv, sig_conv, "Energy [$E/E_{thr}$]", r"Cross Section [a.u.]", "_article"
         
+    elif style_name == 'ev_au':
+        ev_conv = lambda e, thr: e 
+        sig_conv = lambda s: s / A0_SQ_CM2
+        return ev_conv, sig_conv, "Incident Energy [eV]", r"Cross Section [a.u.]", "_ev_au"
+
     else: # std
         ev_conv = lambda e, thr: e
         sig_conv = lambda s: s
