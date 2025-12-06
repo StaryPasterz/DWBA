@@ -1,183 +1,291 @@
 """
 DW_main.py
 
-Główny punkt wejścia do obliczeń DWBA (Wzbudzenie i Jonizacja).
-Obsługuje interakcję z użytkownikiem i uruchamia odpowiednie solvery.
+Unified Interface for Distorted Wave Born Approximation (DWBA) Calculations and Analysis.
+
+Modes:
+1. Excitation Scan (Single Point or Grid)
+2. Ionization Scan (Single Point or Grid)
+3. Generate Plots (Visualize previously saved results)
+4. Quit
+
+All results are saved to 'scan_results.json'.
 """
 
-import sys
 import numpy as np
-from potential_core import CorePotentialParams
+import json
+import os
+import sys
+from dataclasses import asdict
+
 from driver import (
-    ExcitationChannelSpec,
     compute_total_excitation_cs,
-    ev_to_au,
+    ExcitationChannelSpec,
+    ev_to_au
 )
 from ionization import (
-    IonizationChannelSpec,
     compute_ionization_cs,
+    IonizationChannelSpec
 )
+from potential_core import CorePotentialParams
+import plotter # Import plotter module
 
-AU_TO_EV = 27.211386245988 
-A0_SQ_CM2 = 2.8002852e-17
-PI_A0_SQ_CM2 = np.pi * A0_SQ_CM2
+RESULTS_FILE = "scan_results.json"
 
-def get_user_input_float(prompt: str, default: float = None) -> float:
+# --- Input Helpers ---
+
+def get_input_float(prompt, default=None):
+    if default is not None:
+        val = input(f"{prompt} [{default}]: ")
+        if not val.strip(): return default
+    else:
+        val = input(f"{prompt}: ")
     try:
-        if default is not None:
-            raw = input(f"{prompt} [{default}]: ")
-            if not raw.strip():
-                return default
-        else:
-            raw = input(f"{prompt}: ")
-        return float(raw)
+        return float(val)
     except ValueError:
         print("Invalid number.")
-        return get_user_input_float(prompt, default)
+        return get_input_float(prompt, default)
 
-def get_user_input_int(prompt: str, default: int = None) -> int:
+def get_input_int(prompt, default=None):
+    if default is not None:
+        val = input(f"{prompt} [{default}]: ")
+        if not val.strip(): return default
+    else:
+        val = input(f"{prompt}: ")
     try:
-        if default is not None:
-            raw = input(f"{prompt} [{default}]: ")
-            if not raw.strip():
-                return default
-        else:
-            raw = input(f"{prompt}: ")
-        return int(raw)
+        return int(val)
     except ValueError:
         print("Invalid integer.")
-        return get_user_input_int(prompt, default)
+        return get_input_int(prompt, default)
 
-def format_sigma(sigma_cm2: float, unit: str) -> str:
-    if unit == "cm2":
-        return f"{sigma_cm2:.4e} cm^2"
-    elif unit == "a02":
-        val = sigma_cm2 / A0_SQ_CM2
-        return f"{val:.4e} a0^2"
-    elif unit == "pia02":
-        val = sigma_cm2 / PI_A0_SQ_CM2
-        return f"{val:.4e} pi*a0^2"
-    return f"{sigma_cm2:.4e} ?"
-
-def format_energy(E_eV: float, unit: str) -> str:
-    if unit == "eV":
-        return f"{E_eV:.4f} eV"
-    elif unit == "Ha":
-        return f"{E_eV / AU_TO_EV:.4f} Ha"
-    return f"{E_eV:.4f} ?"
-
-def main():
-    print("=== DWBA Electron Impact Cross Section Calculator ===")
-    print("1. Excitation (Bound -> Bound)")
-    print("2. Ionization (Bound -> Continuum)")
+def get_energy_list_interactive():
+    print("\n--- Energy Selection ---")
+    print("1. Single Energy")
+    print("2. Linear Grid (Start, End, Step)")
+    print("3. Custom List (comma separated)")
     
-    mode = get_user_input_int("Select mode", 1)
+    choice = input("Select mode [2]: ").strip()
+    if not choice: choice = '2'
     
-    # Units selection
-    print("\n--- Unit Selection ---")
-    print("Select Energy unit:")
-    print("1. eV (Default)")
-    print("2. Hartree")
-    u_e = get_user_input_int("Choice", 1)
-    unit_E = "Ha" if u_e == 2 else "eV"
-    
-    print("Select Cross Section unit:")
-    print("1. cm^2 (Default)")
-    print("2. a0^2 (Bohr radius squared)")
-    print("3. pi * a0^2")
-    u_s = get_user_input_int("Choice", 1)
-    if u_s == 2:
-        unit_Sig = "a02"
-    elif u_s == 3:
-        unit_Sig = "pia02"
-    else:
-        unit_Sig = "cm2"
-
-    # Common params
-    print("\n--- Core Potential Parameters (H-like / generic) ---")
-    Z = get_user_input_float("Nuclear charge Z", 1.0)
-    core_params = CorePotentialParams(Zc=Z, a1=0.0, a2=0.0, a3=0.0, a4=0.0, a5=0.0, a6=0.0)
-
-    print("\n--- Incident Energy ---")
-    
-    if unit_E == "Ha":
-        E_inc_au = get_user_input_float("Incident Electron Energy [Ha]", 2.0)
-        E_inc_eV = E_inc_au * AU_TO_EV
-    else:
-        E_inc_eV = get_user_input_float("Incident Electron Energy [eV]", 50.0)
-
-    if mode == 1:
-        # EXCITATION
-        print("\n--- Excitation Channel ---")
-        l_i = get_user_input_int("Initial l_i", 0)
-        n_i = get_user_input_int("Initial n_index (1=ground)", 1)
+    if choice == '1':
+        E = get_input_float("Energy [eV]", 50.0)
+        return np.array([E])
         
-        l_f = get_user_input_int("Final l_f", 1)
-        n_f = get_user_input_int("Final n_index", 1)
+    elif choice == '2':
+        start = get_input_float("  Start [eV]", 10.0)
+        end   = get_input_float("  End   [eV]", 200.0)
+        step  = get_input_float("  Step  [eV]", 5.0)
+        if step <= 0: step = 1.0
+        return np.arange(start, end + 0.0001, step)
         
-        N_equiv = get_user_input_int("Number of equivalent electrons", 1)
-        L_max = get_user_input_int("Max Multipole L", 5)
-        L_i_tot = get_user_input_int("Target Total L_i", l_i)
-        
-        spec = ExcitationChannelSpec(
-            l_i=l_i, l_f=l_f, 
-            n_index_i=n_i, n_index_f=n_f,
-            N_equiv=N_equiv, L_max=L_max, L_i_total=L_i_tot
-        )
-        
-        print(f"\nComputing Excitation σ for E={format_energy(E_inc_eV, unit_E)}...")
+    elif choice == '3':
+        raw = input("Enter energies (e.g. 10.0, 15.5, 20): ")
         try:
-            res = compute_total_excitation_cs(E_inc_eV, spec, core_params)
-            
+            vals = [float(x.strip()) for x in raw.split(',')]
+            return np.array(vals)
+        except ValueError:
+            print("Invalid format. Defaulting to 50.0 eV.")
+            return np.array([50.0])
+    
+    print("Invalid choice. Defaulting to Grid 10-200.")
+    return np.arange(10.0, 201.0, 5.0)
+
+# --- Data Management ---
+
+def load_results():
+    if os.path.exists(RESULTS_FILE):
+        try:
+            with open(RESULTS_FILE, "r") as f:
+                return json.load(f)
+        except:
+            return {}
+    return {}
+
+def save_results(new_data_dict):
+    current = load_results()
+    current.update(new_data_dict)
+    with open(RESULTS_FILE, "w") as f:
+        json.dump(current, f, indent=2)
+    print(f"\n[INFO] Results saved to {RESULTS_FILE}")
+
+# --- Calculation Routines ---
+
+def run_scan_excitation():
+    print("\n=== EXCITAION CALCULATION ===")
+    Z = get_input_float("Nuclear Charge Z", 1.0)
+    
+    print("Initial State:")
+    ni = get_input_int("  n", 1)
+    li = get_input_int("  l", 0)
+    
+    print("Final State:")
+    nf = get_input_int("  n", 2)
+    lf = get_input_int("  l", 0)
+    
+    energies = get_energy_list_interactive()
+    
+    spec = ExcitationChannelSpec(
+        l_i=li, l_f=lf,
+        n_index_i=ni, n_index_f=nf,
+        N_equiv=1,
+        L_max=10, 
+        L_i_total=li
+    )
+    core_params = CorePotentialParams(Zc=Z, a1=0, a2=0, a3=0, a4=0, a5=0, a6=0)
+
+    key = f"Excitation_Z{Z}_n{ni}l{li}_to_n{nf}l{lf}"
+    results = []
+    
+    print(f"\nStarting calculation for {key} ({len(energies)} points)...")
+    
+    for E in energies:
+        if E <= 0.01: continue
+        print(f"E={E:.2f} eV...", end=" ", flush=True)
+        try:
+            res = compute_total_excitation_cs(E, spec, core_params, r_max=100.0, n_points=3000)
             if res.ok_open_channel:
-                print(f"\nRESULT:")
-                print(f"  Excitation Energy: {format_energy(res.E_excitation_eV, unit_E)}")
-                print(f"  Sigma DWBA:        {format_sigma(res.sigma_total_cm2, unit_Sig)}")
-                print(f"  Sigma M-Tong:      {format_sigma(res.sigma_mtong_cm2, unit_Sig)}")
+                print(f"OK. σ={res.sigma_total_cm2:.2e} cm2 ({res.sigma_total_au:.2e} au)")
+                results.append({
+                    "energy_eV": E,
+                    "sigma_au": res.sigma_total_au,
+                    "sigma_cm2": res.sigma_total_cm2,
+                    "sigma_mtong_cm2": res.sigma_mtong_cm2,
+                    "Threshold_eV": res.E_excitation_eV
+                })
             else:
-                thr = res.E_excitation_eV
-                print(f"\nChannel closed! (Threshold {format_energy(thr, unit_E)} > Incident {format_energy(E_inc_eV, unit_E)})")
+                print(f"Closed (Thr={res.E_excitation_eV:.2f})")
+                results.append({
+                    "energy_eV": E,
+                    "sigma_au": 0.0,
+                    "sigma_cm2": 0.0,
+                    "sigma_mtong_cm2": 0.0,
+                    "Threshold_eV": res.E_excitation_eV
+                })
         except Exception as e:
             print(f"Error: {e}")
-            import traceback
-            traceback.print_exc()
 
-    elif mode == 2:
-        # IONIZATION
-        print("\n--- Ionization Channel ---")
-        l_i = get_user_input_int("Initial l_i", 0)
-        n_i = get_user_input_int("Initial n_index (1=ground)", 1)
-        N_equiv = get_user_input_int("Number of equivalent electrons", 1)
-        
-        l_eject_max = get_user_input_int("Max ejected electron l (sum up to)", 3)
-        L_max = get_user_input_int("Max Multipole L (for interaction)", 5)
-        L_i_tot = get_user_input_int("Target Total L_i", l_i)
-        
-        spec = IonizationChannelSpec(
-            l_i=l_i, 
-            n_index_i=n_i, 
-            N_equiv=N_equiv,
-            l_eject_max=l_eject_max,
-            L_max=L_max,
-            L_i_total=L_i_tot
-        )
-        
-        print(f"\nComputing Ionization σ for E={format_energy(E_inc_eV, unit_E)}...")
-        print("Integration over ejected energy takes time...")
+    save_results({key: results})
+    print("Calculation complete.")
+
+def run_scan_ionization():
+    print("\n=== IONIZATION CALCULATION ===")
+    Z = get_input_float("Nuclear Charge Z", 1.0)
+    
+    print("Initial State:")
+    ni = get_input_int("  n", 1)
+    li = get_input_int("  l", 0)
+    
+    energies = get_energy_list_interactive()
+    
+    spec = IonizationChannelSpec(
+        l_i=li,
+        n_index_i=ni,
+        N_equiv=1,
+        l_eject_max=3,
+        L_max=8,
+        L_i_total=li
+    )
+    core_params = CorePotentialParams(Zc=Z, a1=0, a2=0, a3=0, a4=0, a5=0, a6=0)
+
+    key = f"Ionization_Z{Z}_n{ni}l{li}"
+    results = []
+
+    print(f"\nStarting calculation for {key} ({len(energies)} points)...")
+
+    for E in energies:
+        print(f"E={E:.2f} eV...", end=" ", flush=True)
         try:
-            res = compute_ionization_cs(E_inc_eV, spec, core_params)
+            res = compute_ionization_cs(E, spec, core_params, r_max=100.0, n_points=3000)
             
-            print(f"\nRESULT:")
-            print(f"  Ionization Potential: {format_energy(res.IP_eV, unit_E)}")
-            print(f"  Total Ionization CS:  {format_sigma(res.sigma_total_cm2, unit_Sig)}")
-                 
+            if res.sigma_total_cm2 > 0:
+                print(f"OK. σ={res.sigma_total_cm2:.2e} cm2")
+                ip = res.IP_eV
+                scale = E / (E + ip) if (E + ip) > 0 else 0.0
+                mt = res.sigma_total_cm2 * scale
+                
+                results.append({
+                    "energy_eV": E,
+                    "sigma_au": res.sigma_total_au,
+                    "sigma_cm2": res.sigma_total_cm2,
+                    "sigma_mtong_cm2": mt,
+                    "Threshold_eV": ip,
+                    "IP_eV": ip
+                })
+            else:
+                 print("Closed/Zero")
         except Exception as e:
-             print(f"Error: {e}")
-             import traceback
-             traceback.print_exc()
+            print(f"Error: {e}")
 
-    else:
-        print("Unknown mode.")
+    save_results({key: results})
+    print("Calculation complete.")
+
+# --- Visualization ---
+
+def run_visualization():
+    print("\n=== PLOT GENERATION ===")
+    print("Select Style:")
+    print("1. Standard (eV / cm^2)")
+    print("2. Atomic (Ha / a0^2)")
+    print("3. Article (E/Thr / pi*a0^2)")
+    print("4. Mixed (eV / a.u.)")
+    
+    choice = input("Choice [1]: ").strip()
+    
+    # Map to plotter style args
+    style_map = {
+        '1': 'std',
+        '2': 'atomic',
+        '3': 'article',
+        '4': 'ev_au'
+    }
+    style = style_map.get(choice, 'std')
+    
+    # We can invoke plotter module directly if we adapt it, 
+    # but plotter.py uses sys.argv in main.
+    # Cleaner way: Call plotter logic function. 
+    # But plotter main() is monolithic.
+    # I will rely on os.system for simplicity or rewrite plotter call.
+    # Actually, importing plotter and calling main() with sys.argv patched is Pythonic enough for this script.
+    
+    print(f"Generating plot with style '{style}'...")
+    
+    # Backup argv
+    old_argv = sys.argv
+    sys.argv = ["plotter.py", style]
+    try:
+        plotter.main()
+    except SystemExit:
+        pass # Plotter might exit, catch it
+    except Exception as e:
+        print(f"Plotter Error: {e}")
+    finally:
+        sys.argv = old_argv
+
+# --- Main Loop ---
+
+def main():
+    while True:
+        print("\n===========================================")
+        print("   DWBA CALCULATION SUITE - UNIFIED V1")
+        print("===========================================")
+        print("1. Calculate Excitation Cross Sections")
+        print("2. Calculate Ionization Cross Sections")
+        print("3. Generate Plots (from 'scan_results.json')")
+        print("q. Quit")
+        
+        choice = input("\nSelect Mode: ").strip().lower()
+        
+        if choice == '1':
+            run_scan_excitation()
+        elif choice == '2':
+            run_scan_ionization()
+        elif choice == '3':
+            run_visualization()
+        elif choice == 'q':
+            print("Goodbye.")
+            break
+        else:
+            print("Invalid selection.")
 
 if __name__ == "__main__":
     main()
