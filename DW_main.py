@@ -162,9 +162,19 @@ def run_scan_excitation(run_name):
     
     energies = get_energy_list_interactive()
     
+    # Convert quantum number n to sorting index n_index
+    # For a given l, the states are n=l+1, l+2, ...
+    # So index = n - l.
+    n_idx_i = ni - li
+    n_idx_f = nf - lf
+    
+    if n_idx_i < 1 or n_idx_f < 1:
+        print("Error: Invalid n, l combination (n must be > l).")
+        return
+
     spec = ExcitationChannelSpec(
         l_i=li, l_f=lf,
-        n_index_i=ni, n_index_f=nf,
+        n_index_i=n_idx_i, n_index_f=n_idx_f,
         N_equiv=1,
         L_max_integrals=15, 
         L_target_i=li,
@@ -235,9 +245,14 @@ def run_scan_ionization(run_name):
     
     energies = get_energy_list_interactive()
     
+    n_idx_i = ni - li
+    if n_idx_i < 1:
+        print("Error: Invalid n, l combination (n must be > l).")
+        return
+        
     spec = IonizationChannelSpec(
         l_i=li,
-        n_index_i=ni,
+        n_index_i=n_idx_i,
         N_equiv=1,
         l_eject_max=3,
         L_max=8,
