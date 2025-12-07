@@ -258,6 +258,7 @@ def compute_total_excitation_cs(
     print(f"  Summing Partial Waves l_i=0..{L_max_proj} ...")
     
     for l_i in range(L_max_proj + 1):
+        t_li_start = time.perf_counter()
         # Solve chi_i
         chi_i = get_continuum_wave(l_i, E_incident_eV, z_ion, U_i)
         if chi_i is None:
@@ -313,6 +314,11 @@ def compute_total_excitation_cs(
                     tgt = total_amplitudes[(Mi, Mf)]
                     tgt.f_theta += amps.f_theta
                     tgt.g_theta += amps.g_theta
+        
+        t_li_end = time.perf_counter()
+        dt_li = t_li_end - t_li_start
+        print(f"    l_i={l_i} done in {dt_li:.3f} s")
+
 
     # 6. Calc Cross Sections
     # Sum over M_f, Average over M_i (unpolarized target)

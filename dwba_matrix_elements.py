@@ -39,22 +39,18 @@
 # - This module focuses solely on the radial part. Angular factors (3j/6j symbols) are applied in `dwba_coupling.py`.
 # - Integration is performed using matrix-vector multiplication for efficiency on non-uniform grids.
 # - We utilize the multipole expansion of 1/r12:  Sum_L (r_<^L / r_>^{L+1}) P_L(cos theta).
+# - OPTIMIZATION: We utilize a kernel recurrence relation K_L = K_{L-1} * (r_</r_>) to avoid expensive power operations.
 #
-
 
 
 from __future__ import annotations
 import numpy as np
 from dataclasses import dataclass
-from typing import Dict, List, Union
+from typing import Dict, List, Union, Optional
 
 from grid import RadialGrid
-from potential_core import V_core_on_grid
 from bound_states import BoundOrbital
 from continuum import ContinuumWave
-from distorting_potential import DistortingPotential
-
-
 
 @dataclass(frozen=True)
 class RadialDWBAIntegrals:
@@ -74,52 +70,6 @@ class RadialDWBAIntegrals:
     I_L_exchange: Dict[int, float]
 
 
-def _generic_radial_integral(
-    grid: RadialGrid,
-    rho1: np.ndarray,
-    rho2: np.ndarray,
-    L: int,
-    V_correction: Optional[np.ndarray] = None
-) -> float:
-    """
-    Helper: Compute double radial integral:
-       I = ∫ dr1 ∫ dr2 rho1(r1) * A_L(r1,r2) * rho2(r2)
-    
-    where A_L(r1,r2) = r_<^L / r_>^{L+1} + V_correction(r1) * delta_{L,0}
-    """
-    r = grid.r
-    
-    # Kernel Matrix A_L(r1, r2)
-    r1_col = r[:, np.newaxis]
-    r2_row = r[np.newaxis, :]
-    
-    r_less = np.minimum(r1_col, r2_row)
-    r_gtr  = np.maximum(r1_col, r2_row)
-    
-    with np.errstate(divide='ignore', invalid='ignore'):
-         kernel = (r_less ** L) / (r_gtr ** (L + 1))
-    
-    if not np.all(np.isfinite(kernel)):
-        kernel[~np.isfinite(kernel)] = 0.0
-
-    # Monopole Correction (only for L=0 and if provided)
-    if L == 0 and V_correction is not None:
-        correction = V_correction[:, np.newaxis]
-        kernel += correction
-
-    # Integration
-    # inner: int_r2 = kernel @ rho2
-    integrated_r2 = np.dot(kernel, rho2)
-    # outer: I = rho1 @ int_r2
-    I_val = np.dot(rho1, integrated_r2)
-    
-    if not np.isfinite(I_val):
-        # Fallback?
-        return 0.0
-        
-    return float(I_val)
-
-
 def radial_ME_all_L(
     grid: RadialGrid,
     V_core_array: np.ndarray,
@@ -132,58 +82,7 @@ def radial_ME_all_L(
 ) -> RadialDWBAIntegrals:
     """
     Compute set of I_L for L = 0..L_max for both DIRECT and EXCHANGE terms.
-
-    Direct Integral:
-      rho1 = w * chi_f * chi_i
-      rho2 = w * u_f * u_i
-      Correction (L=0): [V_core - U_i] acting on projectile coord r1.
-    
-    Exchange Integral:
-      rho1 = w * chi_f * u_i    (outgoing electron 1 matches with initial bound 2 -> swapped?)
-      rho2 = w * chi_i * u_f    (incoming electron 2 matches with final bound 1)
-      
-      Wait, precise definition of Exchange integral J_L (or G_L pre-factor):
-      Standard "Ochkur" type exchange often involves 1/r12.
-      
-      Direct:  < chi_f(1) u_f(2) | V | chi_i(1) u_i(2) >
-      Exchange: < chi_f(2) u_f(1) | V | chi_i(1) u_i(2) >  (swapped electrons in bra)
-      
-      Integration coords (r1, r2):
-      Direct:
-         Part 1 (V_interaction): 1/r12  ->  Standard kernel.
-         Densities: (chi_f(1) chi_i(1)) and (u_f(2) u_i(2)).
-         Part 2 (One-body potentials): V_core(1) etc.
-         
-      Exchange:
-         Term < chi_f(2) u_f(1) | 1/r12 | chi_i(1) u_i(2) >
-           = Int dr1 dr2 [chi_f(2) u_f(1)]* (1/r12) [chi_i(1) u_i(2)]
-           = Int dr1 dr2 [u_f(1) chi_i(1)] * (1/r12) * [chi_f(2) u_i(2)]
-         
-         So for Exchange:
-         rho1(r1) = w * u_f(r1) * chi_i(r1)
-         rho2(r2) = w * chi_f(r2) * u_i(r2)
-         
-         Correction: The orthogonality term <u_f|u_i> or <chi_f|chi_i> usually handles 
-         one-body parts. In Distorted Wave Static Exchange, the potential U is chosen 
-         to cancel many terms.
-         Typically, for Exchange, we ONLY compute the 1/r12 part (multipoles).
-         The one-body parts [V_core - U] are often assumed to be handled by orthogonality 
-         or are small. Bray's article Eq (3) T_ex = < chi_f(2) u_f(1) | (N-1)/r12 - ... | A phi_i chi_i >
-         
-         We will compute the 1/r12 exchange integral.
-         Correction term is usually neglected or separately handled. Here we assume 0 correction for exchange.
-
-    Parameters
-    ----------
-    grid, V_core_array, U_i_array, bound_i, bound_f, cont_i, cont_f :
-        Standard inputs.
-    L_max : int
-        Highest multipole.
-
-    Returns
-    -------
-    RadialDWBAIntegrals
-        Contains .I_L_direct and .I_L_exchange.
+    OPTIMIZED VERSION: Uses kernel recurrence to avoid O(N^2) power operations.
     """
     if L_max < 0:
         raise ValueError("radial_ME_all_L: L_max must be >= 0.")
@@ -193,39 +92,107 @@ def radial_ME_all_L(
     chi_i = cont_i.chi_of_r
     chi_f = cont_f.chi_of_r
     w = grid.w_trapz
+    r = grid.r
 
     # --- Precompute densities ---
-    
-    # Direct Densities
-    # rho1_dir(r1) comes from projectile overlap: chi_f * chi_i
     rho1_dir = w * chi_f * chi_i
-    # rho2_dir(r2) comes from target overlap: u_f * u_i
     rho2_dir = w * u_f * u_i
     
-    # Exchange Densities
-    # Int dr1 dr2 [u_f(1) chi_i(1)] * (1/r12) * [chi_f(2) u_i(2)]
-    # rho1_ex(r1) = u_f * chi_i
     rho1_ex = w * u_f * chi_i
-    # rho2_ex(r2) = chi_f * u_i
     rho2_ex = w * chi_f * u_i
     
-    # Correction term for Direct L=0
-    # [V_core(r1) - U_i(r1)]
+    # Correction term for Direct L=0: [V_core(r1) - U_i(r1)]
     V_diff = V_core_array - U_i_array
 
     I_L_dir: Dict[int, float] = {}
     I_L_exc: Dict[int, float] = {}
 
-    for L in range(L_max + 1):
-        # Direct
-        I_dir = _generic_radial_integral(grid, rho1_dir, rho2_dir, L, V_correction=V_diff)
-        I_L_dir[L] = I_dir
+    # --- Kernel Optimization ---
+    # Construct base kernel matrices only once
+    r1_col = r[:, np.newaxis]
+    r2_row = r[np.newaxis, :]
+    
+    # We use a safe division mask for calculating ratio = r_< / r_>
+    ratio = np.empty_like(r1_col * r2_row) # shape N,N
+    inv_gtr = np.empty_like(ratio)
+    
+    r_less = np.minimum(r1_col, r2_row)
+    r_gtr  = np.maximum(r1_col, r2_row)
+    
+    # Safely compute ratio and inv_gtr
+    with np.errstate(divide='ignore', invalid='ignore'):
+         ratio = r_less / r_gtr
+         inv_gtr = 1.0 / r_gtr
+         
+    # Fix nans/infs if any (at r=0)
+    if not np.all(np.isfinite(ratio)):
+        ratio[~np.isfinite(ratio)] = 0.0
+    if not np.all(np.isfinite(inv_gtr)):
+        inv_gtr[~np.isfinite(inv_gtr)] = 0.0
         
-        # Exchange
-        # typically no core-potential correction in the standard 1/r12 exchange integral 
-        # (core orthogonality usually assumed or handled elsewhere).
-        I_ex = _generic_radial_integral(grid, rho1_ex, rho2_ex, L, V_correction=None)
-        I_L_exc[L] = I_ex
+    # Recurrence Initialization
+    # For L=0: Kernel_0 = 1/r_> = inv_gtr
+    # We maintain kernel_L in memory and update it inplace.
+    kernel_L = inv_gtr.copy()
+    
+    for L in range(L_max + 1):
+        if L > 0:
+            # Recurrence: K_L = K_{L-1} * ratio
+            kernel_L *= ratio
+        
+        # --- Direct Integral ---
+        # I = < rho1 | Kernel | rho2 >
+        # int_r2 = kernel @ rho2
+        
+        # dot(matrix, vector) is highly optimized in numpy
+        int_r2 = np.dot(kernel_L, rho2_dir)
+        I_dir = np.dot(rho1_dir, int_r2)
+
+        # Monopole Correction (L=0 only)
+        if L == 0:
+            # Add correction term: Int rho1 * V_diff * Int rho2
+            # because the correction to Kernel is constant V_diff(r1) along r2 ??
+            # NO. The correction in formula is: 
+            # I_corr = Int dr1 dr2 rho1(r1) * [V_diff(r1) * delta_L0] * rho2(r2) 
+            # Note 1/r12 term is 1/r_>. The correction is purely 1-body operator.
+            # But where does it enter?
+            # T = < ... | V - U | ... >.
+            # V - U = (V_core + 1/r12) - (V_core + V_H + V_ex).
+            #       = 1/r12 - V_H - V_ex.
+            # Wait, V_diff in my code was V_core - U_i. 
+            # U_i = V_core + V_H. So V_diff = -V_H.
+            # So we represent (1/r12 - V_H).
+            # 1/r12 = sum_L (pow... P_L).
+            # V_H = integral...
+            # The monopolar part of 1/r12 is V_H(r).
+            # So for L=0, the term is (1/r_> - V_H(r1)).
+            # My code calculates 1/r_> part via kernel.
+            # I need to SUBTRACT V_H part.
+            # So Correction adds Integral[ rho1(r1) * (-V_H(r1)) * rho2(r2) ] ?
+            # Wait, rho2 = u_f u_i. Integral rho2 ~ delta_fi (orthonormality).
+            # If f != i, integral rho2 is 0. So V_H term vanishes?
+            # Yes, for inelastic transition i!=f, the static potential term terms vanish by orthogonality
+            # IF the states are orthogonal.
+            # So strictly speaking, for excitation, V_diff correction is 0.
+            # BUT, we might want to keep it general.
+            # original code added V_diff.
+            # V_diff = V_core - U_i = -V_H_i.
+            # So we add < rho1 | -V_H_i | rho2 >.
+            # If orthogonality holds, <rho2> = 0, so term is 0.
+            # If not (e.g. non-orthogonal basis?), it matters.
+            # I will implement it efficiently.
+            
+            # Correction = Integral[ rho1(r1) * V_diff(r1) ] * Integral[ rho2(r2) ]
+            sum_rho2 = np.sum(rho2_dir) 
+            corr_val = np.dot(rho1_dir, V_diff) * sum_rho2
+            I_dir += corr_val
+
+        I_L_dir[L] = float(I_dir)
+        
+        # --- Exchange Integral ---
+        int_r2_ex = np.dot(kernel_L, rho2_ex)
+        I_ex = np.dot(rho1_ex, int_r2_ex)
+        
+        I_L_exc[L] = float(I_ex)
 
     return RadialDWBAIntegrals(I_L_direct=I_L_dir, I_L_exchange=I_L_exc)
-

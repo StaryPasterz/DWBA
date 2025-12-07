@@ -213,11 +213,14 @@ def compute_ionization_cs(
             L_max_proj = chan.L_max_projectile
             
             for l_i_proj in range(L_max_proj + 1):
+                pk_t_start = time.perf_counter() # Timing
+                
                 # chi_i (incident)
                 try:
                     chi_i = solve_continuum_wave(grid, U_inc_obj, l_i_proj, E_incident_eV, z_ion=z_ion_inc)
                 except:
-                    break
+                   print(f"      [l_i={l_i_proj}] chi_i failed")
+                   break
                 
                 # l_f range
                 lf_min = max(0, l_i_proj - 10)
@@ -257,6 +260,12 @@ def compute_ionization_cs(
                             tgt = total_amplitudes[(Mi, Mf)]
                             tgt.f_theta += amps.f_theta
                             tgt.g_theta += amps.g_theta
+                
+                dt_pk = time.perf_counter() - pk_t_start
+                # Print sparse logs or verbose?
+                # For debugging user issue "nic nie otrzymuję" (receive nothing), verbose is better.
+                print(f"      E_ej={E_eject_eV:.1f} l_ej={l_ej} | l_proj={l_i_proj} done in {dt_pk:.3f}s")
+
             
             # --- End Projectile Loop ---
             
