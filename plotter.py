@@ -110,8 +110,17 @@ def main():
         color1 = 'tab:blue'
         color2 = 'tab:orange'
         
-        l1, = ax.plot(X, Y, 'o-', linewidth=2, color=color1, label='DWBA')
-        l2, = ax.plot(X, Y_MT, 's--', linewidth=2, color=color2, label='DWBA + Calibration')
+        # Article Style: Dotted for DWBA (Uncalibrated), Solid for Calibrated
+        if style == 'article':
+            # Reverse of standard: Uncalibrated is usually "Born" (Dotted/Dashed), Calibrated is "Theory" (Solid)
+            # Article Fig 3/4/5: 
+            # Dotted = Present DWBA (Uncalibrated)
+            # Solid = Present DWBA + Calibration
+            l1, = ax.plot(X, Y, 'k:', linewidth=2, label='DWBA (Uncalibrated)')
+            l2, = ax.plot(X, Y_MT, 'k-', linewidth=2, label='DWBA + Calibration')
+        else:
+            l1, = ax.plot(X, Y, 'o--', linewidth=2, color=color1, label='DWBA')
+            l2, = ax.plot(X, Y_MT, 's-', linewidth=2, color=color2, label='DWBA + Calibration')
         
         ax.set_xlabel(xlab, fontsize=11)
         ax.set_ylabel(ylab, fontsize=11)
@@ -122,9 +131,11 @@ def main():
         ax2 = ax.twinx()
         color3 = 'tab:green'
         l3, = ax2.plot(X, Factor, ':', linewidth=1.5, color=color3, label='Norm. Factor')
-        ax2.set_ylabel("Calibration Factor", fontsize=11, color=color3)
+        ax2.set_ylabel("Calibration Factor C(E)", fontsize=11, color=color3)
         ax2.tick_params(axis='y', labelcolor=color3)
-        ax2.set_ylim(0, 1.1) # Factor usually 0..1
+        # Dynamic limits for factor
+        if np.max(Factor) > 0:
+            ax2.set_ylim(0, max(1.1, np.max(Factor)*1.1))
         
         # Legend (Merge handles)
         lns = [l1, l2, l3]

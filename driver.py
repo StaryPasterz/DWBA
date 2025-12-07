@@ -90,8 +90,7 @@ class DWBAResult:
     E_excitation_eV: float
     sigma_total_au: float
     sigma_total_cm2: float
-    sigma_mtong_cm2: float = 0.0 # Deprecated, kept for compat? No, remove.
-    # calibration_factor_C: float # Remove
+
 
     k_i_au: float
     k_f_au: float
