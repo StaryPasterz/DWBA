@@ -166,8 +166,9 @@ def run_scan_excitation(run_name):
         l_i=li, l_f=lf,
         n_index_i=ni, n_index_f=nf,
         N_equiv=1,
-        L_max=10, 
-        L_i_total=li
+        L_max_integrals=15, 
+        L_target_i=li,
+        L_target_f=lf
     )
     # Default core params (Coulomb only), logic could be extended for Ne+ etc.
     core_params = CorePotentialParams(Zc=Z, a1=0, a2=0, a3=0, a4=0, a5=0, a6=0)
@@ -183,12 +184,13 @@ def run_scan_excitation(run_name):
         try:
             res = compute_total_excitation_cs(E, spec, core_params, r_max=100.0, n_points=3000)
             if res.ok_open_channel:
-                print(f"OK. σ={res.sigma_total_cm2:.2e} cm2 ({res.sigma_total_au:.2e} au)")
+                print(f"OK. σ={res.sigma_total_cm2:.2e} cm2 | C(E)={res.calibration_factor_C:.3f}")
                 results.append({
                     "energy_eV": E,
                     "sigma_au": res.sigma_total_au,
                     "sigma_cm2": res.sigma_total_cm2,
                     "sigma_mtong_cm2": res.sigma_mtong_cm2,
+                    "calibration_factor_C": res.calibration_factor_C,
                     "Threshold_eV": res.E_excitation_eV
                 })
             else:
@@ -264,6 +266,7 @@ def run_scan_ionization(run_name):
                     "sigma_au": res.sigma_total_au,
                     "sigma_cm2": res.sigma_total_cm2,
                     "sigma_mtong_cm2": mt,
+                    "calibration_factor_C": 1.0,
                     "Threshold_eV": ip,
                     "IP_eV": ip
                 })

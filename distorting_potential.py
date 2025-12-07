@@ -403,20 +403,18 @@ def build_distorting_potentials(
     orbital_initial: BoundOrbital,
     orbital_final: BoundOrbital,
     k_i_au: float = 0.5,
-    k_f_au: float = 0.5
+    k_f_au: float = 0.5,
+    use_exchange: bool = False
 ) -> Tuple[DistortingPotential, DistortingPotential]:
     """
-    Construct U_i(r) and U_f(r) including Exchange (Furness-McCarthy).
+    Construct U_i(r) and U_f(r).
     
-    Now requires k_i and k_f (momenta) to calculate the exchange term energy.
-    E_i = k_i^2 / 2
-    E_f = k_f^2 / 2
+    If use_exchange=True, includes Furness-McCarthy exchange potential (DWSE).
+    If use_exchange=False, uses only Static potential (V_core + V_H) (Standard DWBA).
     
-    NOTE: If k_i or k_f are not provided (legacy calls), we might default to 
-    something or static-only?
-    Actually, let's enforce passing them or careful defaults. 
-    The function signature changed! We need to update callers.
-
+    The article strictly uses Standard DWBA (Static potentials) and treats
+    exchange perturbatively in the T-matrix.
+    
     Convenience helper:
     Given the core potential V_{A+}(r) and two bound orbitals
     (initial Φ_i and final Φ_f), construct BOTH distorted-wave
@@ -479,9 +477,16 @@ def build_distorting_potentials(
     V_H_i = hartree_potential_from_orbital(grid, orbital_initial)
     V_H_f = hartree_potential_from_orbital(grid, orbital_final)
 
-    # Distorting potentials (Static + Exchange)
-    U_i_arr = U_distorting(V_core_array, V_H_i, orbital=orbital_initial, grid=grid, E_beam_au=E_i)
-    U_f_arr = U_distorting(V_core_array, V_H_f, orbital=orbital_final, grid=grid, E_beam_au=E_f)
+    # Distorting potentials
+    if use_exchange:
+        # Static + Exchange (Furness-McCarthy)
+        U_i_arr = U_distorting(V_core_array, V_H_i, orbital=orbital_initial, grid=grid, E_beam_au=E_i)
+        U_f_arr = U_distorting(V_core_array, V_H_f, orbital=orbital_final, grid=grid, E_beam_au=E_f)
+    else:
+        # Static Only (Standard DWBA per article Eq. 456-463)
+        # U_j = V_core + V_H_j
+        U_i_arr = U_distorting(V_core_array, V_H_i)
+        U_f_arr = U_distorting(V_core_array, V_H_f)
 
     U_i = DistortingPotential(U_of_r=U_i_arr, V_hartree_of_r=V_H_i)
     U_f = DistortingPotential(U_of_r=U_f_arr, V_hartree_of_r=V_H_f)

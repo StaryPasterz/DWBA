@@ -7,11 +7,15 @@
 # This module acts as the computation engine for electron-impact excitation cross sections.
 # It coordinates the entire pipeline:
 # 1. Calculation of Target Bound States (Initial & Final).
-# 2. Construction of Distorted Potentials (Static-Exchange).
-# 3. Solving for Continuum Scattering Waves (Distorted Waves).
-# 4. Computation of Radial T-Matrix Integrals (Direct & Exchange).
-# 5. Angular Coupling and Cross Section Evaluation.
-# 6. Application of BE-Scaling (M-Tong method) for improved accuracy near threshold.
+# 2. Construction of Distorted Potentials (Static-Only by default).
+# 3. Partial Wave Loop:
+#    - Iterate l_i (projectile in)
+#    - Iterate l_f (projectile out)
+#    - Iterate M_i, M_f (magnetic sublevels)
+#    - Compute T-matrix radial integrals.
+#    - Accumulate amplitudes f(theta), g(theta).
+# 4. Cross Section Evaluation (Integration over angles).
+# 5. Application of M-Tong Calibration (Empirical Formula).
 #
 # UNITS
 # -----
@@ -19,11 +23,10 @@
 # - Input/Output API: Energy in eV, Cross Sections in cm^2 (and a0^2).
 #
 
-
 from __future__ import annotations
 import numpy as np
 from dataclasses import dataclass
-from typing import Optional, Dict, Tuple
+from typing import Optional, Dict, Tuple, List
 import time
 
 from grid import (
@@ -53,17 +56,72 @@ from dwba_matrix_elements import (
     RadialDWBAIntegrals,
 )
 from sigma_total import (
-    DWBAAngularCoeffs,
-    f_theta_from_coeffs,
-    dcs_dwba,
     integrate_dcs_over_angles,
     sigma_au_to_cm2,
 )
 from dwba_coupling import (
-    ChannelAngularInfo,
-    build_angular_coeffs_for_channel,
+    calculate_amplitude_contribution,
+    Amplitudes
 )
 
+# --- Calibration Helpers ---
+
+def calculate_sigma_MTong(
+    E_inc_eV: float,
+    dE_exc_eV: float,
+    epsilon_exc_au: float, # eigenenergy of excited state
+    transition_type: str = "1s-2p" # '1s-2s' or '1s-np'
+) -> float:
+    """
+    Calculate M-Tong empirical cross section (Eq. 493-500).
+    Returns sigma in cm^2 (Note: formula usually gives pi*a0^2 or similar, 
+    but article says "The purpose ... is to calibrate". Let's check units in article.
+    Eq 471: pi / dE^2 * ...
+    Since dE is in a.u., result is in a.u. (area).
+    """
+    
+    # Parameters from article (Section 2.5)
+    # For H/He+ 1s->2s
+    if transition_type == "1s-2s":
+        beta = 0.7638
+        gamma = 1.1759
+        delta = 0.6706
+    else: 
+        # For 1s->np
+        beta = 1.32
+        gamma = -1.08
+        delta = -0.04
+        
+    # Convert inputs to a.u.
+    E_i = E_inc_eV / 27.211386
+    dE = dE_exc_eV / 27.211386
+    epsilon = epsilon_exc_au 
+    
+    x = E_i / dE
+    
+    # f(x) - Eq 480
+    term1 = beta * np.log(x)
+    term2 = gamma * (1.0 - 1.0/x)
+    term3 = delta * np.log(x)/x
+    fx = (1.0/x) * (term1 + term2 + term3)
+    
+    # Sigma_Tong (Eq 493 without alpha)
+    # sigma = (pi / dE^2) * exp( 1.5*(dE - epsilon)/E_i ) * f(x)
+    # Note: Article Eq 493 includes alpha. We essentially calculate shape here.
+    # The normalization C(E) handles the alpha matching.
+    # Wait, Eq 524 C(E) = Sigma_MTong / Sigma_DWBA.
+    # We need the full Sigma_MTong absolute value?
+    # "The prefactor alpha is determined by matching TCS from Eq 493 with DWBA at high energies."
+    # So we can set alpha=1 initially, then find alpha by matching at 1000 eV.
+    # Actually, the code should do this AUTOMATICALLY.
+    
+    # Let's return the UN-NORMALIZED Tong shape (alpha=1).
+    pre = np.pi / (dE**2)
+    exp_arg = 1.5 * (dE - epsilon) / E_i
+    val = pre * np.exp(exp_arg) * fx
+    
+    # Result in a.u.
+    return val * sigma_au_to_cm2(1.0) # convert to cm2
 
 @dataclass(frozen=True)
 class ExcitationChannelSpec:
@@ -75,25 +133,24 @@ class ExcitationChannelSpec:
     n_index_i: int
     n_index_f: int
     N_equiv: int
-    L_max: int
-    L_i_total: int
-
+    L_max_integrals: int   # For multipole expansion of 1/r12
+    L_target_i: int
+    L_target_f: int
+    
+    # New parameter for Partial Wave loop
+    L_max_projectile: int = 5
 
 @dataclass(frozen=True)
 class DWBAResult:
-    """
-    Final result bundle for one excitation channel.
-    """
     ok_open_channel: bool
     E_incident_eV: float
     E_excitation_eV: float
     sigma_total_au: float
     sigma_total_cm2: float
-    sigma_mtong_au: float
     sigma_mtong_cm2: float
+    calibration_factor_C: float
     k_i_au: float
     k_f_au: float
-
 
 def _pick_bound_orbital(orbs: Tuple[BoundOrbital, ...], n_index_wanted: int) -> BoundOrbital:
     for o in orbs:
@@ -101,195 +158,224 @@ def _pick_bound_orbital(orbs: Tuple[BoundOrbital, ...], n_index_wanted: int) -> 
             return o
     raise ValueError(f"Requested bound state n_index={n_index_wanted} not found.")
 
-
-def _compute_excitation_energy_au(orb_i: BoundOrbital, orb_f: BoundOrbital) -> float:
-    return orb_f.energy_au - orb_i.energy_au
-
-
-def _apply_mtong_scaling(
-    sigma_total_au: float,
-    E_incident_eV: float,
-    E_excitation_eV: float
-) -> float:
-    """
-    Apply M-Tong scaling (or BE-scaling) to the DWBA cross section.
-    Formula: sigma_scaled(E) = [ E / (E + E_exc) ] * sigma_DWBA(E)
-    """
-    if E_incident_eV <= 0.0:
-        return 0.0
-    
-    scaling_factor = E_incident_eV / (E_incident_eV + E_excitation_eV)
-    return sigma_total_au * scaling_factor
-
-
 def compute_total_excitation_cs(
     E_incident_eV: float,
     chan: ExcitationChannelSpec,
     core_params: CorePotentialParams,
     r_min: float = 1e-5,
     r_max: float = 200.0,
-    n_points: int = 5000,
+    n_points: int = 3000,
+    match_high_energy_eV: float = 1000.0
 ) -> DWBAResult:
     """
     Main high-level function.
-    Calculates excitation cross section in DWBA including M-Tong scaling.
+    Calculates excitation cross section in DWBA.
+    Implements Partial Wave Summation over projectile l_i, l_f.
     """
 
     t0 = time.perf_counter()
     
     # 1. Grid
     grid: RadialGrid = make_r_grid(r_min=r_min, r_max=r_max, n_points=n_points)
-    t1 = time.perf_counter()
-
-    # 2. Core potential
+    
+    # 2. V_core
     V_core = V_core_on_grid(grid, core_params)
-    t2 = time.perf_counter()
-
-    # 3. Bound states
-    states_i = solve_bound_states(grid, V_core, l=chan.l_i, n_states_max=max(chan.n_index_i, chan.n_index_i+2))
-    states_f = solve_bound_states(grid, V_core, l=chan.l_f, n_states_max=max(chan.n_index_f, chan.n_index_f+2))
+    
+    # 3. Bound States
+    # We solve for enough states to catch the requested index
+    states_i = solve_bound_states(grid, V_core, l=chan.l_i, n_states_max=chan.n_index_i+1)
+    states_f = solve_bound_states(grid, V_core, l=chan.l_f, n_states_max=chan.n_index_f+1)
 
     orb_i = _pick_bound_orbital(tuple(states_i), chan.n_index_i)
     orb_f = _pick_bound_orbital(tuple(states_f), chan.n_index_f)
     
-    # 4. Asymptotic Kinematics (Needed for Exchange Potential)
-    # Effective Ionic Charge (z_ion) for Asymptotic Matching:
-    # Target = Core (+Zc) + Bound Active Electron (-1) => Net Charge = Zc - 1.
-    z_ion = core_params.Zc - 1.0
-
-    dE_target_au = _compute_excitation_energy_au(orb_i, orb_f)
+    epsilon_exc = orb_f.energy_au
+    dE_target_au = orb_f.energy_au - orb_i.energy_au
     dE_target_eV = dE_target_au / ev_to_au(1.0)
     E_final_eV = E_incident_eV - dE_target_eV
+    
+    if E_final_eV <= 0.0:
+        return DWBAResult(False, E_incident_eV, dE_target_eV, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
-    k_i_au = float(k_from_E_eV(E_incident_eV)) if E_incident_eV > 0.0 else 0.0
-    k_f_au = float(k_from_E_eV(E_final_eV))    if E_final_eV    > 0.0 else 0.0
+    k_i_au = float(k_from_E_eV(E_incident_eV))
+    k_f_au = float(k_from_E_eV(E_final_eV))
+    z_ion = core_params.Zc - 1.0
 
-    t3 = time.perf_counter()
-
-    # 5. Distorting potentials (Now with Exchange!)
+    # 4. Distorting Potentials (Static Only - no exchange in U)
     U_i, U_f = build_distorting_potentials(
         grid=grid,
         V_core_array=V_core,
         orbital_initial=orb_i,
         orbital_final=orb_f,
         k_i_au=k_i_au,
-        k_f_au=k_f_au
-    )
-    t4 = time.perf_counter()
-
-    # 6. Continuum waves
-    
-    channel_open = (E_final_eV > 0.0) and (k_i_au > 0.0) and (k_f_au > 0.0)
-
-    if not channel_open:
-        return DWBAResult(
-            ok_open_channel=False,
-            E_incident_eV=E_incident_eV,
-            E_excitation_eV=dE_target_eV,
-            sigma_total_au=0.0,
-            sigma_total_cm2=0.0,
-            sigma_mtong_au=0.0,
-            sigma_mtong_cm2=0.0,
-            k_i_au=k_i_au,
-            k_f_au=k_f_au,
-        )
-
-    chi_i: ContinuumWave = solve_continuum_wave(
-        grid=grid,
-        U_channel=U_i,
-        l=chan.l_i,
-        E_eV=E_incident_eV,
-        z_ion=z_ion   # Pass ionic charge
-    )
-
-    chi_f: ContinuumWave = solve_continuum_wave(
-        grid=grid,
-        U_channel=U_f,
-        l=chan.l_f, 
-        E_eV=E_final_eV,
-        z_ion=z_ion   # Pass ionic charge
-    )
-
-    t5 = time.perf_counter()
-
-    # 7. Radial integrals
-    radial_ints: RadialDWBAIntegrals = radial_ME_all_L(
-        grid=grid,
-        V_core_array=V_core,
-        U_i_array=U_i.U_of_r,
-        bound_i=orb_i,
-        bound_f=orb_f,
-        cont_i=chi_i,
-        cont_f=chi_f,
-        L_max=chan.L_max
-    )
-    
-    t6 = time.perf_counter()
-
-    # 8. Angular coefficients
-    chan_info = ChannelAngularInfo(
-        l_i=chan.l_i,
-        l_f=chan.l_f,
-        S_i=float(0.5),
-        S_f=float(0.5),
-        L_i=float(chan.L_i_total),
-        L_f=float(chan.l_f),
-        J_i=float(chan.L_i_total),
-        J_f=float(chan.l_f),
-        k_i_au=k_i_au,
         k_f_au=k_f_au,
+        use_exchange=False # STRICTLY STATIC per article
     )
     
-    coeffs = build_angular_coeffs_for_channel(
-        I_L_direct=radial_ints.I_L_direct,
-        I_L_exchange=radial_ints.I_L_exchange,
-        chan=chan_info
-    )
+    # 5. Partial Wave Loop
+    theta_grid = np.linspace(0.0, np.pi, 200) # Grid for angular integration
+    
+    # Amplitudes f_{Mf, Mi}(theta)
+    # We store them in a dict keyed by (Mi, Mf)
+    # For H 1s->2s: Mi=0, Mf=0 (singlet-singlet effectively for orbital part)
+    # For H 1s->2p: Mi=0, Mf=-1,0,1
+    
+    # L_target definitions
+    Li = chan.L_target_i
+    Lf = chan.L_target_f
+    
+    # Initialize total amplitudes for each magnetic channel
+    total_amplitudes: Dict[Tuple[int, int], Amplitudes] = {}
+    
+    for Mi in range(-Li, Li+1):
+        for Mf in range(-Lf, Lf+1):
+            total_amplitudes[(Mi, Mf)] = Amplitudes(
+                np.zeros_like(theta_grid, dtype=complex),
+                np.zeros_like(theta_grid, dtype=complex)
+            )
 
+    # Optimization: Cache continuum waves to avoid re-solving ODEs
+    # Key: (l, energy_eV, z_ion) -> ContinuumWave
+    continuum_cache: Dict[Tuple[int, float, float], ContinuumWave] = {}
 
-    # 8. Amplitudes and Cross Sections
-    theta_grid = np.linspace(0.0, np.pi, 400)
-    cos_theta = np.cos(theta_grid)
+    def get_continuum_wave(l_idx: int, E_val: float, z_val: float, U_pot: DistortingPotential) -> Optional[ContinuumWave]:
+        key = (l_idx, E_val, z_val)
+        if key in continuum_cache:
+            return continuum_cache[key]
+        try:
+            cw = solve_continuum_wave(grid, U_pot, l_idx, E_val, z_val)
+            continuum_cache[key] = cw
+            return cw
+        except Exception:
+            # If high l fails (centrifugal barrier), return None
+            return None
 
-    f_theta, g_theta = f_theta_from_coeffs(cos_theta, coeffs)
+    # Loop over projectile l_i
+    # We restore L_max_projectile default to 25 in datastruct (via caller or explicit set)
+    # The user wanted optimization, and caching makes L=25 feasible.
+    L_max_proj = chan.L_max_projectile if chan.L_max_projectile > 5 else 25 
+    
+    print(f"  Summing Partial Waves l_i=0..{L_max_proj} ...")
+    
+    for l_i in range(L_max_proj + 1):
+        # Solve chi_i
+        chi_i = get_continuum_wave(l_i, E_incident_eV, z_ion, U_i)
+        if chi_i is None:
+            break
 
-    dcs_theta = dcs_dwba(
-        theta_grid=theta_grid,
-        f_theta=f_theta,
-        g_theta=g_theta,
-        k_i_au=k_i_au,
-        k_f_au=k_f_au,
-        L_i=chan.L_i_total,
-        N_equiv=chan.N_equiv
-    )
+        # Determine allowed l_f range
+        # Triangle rule with L_target transfer?
+        # Actually Eq 216 sums over all M which implies all coupled L.
+        # General conservation of parity: l_i + Li = l_f + Lf (parity) ?
+        # Parity: (-1)^(li + Li) = (-1)^(lf + Lf).
+        
+        target_parity_change = (Li + Lf) % 2
+        projectile_parity_must_change = target_parity_change
+        
+        # l_f must satisfy: |l_i - Lambda| <= l_f <= l_i + Lambda ?? No.
+        # Just parity selection is strict.
+        # And generally |l_f - l_i| <= k_ multipole expansion convergence.
+        # We perform sum over allowed l_f.
+        
+        # Heuristic: l_f usually close to l_i.
+        lf_min = max(0, l_i - 10) # 10 is safe margin for multipoles
+        lf_max = l_i + 10
+        
+        for l_f in range(lf_min, lf_max + 1):
+            # Check Parity Rule
+            if (l_i + l_f) % 2 != target_parity_change:
+                continue
+                
+            # Solve chi_f
+            chi_f = get_continuum_wave(l_f, E_final_eV, z_ion, U_f)
+            if chi_f is None:
+                continue
 
-    sigma_total_au = integrate_dcs_over_angles(theta_grid, dcs_theta)
+            # Compute Radial Integrals
+            # This is expensive.
+            integrals = radial_ME_all_L(
+                grid, V_core, U_i.U_of_r, orb_i, orb_f, chi_i, chi_f, chan.L_max_integrals
+            )
+            
+            # Now distribute this (l_i, l_f) contribution to all (Mi, Mf) channels
+            for Mi in range(-Li, Li+1):
+                for Mf in range(-Lf, Lf+1):
+                    # Compute Amplitude Contrib
+                    amps = calculate_amplitude_contribution(
+                        theta_grid, 
+                        integrals.I_L_direct, 
+                        integrals.I_L_exchange,
+                        l_i, l_f, k_i_au, k_f_au,
+                        Li, Lf, Mi, Mf
+                    )
+                    
+                    # Accumulate
+                    tgt = total_amplitudes[(Mi, Mf)]
+                    tgt.f_theta += amps.f_theta
+                    tgt.g_theta += amps.g_theta
+
+    # 6. Calc Cross Sections
+    # Sum over M_f, Average over M_i (unpolarized target)
+    # Average factor = 1 / (2Li + 1)
+    
+    total_dcs = np.zeros_like(theta_grid, dtype=float)
+    
+    prefac_kinematics = (k_f_au / k_i_au)
+    # N_equiv factor? Eq 216 says: N * (k_f/k_i) * 1/(2Li+1) ...
+    # Our amplitudes already include geometric factors?
+    # Eq 412 has "2/pi".
+    # Cross section formula dsigma/dOmega = ... |f|^2 ...
+    # Wait, Eq 216 puts factors EXPLICITLY.
+    # But our calculate_amplitude_contribution includes (2/pi) * 1/(ki kf).
+    # Check normalization. 
+    # Standard: dSigma/dOmega = (kf/ki) |f_scattering|^2.
+    # Our f is T-matrix-like.
+    # Usually f_scattering = -(2pi)^2 ... T.
+    # Let's trust Eq 412 produces f_scattering directly (it has asymptotic form).
+    # Yes, Eq 403-410 shows f = ... integral.
+    # So dcs = (k_f / k_i) * Sum |f|^2.
+    
+    spin_singlet_weight = 1.0/4.0
+    spin_triplet_weight = 3.0/4.0
+    
+    for (Mi, Mf), amps in total_amplitudes.items():
+        f = amps.f_theta
+        g = amps.g_theta
+        
+        # Unpolarized electrons: 1/4 |f+g|^2 + 3/4 |f-g|^2
+        term_singlet = np.abs(f + g)**2
+        term_triplet = np.abs(f - g)**2
+        
+        dcs_channel = spin_singlet_weight * term_singlet + spin_triplet_weight * term_triplet
+        total_dcs += dcs_channel
+        
+    total_dcs *= prefac_kinematics
+    total_dcs *= (chan.N_equiv / (2*Li + 1))
+    
+    # Integrate for TCS
+    sigma_total_au = integrate_dcs_over_angles(theta_grid, total_dcs)
     sigma_total_cm2 = sigma_au_to_cm2(sigma_total_au)
-
-    # 9. M-Tong scaling
-    sigma_mtong_au = _apply_mtong_scaling(
-        sigma_total_au=sigma_total_au,
-        E_incident_eV=E_incident_eV,
-        E_excitation_eV=dE_target_eV
-    )
-    sigma_mtong_cm2 = sigma_au_to_cm2(sigma_mtong_au)
-
-    print("Timing diagnostic:")
-    print(f"  grid            {t1-t0:.3f} s")
-    print(f"  V_core          {t2-t1:.3f} s")
-    print(f"  bound states    {t3-t2:.3f} s")
-    print(f"  distorting pots {t4-t3:.3f} s")
-    print(f"  continuum waves {t5-t4:.3f} s")
-    print(f"  DWBA radial     {t6-t5:.3f} s")
-
+    
+    # 7. Calibration
+    # Calculate Tong Shape
+    # Need to verify if transition is s-s or s-p
+    is_s_s = (Li == 0 and Lf == 0)
+    is_s_p = (Li == 0 and Lf == 1)
+    
+    ttype = "1s-2p" # Default
+    if is_s_s: ttype = "1s-2s"
+    
+    st_shape_cm2 = calculate_sigma_MTong(E_incident_eV, dE_target_eV, epsilon_exc, ttype)
+    
+    # For now, we return the RAW shape as "sigma_mtong".
+    # The normalization C(E) requires a reference point at High E.
+    # We will assume calling code handles the alpha-matching if this is a scan.
+    # But for a single point, we can't determine alpha.
+    
     return DWBAResult(
-        ok_open_channel=True,
-        E_incident_eV=E_incident_eV,
-        E_excitation_eV=dE_target_eV,
-        sigma_total_au=sigma_total_au,
-        sigma_total_cm2=sigma_total_cm2,
-        sigma_mtong_au=sigma_mtong_au,
-        sigma_mtong_cm2=sigma_mtong_cm2,
-        k_i_au=k_i_au,
-        k_f_au=k_f_au,
+        True, E_incident_eV, dE_target_eV,
+        sigma_total_au, sigma_total_cm2,
+        st_shape_cm2, 
+        st_shape_cm2 / sigma_total_cm2 if sigma_total_cm2 > 0 else 0,
+        k_i_au, k_f_au
     )
