@@ -338,28 +338,41 @@ def compute_total_excitation_cs(
 
     else:
         # Fallback to CPU Parallel
-        print(f"  [CPU Parallel] Summing Partial Waves l_i=0..{L_max_proj} (multiprocessing)...")
+        print(f"  [CPU Parallel] Summing Partial Waves l_i=0..{L_max_proj} (multiprocessing pool)...")
         
-        # Parallel Execution
+        # Parallel Execution using multiprocessing.Pool for better Ctrl+C handling
+        import multiprocessing
         max_workers = os.cpu_count()
         if max_workers is None: max_workers = 1
         
-        futures = []
-        with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
-            for l_i in range(L_max_proj + 1):
-                f = executor.submit(
-                    _worker_partial_wave,
-                    l_i, E_incident_eV, E_final_eV, z_ion, U_i, U_f,
-                    grid, V_core, orb_i, orb_f, chan, theta_grid, k_i_au, k_f_au
-                )
-                futures.append(f)
+        # Prepare arguments for starmap
+        tasks = []
+        for l_i in range(L_max_proj + 1):
+            tasks.append((
+                l_i, E_incident_eV, E_final_eV, z_ion, U_i, U_f,
+                grid, V_core, orb_i, orb_f, chan, theta_grid, k_i_au, k_f_au
+            ))
+            
+        try:
+            with multiprocessing.Pool(processes=max_workers) as pool:
+                # Use imap_unordered to process results as they come in
+                # We need a wrapper to unpack arguments if using starmap logic, 
+                # but starmap matches arguments directly.
                 
-            # Collect results
-            for fut in concurrent.futures.as_completed(futures):
-                try:
-                    l_done, partial_amps = fut.result()
-                    # Aggregate
-                    for key, part_amp in partial_amps.items():
+                # pool.starmap blocks, but we want to catch KeyboardInterrupt.
+                # pool.map_async (or starmap_async) allows waiting with timeout or checking.
+                # Alternatively, just use starmap inside try/except.
+                
+                results_iter = pool.starmap_async(_worker_partial_wave, tasks)
+                
+                # Wait for result with a loop to allow signal catching? 
+                # Actually .get(timeout) allows catching signals.
+                # But simplest is to just let it block and catch the interrupt.
+                
+                results = results_iter.get(timeout=None)
+                
+                for l_done, partial_amps in results:
+                     for key, part_amp in partial_amps.items():
                         if key not in total_amplitudes:
                             total_amplitudes[key] = Amplitudes(
                                 np.zeros_like(theta_grid, dtype=complex),
@@ -367,8 +380,16 @@ def compute_total_excitation_cs(
                             )
                         total_amplitudes[key].f_theta += part_amp.f_theta
                         total_amplitudes[key].g_theta += part_amp.g_theta
-                except Exception as e:
-                    print(f"    Worker failed: {e}")
+
+        except KeyboardInterrupt:
+            print("\n[User Interrupt] Terminating worker processes...")
+            pool.terminate()
+            pool.join()
+            print("[User Interrupt] Workers terminated.")
+            raise
+        except Exception as e:
+             print(f"Pool Execution Failed: {e}")
+             raise
 
     print(f"  Summation complete in {time.perf_counter() - t0:.3f} s")
 

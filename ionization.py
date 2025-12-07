@@ -267,6 +267,7 @@ def compute_ionization_cs(
 
         # Loop over Ejected Angular Momentum l_ej
         for l_ej in range(chan.l_eject_max + 1):
+            print(f"    [Progress] E_eject={E_eject_eV:.1f} eV | l_eject={l_ej}...", end=" ", flush=True)
             
             # Solve ejected wave (acts as 'final bound state')
             # Normalized to unit amplitude -> Need to apply DoS factor later.
@@ -349,29 +350,39 @@ def compute_ionization_cs(
                 # CPU Parallel Execution
                 # print(f"    [CPU] E_ej={E_eject_eV:.1f} l_ej={l_ej} Summing Proj l=0..{L_max_proj}")
                 
+                import multiprocessing
                 max_workers = os.cpu_count()
                 if max_workers is None: max_workers = 1
                 
-                futures = []
-                with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
-                    for l_i_proj in range(L_max_proj + 1):
-                        f = executor.submit(
-                             _worker_ionization_projectile,
-                             l_i_proj, E_incident_eV, E_scatt_eV, z_ion_inc, z_ion_final,
-                             U_inc_obj, U_ion_obj, grid, V_core, orb_i, chi_eject,
-                             chan, theta_grid, k_i_au, k_scatt_au, Li, Lf
-                        )
-                        futures.append(f)
+                tasks = []
+                for l_i_proj in range(L_max_proj + 1):
+                    tasks.append((
+                         l_i_proj, E_incident_eV, E_scatt_eV, z_ion_inc, z_ion_final,
+                         U_inc_obj, U_ion_obj, grid, V_core, orb_i, chi_eject,
+                         chan, theta_grid, k_i_au, k_scatt_au, Li, Lf
+                    ))
+                
+                try:
+                    with multiprocessing.Pool(processes=max_workers) as pool:
+                        results_iter = pool.starmap_async(_worker_ionization_projectile, tasks)
                         
-                    for fut in concurrent.futures.as_completed(futures):
-                        try:
-                            l_done, partial_amps = fut.result()
+                        # Wait for results
+                        # Note: starmap_async.get() blocks.
+                        results = results_iter.get(timeout=None)
+                        
+                        for l_done, partial_amps in results:
                             for key, part_amp in partial_amps.items():
                                 tgt = total_amplitudes[key]
                                 tgt.f_theta += part_amp.f_theta
                                 tgt.g_theta += part_amp.g_theta
-                        except Exception as e:
-                            print(f"      Worker failed: {e}")
+
+                except KeyboardInterrupt:
+                    print("\n[User Interrupt] Terminating worker processes...")
+                    pool.terminate()
+                    pool.join()
+                    raise
+                except Exception as e:
+                    print(f"      Worker execution failed: {e}")
 
             
             # --- End Projectile Loop ---
@@ -410,10 +421,11 @@ def compute_ionization_cs(
             sigma_l_eject_au = integrate_dcs_over_angles(theta_grid, total_dcs)
             
             sigma_energy_au += sigma_l_eject_au
+            print(f"Done. (sigma_part={sigma_l_eject_au:.2e})")
             
         # Store SDCS (sigma per energy)
         sdcs_values_au.append(sigma_energy_au)
-        print(f"    E_eject={E_eject_eV:.1f} eV: dSigma/dE = {sigma_energy_au:.2e} a.u.")
+        print(f"    --> SDCS(E_ej={E_eject_eV:.1f}) = {sigma_energy_au:.2e} a.u.")
 
     # 5. Integrate SDCS over E_eject
     # Int [0, Etot/2] dSigma/dE dE
