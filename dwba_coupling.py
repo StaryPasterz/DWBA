@@ -119,9 +119,7 @@ class ChannelAngularInfo:
     k_i_au: float = 1.0
     k_f_au: float = 1.0
 
-# Deprecated / Legacy Support for Ionization module
-def build_angular_coeffs_for_channel(*args, **kwargs):
-    raise NotImplementedError("This function is deprecated in v2 partial wave update. Ionization module needs update.")
+
 
 def calculate_amplitude_contribution(
     theta_grid: np.ndarray,

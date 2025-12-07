@@ -30,6 +30,8 @@ from ionization import (
 )
 from potential_core import CorePotentialParams
 import plotter # Import plotter module
+from calibration import TongModel
+
 
 # --- Input Helpers ---
 
@@ -186,6 +188,45 @@ def run_scan_excitation(run_name):
     key = f"Excitation_Z{Z}_n{ni}l{li}_to_n{nf}l{lf}"
     results = []
     
+    # --- Calibration Pilot Run ---
+    print("\n[Calibration] Running Pilot Calculation at 1000 eV for Alpha Matching...")
+    pilot_E = 1000.0
+    
+    # Determine n-p vs n-s (approximate check)
+    t_type = "1s-2p"
+    if li == 0 and lf == 0:
+        t_type = "1s-2s"
+    
+    # We need threshold energy to init model.
+    # We can get it from a quick bound state check or run one calc.
+    # compute_total_excitation_cs runs bound state solve internally each time (inefficient but safe).
+    # We will run it once.
+    
+    try:
+        res_pilot = compute_total_excitation_cs(pilot_E, spec, core_params, r_max=100.0, n_points=3000)
+    except Exception as e:
+        print(f"[Calibration] Pilot failed: {e}. Defaulting Alpha=1.0")
+        res_pilot = None
+
+    # Init model
+    # If pilot failed, we guess threshold (approx for H-like).
+    dE_thr = res_pilot.E_excitation_eV if res_pilot else 10.2 * Z**2 
+    epsilon_exc_au = -0.5 * (Z**2) / (nf**2) # Approximate if pilot failed, but usually correct from res
+    
+    # If res_pilot worked, use exact epsilon? 
+    # res doesn't allow easy access to epsilon_exc_au directly (it returns E_exc_eV).
+    # E_incident = E_final + dE. dE = E_i - E_f.
+    # We trust the model init.
+    
+    tong_model = TongModel(dE_thr, epsilon_exc_au, transition_type=t_type)
+    
+    if res_pilot and res_pilot.ok_open_channel:
+        alpha = tong_model.calibrate_alpha(pilot_E, res_pilot.sigma_total_cm2)
+        print(f"[Calibration] Alpha determined: {alpha:.4f} (Matched to DWBA at 1000 eV)")
+    else:
+        print("[Calibration] Pilot could not determine Alpha. Using default=1.0")
+
+    
     print(f"\nStarting calculation for {key} ({len(energies)} points)...")
     
     for E in energies:
@@ -193,14 +234,21 @@ def run_scan_excitation(run_name):
         print(f"E={E:.2f} eV...", end=" ", flush=True)
         try:
             res = compute_total_excitation_cs(E, spec, core_params, r_max=100.0, n_points=3000)
+            
             if res.ok_open_channel:
-                print(f"OK. σ={res.sigma_total_cm2:.2e} cm2 | C(E)={res.calibration_factor_C:.3f}")
+                # Calculate Calibration
+                sigma_raw = res.sigma_total_cm2
+                sigma_cal = tong_model.calculate_sigma_cm2(E)
+                factor_C = tong_model.get_calibration_factor(E, sigma_raw)
+                
+                print(f"OK. σ_dwba={sigma_raw:.2e} | σ_cal={sigma_cal:.2e} | C={factor_C:.3f}")
+                
                 results.append({
                     "energy_eV": E,
                     "sigma_au": res.sigma_total_au,
-                    "sigma_cm2": res.sigma_total_cm2,
-                    "sigma_mtong_cm2": res.sigma_mtong_cm2,
-                    "calibration_factor_C": res.calibration_factor_C,
+                    "sigma_cm2": sigma_raw,
+                    "sigma_mtong_cm2": sigma_cal,
+                    "calibration_factor_C": factor_C,
                     "Threshold_eV": res.E_excitation_eV
                 })
             else:
@@ -210,6 +258,7 @@ def run_scan_excitation(run_name):
                     "sigma_au": 0.0,
                     "sigma_cm2": 0.0,
                     "sigma_mtong_cm2": 0.0,
+                    "calibration_factor_C": 1.0, 
                     "Threshold_eV": res.E_excitation_eV
                 })
         except Exception as e:

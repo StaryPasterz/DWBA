@@ -64,64 +64,7 @@ from dwba_coupling import (
     Amplitudes
 )
 
-# --- Calibration Helpers ---
 
-def calculate_sigma_MTong(
-    E_inc_eV: float,
-    dE_exc_eV: float,
-    epsilon_exc_au: float, # eigenenergy of excited state
-    transition_type: str = "1s-2p" # '1s-2s' or '1s-np'
-) -> float:
-    """
-    Calculate M-Tong empirical cross section (Eq. 493-500).
-    Returns sigma in cm^2 (Note: formula usually gives pi*a0^2 or similar, 
-    but article says "The purpose ... is to calibrate". Let's check units in article.
-    Eq 471: pi / dE^2 * ...
-    Since dE is in a.u., result is in a.u. (area).
-    """
-    
-    # Parameters from article (Section 2.5)
-    # For H/He+ 1s->2s
-    if transition_type == "1s-2s":
-        beta = 0.7638
-        gamma = 1.1759
-        delta = 0.6706
-    else: 
-        # For 1s->np
-        beta = 1.32
-        gamma = -1.08
-        delta = -0.04
-        
-    # Convert inputs to a.u.
-    E_i = E_inc_eV / 27.211386
-    dE = dE_exc_eV / 27.211386
-    epsilon = epsilon_exc_au 
-    
-    x = E_i / dE
-    
-    # f(x) - Eq 480
-    term1 = beta * np.log(x)
-    term2 = gamma * (1.0 - 1.0/x)
-    term3 = delta * np.log(x)/x
-    fx = (1.0/x) * (term1 + term2 + term3)
-    
-    # Sigma_Tong (Eq 493 without alpha)
-    # sigma = (pi / dE^2) * exp( 1.5*(dE - epsilon)/E_i ) * f(x)
-    # Note: Article Eq 493 includes alpha. We essentially calculate shape here.
-    # The normalization C(E) handles the alpha matching.
-    # Wait, Eq 524 C(E) = Sigma_MTong / Sigma_DWBA.
-    # We need the full Sigma_MTong absolute value?
-    # "The prefactor alpha is determined by matching TCS from Eq 493 with DWBA at high energies."
-    # So we can set alpha=1 initially, then find alpha by matching at 1000 eV.
-    # Actually, the code should do this AUTOMATICALLY.
-    
-    # Let's return the UN-NORMALIZED Tong shape (alpha=1).
-    pre = np.pi / (dE**2)
-    exp_arg = 1.5 * (dE - epsilon) / E_i
-    val = pre * np.exp(exp_arg) * fx
-    
-    # Result in a.u.
-    return val * sigma_au_to_cm2(1.0) # convert to cm2
 
 @dataclass(frozen=True)
 class ExcitationChannelSpec:
@@ -147,8 +90,9 @@ class DWBAResult:
     E_excitation_eV: float
     sigma_total_au: float
     sigma_total_cm2: float
-    sigma_mtong_cm2: float
-    calibration_factor_C: float
+    sigma_mtong_cm2: float = 0.0 # Deprecated, kept for compat? No, remove.
+    # calibration_factor_C: float # Remove
+
     k_i_au: float
     k_f_au: float
 
@@ -195,7 +139,7 @@ def compute_total_excitation_cs(
     E_final_eV = E_incident_eV - dE_target_eV
     
     if E_final_eV <= 0.0:
-        return DWBAResult(False, E_incident_eV, dE_target_eV, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        return DWBAResult(False, E_incident_eV, dE_target_eV, 0.0, 0.0, 0.0, 0.0)
 
     k_i_au = float(k_from_E_eV(E_incident_eV))
     k_f_au = float(k_from_E_eV(E_final_eV))
@@ -357,26 +301,11 @@ def compute_total_excitation_cs(
     sigma_total_au = integrate_dcs_over_angles(theta_grid, total_dcs)
     sigma_total_cm2 = sigma_au_to_cm2(sigma_total_au)
     
-    # 7. Calibration
-    # Calculate Tong Shape
-    # Need to verify if transition is s-s or s-p
-    is_s_s = (Li == 0 and Lf == 0)
-    is_s_p = (Li == 0 and Lf == 1)
-    
-    ttype = "1s-2p" # Default
-    if is_s_s: ttype = "1s-2s"
-    
-    st_shape_cm2 = calculate_sigma_MTong(E_incident_eV, dE_target_eV, epsilon_exc, ttype)
-    
-    # For now, we return the RAW shape as "sigma_mtong".
-    # The normalization C(E) requires a reference point at High E.
-    # We will assume calling code handles the alpha-matching if this is a scan.
-    # But for a single point, we can't determine alpha.
+        # 7. Calibration
+    # Moved to calibration.py and driver integration in main
     
     return DWBAResult(
         True, E_incident_eV, dE_target_eV,
         sigma_total_au, sigma_total_cm2,
-        st_shape_cm2, 
-        st_shape_cm2 / sigma_total_cm2 if sigma_total_cm2 > 0 else 0,
         k_i_au, k_f_au
     )

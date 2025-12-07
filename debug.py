@@ -17,7 +17,7 @@ import os
 import sys
 import time
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional, Any, Callable
+from typing import List, Dict, Optional, Any, Callable, Tuple
 from contextlib import contextmanager
 
 # Add functionality to path
@@ -25,6 +25,7 @@ sys.path.append(os.getcwd())
 
 # Import Core Modules
 from grid import make_r_grid, ev_to_au, k_from_E_eV, integrate_trapz, RadialGrid
+from scipy.integrate import trapezoid
 from potential_core import CorePotentialParams, V_core_on_grid
 from bound_states import solve_bound_states, BoundOrbital
 from distorting_potential import build_distorting_potentials, DistortingPotential
@@ -91,6 +92,8 @@ class DWBADebugger:
 
     def run_full_trace(self):
         """Execute the full debugging pipeline."""
+        self.waves_to_plot = [] 
+        
         with self.measure("Total Execution"):
             self._setup_grid()
             
@@ -98,10 +101,14 @@ class DWBADebugger:
                 orb_i, orb_f = self._solve_target_states()
                 U_i, U_f = self._build_distorting_potentials(orb_i, orb_f)
                 self._trace_excitation_physics(orb_i, orb_f, U_i, U_f)
+                self._plot_debug_info(orb_i, orb_f, U_i, U_f, self.waves_to_plot)
                 
             elif self.cfg.mode == "ionization":
                 orb_i = self._solve_initial_state_only()
                 self._trace_ionization_physics(orb_i)
+                # For ionization, we don't have single U_f or orb_f in same sense, adapt plotting
+                # We can mock U_f as None
+                self._plot_debug_info(orb_i, None, self.U_inc_ion, self.U_scatt_ion, self.waves_to_plot)
         
         self._print_summary()
 
@@ -124,6 +131,10 @@ class DWBADebugger:
         
         U_ion = DistortingPotential(U_of_r=self.V_core, V_hartree_of_r=np.zeros_like(self.V_core))
         
+        # Store for plotting
+        self.U_inc_ion = U_inc
+        self.U_scatt_ion = U_ion
+        
         # 2. Energy Grid
         IP_eV = -orb_i.energy_au * 27.211
         E_total_final = self.cfg.E_inc_eV - IP_eV
@@ -143,6 +154,7 @@ class DWBADebugger:
         # 3. Verify Ejected Wave (L=0)
         with self.measure("Ejected Wave Solve"):
             chi_eject = solve_continuum_wave(self.grid, U_ion, l=0, E_eV=E_eject_eV, z_ion=self.core_params.Zc)
+            self.waves_to_plot.append((f"Ejected L=0 (E={E_eject_eV:.1f})", chi_eject))
         self._verify_continuum(chi_eject, "Chi_eject (L=0)", U_ion, E_eject_eV)
         
         # 4. Verify Projectile Waves
@@ -151,10 +163,12 @@ class DWBADebugger:
             # U_inc should include exchange=False as per ionization.py logic
             k_i = k_from_E_eV(self.cfg.E_inc_eV)
             chi_inc = solve_continuum_wave(self.grid, U_inc, l=0, E_eV=self.cfg.E_inc_eV, z_ion=self.core_params.Zc-1.0) # e + Neutral
+            self.waves_to_plot.append((f"Incident L=0 (E={self.cfg.E_inc_eV:.1f})", chi_inc))
             
             # Scattered Wave (at E_scatt)
             # e + Ion
             chi_scatt = solve_continuum_wave(self.grid, U_ion, l=0, E_eV=E_scatt_eV, z_ion=self.core_params.Zc)
+            self.waves_to_plot.append((f"Scattered L=0 (E={E_scatt_eV:.1f})", chi_scatt))
             
         # 5. Integrals Check
         self.log("Checking Radial Integrals (L=0,0)...")
@@ -318,8 +332,9 @@ class DWBADebugger:
         self.log("Analyzing Continuum Physics (L=0)...")
         with self.measure("Continuum Solve (L=0)"):
             chi_i = solve_continuum_wave(self.grid, U_i, l=0, E_eV=self.cfg.E_inc_eV)
+            self.waves_to_plot.append((f"Incident L=0 (E={self.cfg.E_inc_eV:.1f})", chi_i))
         
-        self._verify_continuum(chi_i, "Chi_i (L=0)")
+        self._verify_continuum(chi_i, "Chi_i (L=0)", U_i, self.cfg.E_inc_eV)
         
         # 2. High-L Stability Scan
         if self.cfg.check_high_L:
@@ -382,6 +397,58 @@ class DWBADebugger:
 
 
 
+    def _plot_debug_info(self, orb_i, orb_f, U_i, U_f, chi_list: List[Tuple[str, ContinuumWave]]):
+        if not self.cfg.plot_waves:
+            return
+            
+        self.log("Generating Debug Plots...", header=True)
+        os.makedirs("debug_plots", exist_ok=True)
+        
+        # 1. Plot Bound States
+        plt.figure(figsize=(10, 6))
+        r = self.grid.r
+        mask = r < 20.0 # significant region
+        plt.plot(r[mask], orb_i.u_of_r[mask], label=f"Initial (n={self.cfg.ni}, l={self.cfg.li})")
+        if orb_f:
+             plt.plot(r[mask], orb_f.u_of_r[mask], label=f"Final (n={self.cfg.nf}, l={self.cfg.lf})")
+        plt.title(f"Target Bound States ({self.cfg.transition_name})")
+        plt.xlabel("r (a.u.)")
+        plt.ylabel("u(r)")
+        plt.grid(True, alpha=0.3)
+        plt.legend()
+        plt.savefig(f"debug_plots/bound_states_{self.cfg.mode}.png")
+        plt.close()
+        
+        # 2. Plot Potentials
+        plt.figure(figsize=(10, 6))
+        plt.plot(r[mask], self.V_core[mask], 'k--', label="V_core")
+        plt.plot(r[mask], U_i.U_of_r[mask], label="U_i (Distorting)")
+        if U_f:
+            plt.plot(r[mask], U_f.U_of_r[mask], label="U_f (Distorting)")
+        plt.title(f"Potentials ({self.cfg.mode})")
+        plt.xlabel("r (a.u.)")
+        plt.ylabel("V (a.u.)")
+        plt.ylim(bottom=-5.0, top=1.0)
+        plt.grid(True, alpha=0.3)
+        plt.legend()
+        plt.savefig(f"debug_plots/potentials_{self.cfg.mode}.png")
+        plt.close()
+        
+        # 3. Plot Continuum Waves
+        plt.figure(figsize=(10, 6))
+        mask_cont = r < 50.0
+        for label, chi in chi_list:
+            plt.plot(r[mask_cont], chi.chi_of_r[mask_cont], label=label)
+        plt.title("Continuum Waves (Partial)")
+        plt.xlabel("r (a.u.)")
+        plt.ylabel("chi(r)")
+        plt.grid(True, alpha=0.3)
+        plt.legend()
+        plt.savefig(f"debug_plots/continuum_{self.cfg.mode}.png")
+        plt.close()
+        
+        self.log("Plots saved to ./debug_plots/")
+
     def _integrate_sigma(self, amp_dict, theta_grid):
         total_dcs = np.zeros_like(theta_grid, dtype=float)
         prefac = (self.k_f / self.k_i)
@@ -400,7 +467,7 @@ class DWBADebugger:
         total_dcs *= prefac * (1.0 / (2*Li + 1))
         
         # Integration
-        sigma = 2 * np.pi * np.trapz(total_dcs * np.sin(theta_grid), theta_grid)
+        sigma = 2 * np.pi * trapezoid(total_dcs * np.sin(theta_grid), theta_grid)
         return sigma
 
     def _print_summary(self):

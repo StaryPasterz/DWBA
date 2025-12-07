@@ -184,10 +184,9 @@ def compute_ionization_cs(
             
             # Solve ejected wave (acts as 'final bound state')
             # Normalized to unit amplitude -> Need to apply DoS factor later.
-            try:
-                chi_eject = solve_continuum_wave(grid, U_ion_obj, l_ej, E_eject_eV, z_ion=z_ion_final)
-            except:
-                continue
+            # Solve ejected wave (acts as 'final bound state')
+            # Normalized to unit amplitude -> Need to apply DoS factor later.
+            chi_eject = solve_continuum_wave(grid, U_ion_obj, l_ej, E_eject_eV, z_ion=z_ion_final)
 
             # Now we run the Standard DWBA Partial Wave Loop 
             # treating chi_eject as 'orb_f' with L_target_f = l_ej.
@@ -216,11 +215,8 @@ def compute_ionization_cs(
                 pk_t_start = time.perf_counter() # Timing
                 
                 # chi_i (incident)
-                try:
-                    chi_i = solve_continuum_wave(grid, U_inc_obj, l_i_proj, E_incident_eV, z_ion=z_ion_inc)
-                except:
-                   print(f"      [l_i={l_i_proj}] chi_i failed")
-                   break
+                # chi_i (incident)
+                chi_i = solve_continuum_wave(grid, U_inc_obj, l_i_proj, E_incident_eV, z_ion=z_ion_inc)
                 
                 # l_f range
                 lf_min = max(0, l_i_proj - 10)
@@ -231,10 +227,7 @@ def compute_ionization_cs(
                     if (l_i_proj + l_f_proj) % 2 != target_parity_change:
                         continue
                         
-                    try:
-                        chi_scatt_wave = solve_continuum_wave(grid, U_ion_obj, l_f_proj, E_scatt_eV, z_ion=z_ion_final)
-                    except:
-                        continue
+                    chi_scatt_wave = solve_continuum_wave(grid, U_ion_obj, l_f_proj, E_scatt_eV, z_ion=z_ion_final)
                         
                     # Matrix Elements
                     # bound_f is chi_eject
