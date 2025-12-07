@@ -397,7 +397,9 @@ def compute_ionization_cs(
                 total_dcs += chan_dcs
             
             # Apply Density of States for ejected electron
-            dos_factor = 1.0 / (np.pi * k_eject_au)
+            # Factor 2 / (pi * k) comes from box normalization of continuum states.
+            # (See standard scattering theory texts, e.g. Taylor).
+            dos_factor = 2.0 / (np.pi * k_eject_au)
             
             total_dcs *= dos_factor
             

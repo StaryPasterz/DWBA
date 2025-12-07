@@ -140,6 +140,12 @@ def calculate_amplitude_contribution(
     
     Implements Eq. 412 and 448 from the article.
     
+    Normalization Note:
+    The factor (2/pi) appearing in the amplitudes is consistent with the
+    normalization of continuum waves to unit amplitude (plane wave ~ 1).
+    The final cross section formula applies the necessary (2pi)^4 factor
+    to convert these T-matrix-like amplitudes to physical cross sections.
+    
     Assumptions:
     - Quantization axis || k_i.
     - Thus mu_i = 0.
