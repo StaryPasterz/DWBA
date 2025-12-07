@@ -81,6 +81,7 @@ from dwba_coupling import (
 from sigma_total import (
     integrate_dcs_over_angles,
     sigma_au_to_cm2,
+    dcs_dwba
 )
 
 @dataclass(frozen=True)
@@ -385,19 +386,23 @@ def compute_ionization_cs(
             for (Mi, Mf), amps in total_amplitudes.items():
                 f = amps.f_theta
                 g = amps.g_theta
-                term = (1.0/4.0)*np.abs(f+g)**2 + (3.0/4.0)*np.abs(f-g)**2
-                total_dcs += term
+                
+                # Use standard DCS (includes 2pi^4 and flux factors)
+                # k_f is k_scatt here.
+                chan_dcs = dcs_dwba(
+                    theta_grid, f, g, 
+                    k_i_au, k_scatt_au, 
+                    Li, chan.N_equiv
+                )
+                total_dcs += chan_dcs
             
-            # Kinematic Prefactor (k_scatt / k_i)
-            # AND Density of States for ejected electron: 1 / (pi * k_eject)
-            prefac = (k_scatt_au / k_i_au) * (chan.N_equiv / (2*Li+1))
+            # Apply Density of States for ejected electron
             dos_factor = 1.0 / (np.pi * k_eject_au)
             
-            total_dcs *= (prefac * dos_factor)
+            total_dcs *= dos_factor
             
-            # Apply missing physics factor (same as excitation)
-            # Eq 216: (2pi)^4
-            total_dcs *= (2.0 * np.pi)**4
+            # (2pi)^4 is already in dcs_dwba
+            # Kinematics prefactor is already in dcs_dwba
             
             # Integrated over scattering angles
             sigma_l_eject_au = integrate_dcs_over_angles(theta_grid, total_dcs)

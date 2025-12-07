@@ -3,6 +3,6 @@ __pycache__/
 .gemini/
 .vscode/
 .idea/
-
-results_*.json
+#*.png
+#results_*.json
 scan_results.json

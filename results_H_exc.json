@@ -1,0 +1,156 @@
+{
+  "Excitation_Z1.0_n1l0_to_n2l0": [
+    {
+      "energy_eV": 11.0,
+      "sigma_au": 3.490390927205815,
+      "sigma_cm2": 9.774090055668721e-17,
+      "sigma_mtong_cm2": 1.2232133673896724e-17,
+      "calibration_factor_C": 0.12514856732676002,
+      "Threshold_eV": 10.203855166945951
+    },
+    {
+      "energy_eV": 21.0,
+      "sigma_au": 0.9430029201315919,
+      "sigma_cm2": 2.6406771208012788e-17,
+      "sigma_mtong_cm2": 1.9468567034535465e-17,
+      "calibration_factor_C": 0.7372566256274445,
+      "Threshold_eV": 10.203855166945813
+    },
+    {
+      "energy_eV": 31.0,
+      "sigma_au": 0.6084503394235711,
+      "sigma_cm2": 1.7038344804228026e-17,
+      "sigma_mtong_cm2": 1.304802386572906e-17,
+      "calibration_factor_C": 0.7658034871140313,
+      "Threshold_eV": 10.203855166945939
+    },
+    {
+      "energy_eV": 41.0,
+      "sigma_au": 0.4541127275434902,
+      "sigma_cm2": 1.2716451500716678e-17,
+      "sigma_mtong_cm2": 9.717590602430004e-18,
+      "calibration_factor_C": 0.7641747072194107,
+      "Threshold_eV": 10.203855166945704
+    },
+    {
+      "energy_eV": 51.0,
+      "sigma_au": 0.36373183195090375,
+      "sigma_cm2": 1.0185528657810029e-17,
+      "sigma_mtong_cm2": 7.762069400906569e-18,
+      "calibration_factor_C": 0.7620683875799409,
+      "Threshold_eV": 10.203855166945916
+    },
+    {
+      "energy_eV": 61.0,
+      "sigma_au": 0.3040043572268184,
+      "sigma_cm2": 8.512989022777725e-18,
+      "sigma_mtong_cm2": 6.485226791711007e-18,
+      "calibration_factor_C": 0.761803730083388,
+      "Threshold_eV": 10.20385516694571
+    },
+    {
+      "energy_eV": 71.0,
+      "sigma_au": 0.26142155584799665,
+      "sigma_cm2": 7.320549138021185e-18,
+      "sigma_mtong_cm2": 5.586880364407252e-18,
+      "calibration_factor_C": 0.7631777697372905,
+      "Threshold_eV": 10.203855166945594
+    },
+    {
+      "energy_eV": 81.0,
+      "sigma_au": 0.22946147445029128,
+      "sigma_cm2": 6.425575708733288e-18,
+      "sigma_mtong_cm2": 4.9199464232808995e-18,
+      "calibration_factor_C": 0.7656818075606797,
+      "Threshold_eV": 10.203855166945685
+    },
+    {
+      "energy_eV": 91.0,
+      "sigma_au": 0.2045593015112627,
+      "sigma_cm2": 5.7282438454432655e-18,
+      "sigma_mtong_cm2": 4.404567410744394e-18,
+      "calibration_factor_C": 0.7689210741697323,
+      "Threshold_eV": 10.203855166945685
+    },
+    {
+      "energy_eV": 101.0,
+      "sigma_au": 0.18459185242373413,
+      "sigma_cm2": 5.169098323827668e-18,
+      "sigma_mtong_cm2": 3.9938130625965775e-18,
+      "calibration_factor_C": 0.7726324423326498,
+      "Threshold_eV": 10.203855166945866
+    },
+    {
+      "energy_eV": 111.0,
+      "sigma_au": 0.1682131721400031,
+      "sigma_cm2": 4.71044856388703e-18,
+      "sigma_mtong_cm2": 3.6583408982194466e-18,
+      "calibration_factor_C": 0.776643847948232,
+      "Threshold_eV": 10.203855166945994
+    },
+    {
+      "energy_eV": 121.0,
+      "sigma_au": 0.15453118039085514,
+      "sigma_cm2": 4.3273137738704186e-18,
+      "sigma_mtong_cm2": 3.3788740389570435e-18,
+      "calibration_factor_C": 0.7808248293340015,
+      "Threshold_eV": 10.2038551669458
+    },
+    {
+      "energy_eV": 131.0,
+      "sigma_au": 0.14292736829215041,
+      "sigma_cm2": 4.002373941034581e-18,
+      "sigma_mtong_cm2": 3.1422271437581e-18,
+      "calibration_factor_C": 0.7850908460956698,
+      "Threshold_eV": 10.203855166945806
+    },
+    {
+      "energy_eV": 141.0,
+      "sigma_au": 0.1329594694811925,
+      "sigma_cm2": 3.72324434588035e-18,
+      "sigma_mtong_cm2": 2.9390748404580965e-18,
+      "calibration_factor_C": 0.7893854304002605,
+      "Threshold_eV": 10.203855166945873
+    },
+    {
+      "energy_eV": 151.0,
+      "sigma_au": 0.12430284023939378,
+      "sigma_cm2": 3.4808340384033886e-18,
+      "sigma_mtong_cm2": 2.7626335303249707e-18,
+      "calibration_factor_C": 0.7936699939857383,
+      "Threshold_eV": 10.203855166945788
+    },
+    {
+      "energy_eV": 161.0,
+      "sigma_au": 0.11671431360472778,
+      "sigma_cm2": 3.2683336501547784e-18,
+      "sigma_mtong_cm2": 2.60784879849883e-18,
+      "calibration_factor_C": 0.7979138844577053,
+      "Threshold_eV": 10.203855166945926
+    },
+    {
+      "energy_eV": 171.0,
+      "sigma_au": 0.11000671963438578,
+      "sigma_cm2": 3.080501888927199e-18,
+      "sigma_mtong_cm2": 2.4708759475270644e-18,
+      "calibration_factor_C": 0.8021017472537763,
+      "Threshold_eV": 10.20385516694574
+    },
+    {
+      "energy_eV": 181.0,
+      "sigma_au": 0.10403367742347046,
+      "sigma_cm2": 2.9132396719051846e-18,
+      "sigma_mtong_cm2": 2.3487373373013786e-18,
+      "calibration_factor_C": 0.8062286669896144,
+      "Threshold_eV": 10.203855166945866
+    },
+    {
+      "energy_eV": 191.0,
+      "sigma_au": 0.09868202933783642,
+      "sigma_cm2": 2.7633782626070913e-18,
+      "sigma_mtong_cm2": 2.2390900958473543e-18,
+      "calibration_factor_C": 0.8102727470016715,
+      "Threshold_eV": 10.203855166945692
+    }
+  ]
+}

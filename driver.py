@@ -63,6 +63,7 @@ from dwba_matrix_elements import (
 from sigma_total import (
     integrate_dcs_over_angles,
     sigma_au_to_cm2,
+    dcs_dwba
 )
 from dwba_coupling import (
     calculate_amplitude_contribution,
@@ -400,17 +401,19 @@ def compute_total_excitation_cs(
         f = amps.f_theta
         g = amps.g_theta
         
-        # Unpolarized electrons: 1/4 |f+g|^2 + 3/4 |f-g|^2
-        term_singlet = np.abs(f + g)**2
-        term_triplet = np.abs(f - g)**2
+        # Calculate DCS for this specific magnetic channel
+        # dcs_dwba includes the (2pi)^4 factor and kinematic/statistical factors.
+        # It applies (N_equiv / (2Li+1)) to the result.
+        # Summing these yields the correct total averaged DCS.
+        chan_dcs = dcs_dwba(
+             theta_grid, f, g, 
+             k_i_au, k_f_au, 
+             Li, chan.N_equiv
+        )
+        total_dcs += chan_dcs
         
-        dcs_channel = spin_singlet_weight * term_singlet + spin_triplet_weight * term_triplet
-        total_dcs += dcs_channel
-        
-    # Eq 216: N * (2pi)^4 * (kf/ki) * ...
-    total_dcs *= (2.0 * np.pi)**4
-    total_dcs *= prefac_kinematics
-    total_dcs *= (chan.N_equiv / (2*Li + 1))
+    # Helpers for integration
+    # NO extra factors needed (they are in dcs_dwba)
     
     # Integrate for TCS
     sigma_total_au = integrate_dcs_over_angles(theta_grid, total_dcs)

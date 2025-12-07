@@ -217,6 +217,18 @@ def radial_ME_all_L(
         int_r2_ex = np.dot(kernel_L, rho2_ex)
         I_ex = np.dot(rho1_ex, int_r2_ex)
         
+        if L == 0:
+            # Exchange Correction Term:
+            # Corresponds to (V_core - U_i) delta_{L,0} in the interaction expansion.
+            # Term = Integral[ rho1_ex(r1) * V_diff(r1) ] * Integral[ rho2_ex(r2) ]
+            # where rho1_ex = u_f(r1) * chi_i(r1)
+            #       rho2_ex = chi_f(r2) * u_i(r2)
+            # Unlike Direct case, sum_rho2_ex is overlap <chi_f|u_i>, which is non-zero
+            # unless explicitly orthogonalized.
+            sum_rho2_ex = np.sum(rho2_ex)
+            corr_val_ex = np.dot(rho1_ex, V_diff) * sum_rho2_ex
+            I_ex += corr_val_ex
+        
         I_L_exc[L] = float(I_ex)
 
     return RadialDWBAIntegrals(I_L_direct=I_L_dir, I_L_exchange=I_L_exc)
@@ -298,7 +310,15 @@ def radial_ME_all_L_gpu(
             
         # Exchange Integral
         int_r2_ex = cp.dot(kernel_L, rho2_ex)
+        # Exchange Integral
+        int_r2_ex = cp.dot(kernel_L, rho2_ex)
         I_ex = cp.dot(rho1_ex, int_r2_ex)
+        
+        if L == 0:
+            # Exchange Correction Term (GPU)
+            sum_rho2_ex = cp.sum(rho2_ex)
+            corr_val_ex = cp.dot(rho1_ex, V_diff) * sum_rho2_ex
+            I_ex += corr_val_ex
         
         # Sync Scalar Results to CPU
         I_L_dir[L] = float(I_dir) # Explicit cast triggers sync

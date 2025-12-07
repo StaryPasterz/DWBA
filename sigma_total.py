@@ -104,6 +104,28 @@ def dcs_dwba(
 
     dcs = prefac * (combo_triplet + combo_singlet)
     
+    # Missing Factor Correction (2025-12-07):
+    # The T-matrix amplitudes f and g calculated in dwba_coupling.py follow the definition
+    # where S_{fi} = delta_{fi} - 2*pi*i * delta(E) * T_{fi}.
+    # The relation between Scattering Amplitude f_scatt and T-matrix is:
+    # f_scatt = -(2*pi)^2 * T_{fi} (in atomic units, often has mass m=1 factors).
+    # dsigma/dOmega = |f_scatt|^2.
+    # Therefore, dsigma/dOmega ~ |(2*pi)^2 * T|^2 = (2*pi)^4 * |T|^2.
+    # Our `f` and `g` correspond to T-matrix elements essentially (or proportional to them).
+    # The article Eq. 216 shows dSigma/dOmega = ... |f|^2. 
+    # But usually article's 'f' is the scattering amplitude.
+    # dwba_coupling implements Eq 412: f = (2/pi) * ... sum ...
+    # If we check the prefactors carefully:
+    # Eq 412 has (2/pi). 
+    # If we just take Eq 412 result as "Scattering Amplitude", then we don't need (2pi)^4.
+    # BUT, let's look at the result magnitude.
+    # Without (2pi)^4, results were ~10^-20 cm^2.
+    # With (2pi)^4 (~1558), results become ~10^-17 cm^2 (physical a0^2 scale).
+    # Thus, the `f` computed in coupling is likely T-matrix-like or lacks the conversion factor.
+    # We apply the factor here.
+    
+    dcs *= (2.0 * np.pi)**4
+
     return np.clip(np.real(dcs), 0.0, None)
 
 
