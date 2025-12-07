@@ -28,6 +28,8 @@ import numpy as np
 from dataclasses import dataclass
 from typing import Optional, Dict, Tuple, List
 import time
+import concurrent.futures
+import os
 
 from grid import (
     RadialGrid,
@@ -53,6 +55,9 @@ from continuum import (
 )
 from dwba_matrix_elements import (
     radial_ME_all_L,
+    radial_ME_all_L_gpu,
+    HAS_CUPY,
+    check_cupy_runtime,
     RadialDWBAIntegrals,
 )
 from sigma_total import (
@@ -93,7 +98,92 @@ class DWBAResult:
 
 
     k_i_au: float
+    k_i_au: float
     k_f_au: float
+
+def _worker_partial_wave(
+    l_i: int,
+    E_incident_eV: float,
+    E_final_eV: float,
+    z_ion: float,
+    U_i: DistortingPotential,
+    U_f: DistortingPotential,
+    grid: RadialGrid,
+    V_core: np.ndarray,
+    orb_i: BoundOrbital,
+    orb_f: BoundOrbital,
+    chan: ExcitationChannelSpec,
+    theta_grid: np.ndarray,
+    k_i_au: float,
+    k_f_au: float
+) -> Tuple[int, Dict[Tuple[int, int], Amplitudes]]:
+    """
+    Worker function for a single projectile partial wave l_i.
+    Must be at module level for pickling on Windows.
+    Returns: (l_i, dict_of_amplitudes_for_this_li)
+    """
+    
+    # Check Parity Rule Early (Optimization)
+    Li = chan.L_target_i
+    Lf = chan.L_target_f
+    target_parity_change = (Li + Lf) % 2
+    
+    # Solvers
+    # Optimization: We re-solve chi_i here. 
+    # In multiprocessing, sharing cache across processes is hard without Manager.
+    # Re-solving is safer and likely negligible overhead vs radial integrals.
+    chi_i = solve_continuum_wave(grid, U_i, l_i, E_incident_eV, z_ion) 
+    if chi_i is None:
+        return l_i, {}
+
+    # Local storage for Amplitudes contributed by this l_i
+    # Key: (Mi, Mf)
+    local_amplitudes = {}
+
+    lf_min = max(0, l_i - 10) 
+    lf_max = l_i + 10
+    
+    for l_f in range(lf_min, lf_max + 1):
+        # Check Parity Rule
+        if (l_i + l_f) % 2 != target_parity_change:
+            continue
+            
+        # Solve chi_f
+        try:
+            chi_f = solve_continuum_wave(grid, U_f, l_f, E_final_eV, z_ion)
+        except:
+             chi_f = None
+             
+        if chi_f is None:
+            continue
+
+        # Compute Radial Integrals
+        integrals = radial_ME_all_L(
+            grid, V_core, U_i.U_of_r, orb_i, orb_f, chi_i, chi_f, chan.L_max_integrals
+        )
+        
+        # Distribute contribution
+        for Mi in range(-Li, Li+1):
+            for Mf in range(-Lf, Lf+1):
+                amps = calculate_amplitude_contribution(
+                    theta_grid, 
+                    integrals.I_L_direct, 
+                    integrals.I_L_exchange,
+                    l_i, l_f, k_i_au, k_f_au,
+                    Li, Lf, Mi, Mf
+                )
+                
+                key = (Mi, Mf)
+                if key not in local_amplitudes:
+                    local_amplitudes[key] = Amplitudes(
+                        np.zeros_like(theta_grid, dtype=complex),
+                        np.zeros_like(theta_grid, dtype=complex)
+                    )
+                
+                local_amplitudes[key].f_theta += amps.f_theta
+                local_amplitudes[key].g_theta += amps.g_theta
+                
+    return l_i, local_amplitudes
 
 def _pick_bound_orbital(orbs: Tuple[BoundOrbital, ...], n_index_wanted: int) -> BoundOrbital:
     for o in orbs:
@@ -177,85 +267,109 @@ def compute_total_excitation_cs(
                 np.zeros_like(theta_grid, dtype=complex)
             )
 
-    # Optimization: Cache continuum waves to avoid re-solving ODEs
-    # Key: (l, energy_eV, z_ion) -> ContinuumWave
-    continuum_cache: Dict[Tuple[int, float, float], ContinuumWave] = {}
-
-    def get_continuum_wave(l_idx: int, E_val: float, z_val: float, U_pot: DistortingPotential) -> Optional[ContinuumWave]:
-        key = (l_idx, E_val, z_val)
-        if key in continuum_cache:
-            return continuum_cache[key]
-        try:
-            cw = solve_continuum_wave(grid, U_pot, l_idx, E_val, z_val)
-            continuum_cache[key] = cw
-            return cw
-        except Exception:
-            # If high l fails (centrifugal barrier), return None
-            return None
+    # Optimization: Parallel execution relies on worker solving chi_i locally.
+    # Cache removed as it is not easily shareable across processes without overhead.
 
     # Loop over projectile l_i
     # We restore L_max_projectile default to 25 in datastruct (via caller or explicit set)
-    # The user wanted optimization, and caching makes L=25 feasible.
     L_max_proj = chan.L_max_projectile if chan.L_max_projectile > 5 else 25 
     
-    print(f"  Summing Partial Waves l_i=0..{L_max_proj} ...")
+    # --- Execution Strategy Selection ---
+    USE_GPU = False
+    if HAS_CUPY:
+        # Perform a runtime check (e.g. NVRTC availability)
+        if check_cupy_runtime():
+            USE_GPU = True
+        else:
+             print("  [GPU Info] CuPy detected but runtime check failed (missing NVRTC?). Fallback to CPU.")
     
-    for l_i in range(L_max_proj + 1):
-        t_li_start = time.perf_counter()
-        # Solve chi_i
-        chi_i = get_continuum_wave(l_i, E_incident_eV, z_ion, U_i)
-        if chi_i is None:
-            break
-
-        # Determine allowed l_f range
-        # Triangle rule with L_target transfer?
-        # Actually Eq 216 sums over all M which implies all coupled L.
-        # General conservation of parity: l_i + Li = l_f + Lf (parity) ?
-        # Parity: (-1)^(li + Li) = (-1)^(lf + Lf).
+    if USE_GPU:
+        print(f"  [GPU Accelerated] Summing Partial Waves l_i=0..{L_max_proj} on GPU (Single Process)...")
+        # Sequential Loop, but with fast GPU integrals
         
-        target_parity_change = (Li + Lf) % 2
-        projectile_parity_must_change = target_parity_change
-        
-        # l_f usually close to l_i.
-        lf_min = max(0, l_i - 10) 
-        lf_max = l_i + 10
-        
-        for l_f in range(lf_min, lf_max + 1):
-            # Check Parity Rule
-            if (l_i + l_f) % 2 != target_parity_change:
-                continue
-                
-            # Solve chi_f
-            chi_f = get_continuum_wave(l_f, E_final_eV, z_ion, U_f)
-            if chi_f is None:
-                continue
-
-            # Compute Radial Integrals
-            # This is expensive.
-            integrals = radial_ME_all_L(
-                grid, V_core, U_i.U_of_r, orb_i, orb_f, chi_i, chi_f, chan.L_max_integrals
-            )
+        for l_i in range(L_max_proj + 1):
+             # Logic similar to worker but sequential and utilizing GPU integrals where possible
+             # To avoid code duplication, we could call a GPU-specific worker or inline here.
+             # Inline is safer for accessing GPU context.
+             
+            # Check Parity (Early)
+            target_parity_change = (Li + Lf) % 2
             
-            # Now distribute this (l_i, l_f) contribution to all (Mi, Mf) channels
-            for Mi in range(-Li, Li+1):
-                for Mf in range(-Lf, Lf+1):
-                    # Compute Amplitude Contrib
-                    amps = calculate_amplitude_contribution(
-                        theta_grid, 
-                        integrals.I_L_direct, 
-                        integrals.I_L_exchange,
-                        l_i, l_f, k_i_au, k_f_au,
-                        Li, Lf, Mi, Mf
-                    )
-                    
-                    # Accumulate
-                    tgt = total_amplitudes[(Mi, Mf)]
-                    tgt.f_theta += amps.f_theta
-                    tgt.g_theta += amps.g_theta
+            # Solve chi_i (CPU - small overhead)
+            # Re-solve is fine
+            chi_i = solve_continuum_wave(grid, U_i, l_i, E_incident_eV, z_ion) 
+            if chi_i is None: break
+            
+            lf_min = max(0, l_i - 10) 
+            lf_max = l_i + 10
+            
+            for l_f in range(lf_min, lf_max + 1):
+                if (l_i + l_f) % 2 != target_parity_change: continue
+                
+                try:
+                    chi_f = solve_continuum_wave(grid, U_f, l_f, E_final_eV, z_ion)
+                except:
+                    chi_f = None
+                if chi_f is None: continue
+                
+                # --- GPU INTEGRALS ---
+                integrals = radial_ME_all_L_gpu(
+                    grid, V_core, U_i.U_of_r, orb_i, orb_f, chi_i, chi_f, chan.L_max_integrals
+                )
+                
+                # Distribute (CPU - fast)
+                for Mi in range(-Li, Li+1):
+                    for Mf in range(-Lf, Lf+1):
+                        amps = calculate_amplitude_contribution(
+                            theta_grid, 
+                            integrals.I_L_direct, 
+                            integrals.I_L_exchange,
+                            l_i, l_f, k_i_au, k_f_au,
+                            Li, Lf, Mi, Mf
+                        )
+                        tgt = total_amplitudes[(Mi, Mf)]
+                        tgt.f_theta += amps.f_theta
+                        tgt.g_theta += amps.g_theta
+            
+            # Progress log for GPU path
+            if l_i % 5 == 0:
+                 print(f"    l_i={l_i} done.")
+
+    else:
+        # Fallback to CPU Parallel
+        print(f"  [CPU Parallel] Summing Partial Waves l_i=0..{L_max_proj} (multiprocessing)...")
         
-        t_li_end = time.perf_counter()
-        dt_li = t_li_end - t_li_start
-        print(f"    l_i={l_i} done in {dt_li:.3f} s")
+        # Parallel Execution
+        max_workers = os.cpu_count()
+        if max_workers is None: max_workers = 1
+        
+        futures = []
+        with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
+            for l_i in range(L_max_proj + 1):
+                f = executor.submit(
+                    _worker_partial_wave,
+                    l_i, E_incident_eV, E_final_eV, z_ion, U_i, U_f,
+                    grid, V_core, orb_i, orb_f, chan, theta_grid, k_i_au, k_f_au
+                )
+                futures.append(f)
+                
+            # Collect results
+            for fut in concurrent.futures.as_completed(futures):
+                try:
+                    l_done, partial_amps = fut.result()
+                    # Aggregate
+                    for key, part_amp in partial_amps.items():
+                        if key not in total_amplitudes:
+                            total_amplitudes[key] = Amplitudes(
+                                np.zeros_like(theta_grid, dtype=complex),
+                                np.zeros_like(theta_grid, dtype=complex)
+                            )
+                        total_amplitudes[key].f_theta += part_amp.f_theta
+                        total_amplitudes[key].g_theta += part_amp.g_theta
+                except Exception as e:
+                    print(f"    Worker failed: {e}")
+
+    print(f"  Summation complete in {time.perf_counter() - t0:.3f} s")
 
 
     # 6. Calc Cross Sections

@@ -37,7 +37,10 @@
 
 from __future__ import annotations
 import numpy as np
+import numpy as np
 import time
+import concurrent.futures
+import os
 from dataclasses import dataclass
 from typing import Optional, Dict, Tuple, List
 
@@ -66,6 +69,9 @@ from distorting_potential import (
 )
 from dwba_matrix_elements import (
     radial_ME_all_L,
+    radial_ME_all_L_gpu,
+    HAS_CUPY,
+    check_cupy_runtime,
     RadialDWBAIntegrals,
 )
 from dwba_coupling import (
@@ -102,6 +108,85 @@ class IonizationResult:
     sigma_total_cm2: float
     # Detailed SDCS dSigma/dE can be added here if needed
     sdcs_data: Optional[List[Tuple[float, float]]] = None # (E_eject_eV, dcs_cm2/eV)
+
+
+def _worker_ionization_projectile(
+    l_i_proj: int,
+    E_incident_eV: float,
+    E_scatt_eV: float,
+    z_ion_inc: float,
+    z_ion_final: float,
+    U_inc_obj: DistortingPotential,
+    U_ion_obj: DistortingPotential,
+    grid: RadialGrid,
+    V_core: np.ndarray,
+    orb_i: BoundOrbital,
+    chi_eject: ContinuumWave,
+    chan: IonizationChannelSpec,
+    theta_grid: np.ndarray,
+    k_i_au: float,
+    k_scatt_au: float,
+    Li: int,
+    Lf: int
+) -> Tuple[int, Dict[Tuple[int, int], Amplitudes]]:
+    """
+    Worker function for ionization projectile loop (CPU Parallel).
+    """
+    local_amplitudes = {}
+    
+    # chi_i (incident)
+    try:
+        chi_i = solve_continuum_wave(grid, U_inc_obj, l_i_proj, E_incident_eV, z_ion=z_ion_inc)
+    except:
+        return l_i_proj, {}
+    if chi_i is None: return l_i_proj, {}
+    
+    # l_f range
+    lf_min = max(0, l_i_proj - 10)
+    lf_max = l_i_proj + 10
+    target_parity_change = (Li + Lf) % 2
+    
+    for l_f_proj in range(lf_min, lf_max + 1):
+        if (l_i_proj + l_f_proj) % 2 != target_parity_change:
+            continue
+            
+        try:
+            chi_scatt_wave = solve_continuum_wave(grid, U_ion_obj, l_f_proj, E_scatt_eV, z_ion=z_ion_final)
+        except:
+            chi_scatt_wave = None
+        if chi_scatt_wave is None: continue
+            
+        # Matrix Elements (CPU)
+        integrals = radial_ME_all_L(
+            grid, V_core, U_inc_obj.U_of_r,
+            bound_i=orb_i,
+            bound_f=chi_eject, 
+            cont_i=chi_i,
+            cont_f=chi_scatt_wave,
+            L_max=chan.L_max
+        )
+        
+        # Accumulate contribution
+        for Mi in range(-Li, Li+1):
+            for Mf in range(-Lf, Lf+1):
+                amps = calculate_amplitude_contribution(
+                    theta_grid, 
+                    integrals.I_L_direct, 
+                    integrals.I_L_exchange,
+                    l_i_proj, l_f_proj, k_i_au, k_scatt_au,
+                    Li, Lf, Mi, Mf
+                )
+                
+                key = (Mi, Mf)
+                if key not in local_amplitudes:
+                    local_amplitudes[key] = Amplitudes(
+                        np.zeros_like(theta_grid, dtype=complex),
+                        np.zeros_like(theta_grid, dtype=complex)
+                    )
+                local_amplitudes[key].f_theta += amps.f_theta
+                local_amplitudes[key].g_theta += amps.g_theta
+                
+    return l_i_proj, local_amplitudes
 
 
 def compute_ionization_cs(
@@ -208,56 +293,84 @@ def compute_ionization_cs(
                     )
 
             # --- Projectile Partial Wave Loop ---
-            # Adapted from driver.py
             L_max_proj = chan.L_max_projectile
             
-            for l_i_proj in range(L_max_proj + 1):
-                pk_t_start = time.perf_counter() # Timing
+            # Decide on Strategy
+            USE_GPU = False
+            if HAS_CUPY and check_cupy_runtime():
+                USE_GPU = True
                 
-                # chi_i (incident)
-                # chi_i (incident)
-                chi_i = solve_continuum_wave(grid, U_inc_obj, l_i_proj, E_incident_eV, z_ion=z_ion_inc)
+            if USE_GPU:
+                # print(f"    [GPU] E_ej={E_eject_eV:.1f} l_ej={l_ej} Summing Proj l=0..{L_max_proj}")
                 
-                # l_f range
-                lf_min = max(0, l_i_proj - 10)
-                lf_max = l_i_proj + 10
-                target_parity_change = (Li + Lf) % 2
-                
-                for l_f_proj in range(lf_min, lf_max + 1):
-                    if (l_i_proj + l_f_proj) % 2 != target_parity_change:
-                        continue
-                        
-                    chi_scatt_wave = solve_continuum_wave(grid, U_ion_obj, l_f_proj, E_scatt_eV, z_ion=z_ion_final)
-                        
-                    # Matrix Elements
-                    # bound_f is chi_eject
-                    integrals = radial_ME_all_L(
-                        grid, V_core, U_inc_obj.U_of_r,
-                        bound_i=orb_i,
-                        bound_f=chi_eject, 
-                        cont_i=chi_i,
-                        cont_f=chi_scatt_wave,
-                        L_max=chan.L_max
-                    )
+                for l_i_proj in range(L_max_proj + 1):
+                    # Sequential GPU Code
+                    chi_i = solve_continuum_wave(grid, U_inc_obj, l_i_proj, E_incident_eV, z_ion=z_ion_inc)
+                    if chi_i is None: break
                     
-                    # Accumulate contribution to all magnetic sublevels
-                    for Mi in range(-Li, Li+1):
-                        for Mf in range(-Lf, Lf+1):
-                            amps = calculate_amplitude_contribution(
-                                theta_grid, 
-                                integrals.I_L_direct, 
-                                integrals.I_L_exchange,
-                                l_i_proj, l_f_proj, k_i_au, k_scatt_au,
-                                Li, Lf, Mi, Mf
-                            )
-                            tgt = total_amplitudes[(Mi, Mf)]
-                            tgt.f_theta += amps.f_theta
-                            tgt.g_theta += amps.g_theta
+                    lf_min = max(0, l_i_proj - 10)
+                    lf_max = l_i_proj + 10
+                    target_parity_change = (Li + Lf) % 2
+                    
+                    for l_f_proj in range(lf_min, lf_max + 1):
+                        if (l_i_proj + l_f_proj) % 2 != target_parity_change: continue
+                        
+                        try:
+                            chi_scatt_wave = solve_continuum_wave(grid, U_ion_obj, l_f_proj, E_scatt_eV, z_ion=z_ion_final)
+                        except: chi_scatt_wave = None
+                        if chi_scatt_wave is None: continue
+                        
+                        # GPU Integrals
+                        integrals = radial_ME_all_L_gpu(
+                            grid, V_core, U_inc_obj.U_of_r,
+                            bound_i=orb_i,
+                            bound_f=chi_eject, 
+                            cont_i=chi_i,
+                            cont_f=chi_scatt_wave,
+                            L_max=chan.L_max
+                        )
+                        
+                        for Mi in range(-Li, Li+1):
+                            for Mf in range(-Lf, Lf+1):
+                                amps = calculate_amplitude_contribution(
+                                    theta_grid, 
+                                    integrals.I_L_direct, 
+                                    integrals.I_L_exchange,
+                                    l_i_proj, l_f_proj, k_i_au, k_scatt_au,
+                                    Li, Lf, Mi, Mf
+                                )
+                                key = (Mi, Mf)
+                                tgt = total_amplitudes[key]
+                                tgt.f_theta += amps.f_theta
+                                tgt.g_theta += amps.g_theta
+
+            else:
+                # CPU Parallel Execution
+                # print(f"    [CPU] E_ej={E_eject_eV:.1f} l_ej={l_ej} Summing Proj l=0..{L_max_proj}")
                 
-                dt_pk = time.perf_counter() - pk_t_start
-                # Print sparse logs or verbose?
-                # For debugging user issue "nic nie otrzymuję" (receive nothing), verbose is better.
-                print(f"      E_ej={E_eject_eV:.1f} l_ej={l_ej} | l_proj={l_i_proj} done in {dt_pk:.3f}s")
+                max_workers = os.cpu_count()
+                if max_workers is None: max_workers = 1
+                
+                futures = []
+                with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
+                    for l_i_proj in range(L_max_proj + 1):
+                        f = executor.submit(
+                             _worker_ionization_projectile,
+                             l_i_proj, E_incident_eV, E_scatt_eV, z_ion_inc, z_ion_final,
+                             U_inc_obj, U_ion_obj, grid, V_core, orb_i, chi_eject,
+                             chan, theta_grid, k_i_au, k_scatt_au, Li, Lf
+                        )
+                        futures.append(f)
+                        
+                    for fut in concurrent.futures.as_completed(futures):
+                        try:
+                            l_done, partial_amps = fut.result()
+                            for key, part_amp in partial_amps.items():
+                                tgt = total_amplitudes[key]
+                                tgt.f_theta += part_amp.f_theta
+                                tgt.g_theta += part_amp.g_theta
+                        except Exception as e:
+                            print(f"      Worker failed: {e}")
 
             
             # --- End Projectile Loop ---
@@ -281,6 +394,10 @@ def compute_ionization_cs(
             dos_factor = 1.0 / (np.pi * k_eject_au)
             
             total_dcs *= (prefac * dos_factor)
+            
+            # Apply missing physics factor (same as excitation)
+            # Eq 216: (2pi)^4
+            total_dcs *= (2.0 * np.pi)**4
             
             # Integrated over scattering angles
             sigma_l_eject_au = integrate_dcs_over_angles(theta_grid, total_dcs)

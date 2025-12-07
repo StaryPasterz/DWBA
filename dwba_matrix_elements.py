@@ -52,6 +52,30 @@ from grid import RadialGrid
 from bound_states import BoundOrbital
 from continuum import ContinuumWave
 
+# --- GPU Acceleration Support ---
+try:
+    import cupy as cp
+    HAS_CUPY = True
+except ImportError:
+    HAS_CUPY = False
+
+def check_cupy_runtime() -> bool:
+    """
+    Verifies if CuPy can actually run on this system.
+    Detects issues like missing NVRTC DLLs even if import succeeds.
+    """
+    if not HAS_CUPY:
+        return False
+    try:
+        # Attempt a minimal operation that requires compilation/backend
+        x = cp.array([1.0])
+        y = x * 2.0
+        _ = y.get()
+        return True
+    except Exception as e:
+        print(f"[Warning] GPU initialization failed: {e}")
+        return False
+
 @dataclass(frozen=True)
 class RadialDWBAIntegrals:
     """
@@ -193,6 +217,91 @@ def radial_ME_all_L(
         int_r2_ex = np.dot(kernel_L, rho2_ex)
         I_ex = np.dot(rho1_ex, int_r2_ex)
         
+        I_L_exc[L] = float(I_ex)
+
+    return RadialDWBAIntegrals(I_L_direct=I_L_dir, I_L_exchange=I_L_exc)
+
+
+def radial_ME_all_L_gpu(
+    grid: RadialGrid,
+    V_core_array: np.ndarray,
+    U_i_array: np.ndarray,
+    bound_i: BoundOrbital,
+    bound_f: Union[BoundOrbital, ContinuumWave],
+    cont_i: ContinuumWave,
+    cont_f: ContinuumWave,
+    L_max: int
+) -> RadialDWBAIntegrals:
+    """
+    GPU Accelerated Version of radial_ME_all_L using CuPy.
+    Uses GPU for broadcasting and heavy matrix-vector multiplications.
+    """
+    if not HAS_CUPY:
+        raise RuntimeError("radial_ME_all_L_gpu called but cupy is not installed.")
+
+    # 1. Transfer Data to GPU
+    # Arrays are 1D (size N). Transfer is fast (few KB).
+    r_gpu = cp.asarray(grid.r)
+    w_gpu = cp.asarray(grid.w_trapz)
+    
+    u_i_gpu = cp.asarray(bound_i.u_of_r)
+    u_f_gpu = cp.asarray(bound_f.u_of_r)
+    chi_i_gpu = cp.asarray(cont_i.chi_of_r)
+    chi_f_gpu = cp.asarray(cont_f.chi_of_r)
+    
+    V_core_gpu = cp.asarray(V_core_array)
+    U_i_gpu = cp.asarray(U_i_array)
+
+    # 2. Precompute Densities on GPU
+    rho1_dir = w_gpu * chi_f_gpu * chi_i_gpu
+    rho2_dir = w_gpu * u_f_gpu * u_i_gpu
+    rho1_ex = w_gpu * u_f_gpu * chi_i_gpu
+    rho2_ex = w_gpu * chi_f_gpu * u_i_gpu
+    
+    V_diff = V_core_gpu - U_i_gpu
+
+    # 3. Kernel Construction on GPU
+    # Broadcasting to create N x N matrices
+    r_col = r_gpu[:, None]
+    r_row = r_gpu[None, :]
+    
+    r_less = cp.minimum(r_col, r_row)
+    r_gtr  = cp.maximum(r_col, r_row)
+    
+    # Avoid div/0
+    # On GPU we can set eps or mask
+    eps = 1e-30
+    ratio = r_less / (r_gtr + eps)
+    # Correct for diagonal r=0 case if r_gtr=0? 
+    # Usually grid.r[0] > 0. If 0, handle?
+    # grid.r starts at r_min > 0 usually.
+    
+    kernel_L = 1.0 / (r_gtr + eps)
+    
+    I_L_dir: Dict[int, float] = {}
+    I_L_exc: Dict[int, float] = {}
+
+    for L in range(L_max + 1):
+        if L > 0:
+            kernel_L *= ratio
+        
+        # Direct Integral: < rho1 | K | rho2 >
+        # cp.dot(matrix, vector)
+        int_r2 = cp.dot(kernel_L, rho2_dir)
+        I_dir = cp.dot(rho1_dir, int_r2)
+        
+        # L=0 Correction
+        if L == 0:
+            sum_rho2 = cp.sum(rho2_dir)
+            corr_val = cp.dot(rho1_dir, V_diff) * sum_rho2
+            I_dir += corr_val
+            
+        # Exchange Integral
+        int_r2_ex = cp.dot(kernel_L, rho2_ex)
+        I_ex = cp.dot(rho1_ex, int_r2_ex)
+        
+        # Sync Scalar Results to CPU
+        I_L_dir[L] = float(I_dir) # Explicit cast triggers sync
         I_L_exc[L] = float(I_ex)
 
     return RadialDWBAIntegrals(I_L_direct=I_L_dir, I_L_exchange=I_L_exc)
