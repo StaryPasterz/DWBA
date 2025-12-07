@@ -293,6 +293,8 @@ def compute_total_excitation_cs(
         dcs_channel = spin_singlet_weight * term_singlet + spin_triplet_weight * term_triplet
         total_dcs += dcs_channel
         
+    # Eq 216: N * (2pi)^4 * (kf/ki) * ...
+    total_dcs *= (2.0 * np.pi)**4
     total_dcs *= prefac_kinematics
     total_dcs *= (chan.N_equiv / (2*Li + 1))
     
