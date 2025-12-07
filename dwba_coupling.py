@@ -239,6 +239,7 @@ def calculate_amplitude_contribution(
     # f = (2/pi) * i^(...) * Y_lf_val * Y_li_star * sum(...)
     # Note: Eq 412 result is scalar (for fixed angles).
     f_total = pref_common * phase_i * Y_lf_val * Y_li_star * f_contrib
+    
 
 
     # EXCHANGE AMPLITUDE (Eq 448) --

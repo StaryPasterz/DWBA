@@ -424,12 +424,25 @@ def solve_continuum_wave(
     # integrate outward up to r_max
     r_max = float(r[-1])
 
+    # Determine max_step to avoid aliasing oscillations (lambda = 2pi/k)
+    # We want at least 10-20 steps per wavelength.
+    # lambda ~ 2*pi / k_au.
+    if k_au > 1e-3:
+        wavelength = 2.0 * np.pi / k_au
+        max_step_val = wavelength / 20.0
+    else:
+        max_step_val = 0.1 # default safe step
+        
+    # Cap max_step to avoid being too small or too large
+    max_step_val = min(max_step_val, 0.2) 
+
     sol = solve_ivp(
         fun=rhs,
         t_span=(r_min, r_max),
         y0=y0,
-        t_eval=r,          # we want the solution specifically on our global grid points
-        method="LSODA",    # LSODA is generally faster/stiffer-resistant
+        t_eval=r,          
+        method="RK45",
+        max_step=max_step_val,
         rtol=rtol,
         atol=atol,
         dense_output=False

@@ -273,13 +273,8 @@ def compute_total_excitation_cs(
         target_parity_change = (Li + Lf) % 2
         projectile_parity_must_change = target_parity_change
         
-        # l_f must satisfy: |l_i - Lambda| <= l_f <= l_i + Lambda ?? No.
-        # Just parity selection is strict.
-        # And generally |l_f - l_i| <= k_ multipole expansion convergence.
-        # We perform sum over allowed l_f.
-        
-        # Heuristic: l_f usually close to l_i.
-        lf_min = max(0, l_i - 10) # 10 is safe margin for multipoles
+        # l_f usually close to l_i.
+        lf_min = max(0, l_i - 10) 
         lf_max = l_i + 10
         
         for l_f in range(lf_min, lf_max + 1):
