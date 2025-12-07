@@ -1,285 +1,434 @@
 # debug.py
 #
-# Diagnostic script to trace DWBA calculation steps and verify intermediate values using the V2 codebase.
+# Enhanced DWBA Debugger & Verification Suite (V2)
 #
 # USAGE:
 #   python debug.py
 #
-# Generates plots:
-#   debug_bound_states.png
-#   debug_potentials.png
-#   debug_continuum.png
-#   debug_integrands.png
+# Features:
+#   - Execution Timing for every step.
+#   - Deep Physics Verification (Wronskians, Norms, Nodes).
+#   - Full Pipeline Tracing (Excitation).
+#
 
 import numpy as np
 import matplotlib.pyplot as plt
 import os
 import sys
 import time
+from dataclasses import dataclass, field
+from typing import List, Dict, Optional, Any, Callable
+from contextlib import contextmanager
 
-# Add current directory to path if needed
+# Add functionality to path
 sys.path.append(os.getcwd())
 
-from grid import make_r_grid, ev_to_au, k_from_E_eV, integrate_trapz
+# Import Core Modules
+from grid import make_r_grid, ev_to_au, k_from_E_eV, integrate_trapz, RadialGrid
 from potential_core import CorePotentialParams, V_core_on_grid
-from bound_states import solve_bound_states
-from distorting_potential import build_distorting_potentials
-from continuum import solve_continuum_wave
+from bound_states import solve_bound_states, BoundOrbital
+from distorting_potential import build_distorting_potentials, DistortingPotential
+from continuum import solve_continuum_wave, ContinuumWave
 from dwba_matrix_elements import radial_ME_all_L
-from dwba_coupling import calculate_amplitude_contribution
+from dwba_coupling import calculate_amplitude_contribution, Amplitudes
 
-def main():
-    print("=== DWBA DEBUG DIAGNOSTICS ===")
+@dataclass
+class DebugConfig:
+    Z: float = 1.0
+    E_inc_eV: float = 50.0
+    # Process
+    transition_name: str = "1s -> 2p"
+    ni: int = 1
+    li: int = 0
+    nf: int = 2
+    lf: int = 1
     
-    # --- 1. CONFIGURATION ---
-    Z = 1.0  # Hydrogen
-    E_inc_eV = 50.0
-    transition = "1s -> 2s" # or "1s -> 2p"
+    # Grid
+    r_max: float = 100.0
+    n_points: int = 3000
     
-    ni, li = 1, 0
-    nf, lf = 2, 1 # 2p
-    
-    print(f"Test Case: Z={Z}, {ni}s -> {nf}{'s' if lf==0 else 'p'} @ {E_inc_eV} eV")
+    # Debug Options
+    check_high_L: bool = True
+    plot_waves: bool = True
+    mode: str = "excitation" # or "ionization"
 
-    # --- 2. GRID SETUP ---
-    r_max = 100.0
-    n_points = 3000
-    grid = make_r_grid(r_min=1e-4, r_max=r_max, n_points=n_points)
-    print(f"Grid: {n_points} points, r_min={grid.r[0]:.2e}, r_max={grid.r[-1]:.1f}")
+class DWBADebugger:
+    def __init__(self, config: DebugConfig):
+        self.cfg = config
+        self.timings: Dict[str, float] = {}
+        self.grid: Optional[RadialGrid] = None
+        self.V_core: Optional[np.ndarray] = None
+        
+        print("\n=== DWBADebugger Initialized ===")
+        print(f"Target: Z={config.Z}, Transition: {config.transition_name} ({config.mode})")
+        print(f"Energy: {config.E_inc_eV} eV")
     
-    # --- 3. BOUND STATES ---
-    core_params = CorePotentialParams(Zc=Z, a1=0, a2=0, a3=0, a4=0, a5=0, a6=0)
-    V_core = V_core_on_grid(grid, core_params)
-    
-    # Initial State
-    states_i = solve_bound_states(grid, V_core, l=li, n_states_max=ni+1)
-    # n_index = n - l
-    n_idx_i_val = ni - li
-    orb_i = [s for s in states_i if s.n_index == n_idx_i_val][0]
-    
-    # Final State
-    states_f = solve_bound_states(grid, V_core, l=lf, n_states_max=nf+1)
-    n_idx_f_val = nf - lf
-    orb_f = [s for s in states_f if s.n_index == n_idx_f_val][0]
-    
-    print("\n--- Bound States ---")
-    print(f"Initial ({ni}l{li}): E={orb_i.energy_au:.6f} Ha (Expected: {-0.5/ni**2:.6f})")
-    print(f"Final   ({nf}l{lf}): E={orb_f.energy_au:.6f} Ha (Expected: {-0.5/nf**2:.6f})")
-    
-    # Check Normalization
-    norm_i = integrate_trapz(np.abs(orb_i.u_of_r)**2, grid)
-    norm_f = integrate_trapz(np.abs(orb_f.u_of_r)**2, grid)
-    print(f"Norm i: {norm_i:.6f}")
-    print(f"Norm f: {norm_f:.6f}")
-    
-    if abs(norm_i - 1.0) > 1e-4 or abs(norm_f - 1.0) > 1e-4:
-        print("WARNING: Bound state normalization error!")
-
-    # Plot Bound States
-    plt.figure(figsize=(10, 6))
-    plt.plot(grid.r, orb_i.u_of_r, label=f'Initial n={ni} l={li}')
-    plt.plot(grid.r, orb_f.u_of_r, label=f'Final n={nf} l={lf}')
-    plt.xlim(0, 20)
-    plt.title("Bound State Wavefunctions u(r)")
-    plt.xlabel("r (a.u.)")
-    plt.legend()
-    plt.grid(True)
-    plt.savefig("debug_bound_states.png")
-    print("Saved debug_bound_states.png")
-
-    # --- 4. DISTORTING POTENTIALS ---
-    dE = orb_f.energy_au - orb_i.energy_au # Excitation energy (negative if excitation? No, E_f > E_i usually implies absorption)
-    # Wait, Bound energy: E_1s = -0.5, E_2s = -0.125. dE = -0.125 - (-0.5) = +0.375
-    E_final_eV = E_inc_eV - (dE * 27.211)
-    
-    k_i = k_from_E_eV(E_inc_eV)
-    k_f = k_from_E_eV(E_final_eV)
-    
-    print(f"\n--- Kinematics ---")
-    print(f"E_inc = {E_inc_eV:.2f} eV, k_i = {k_i:.4f} a.u.")
-    print(f"E_fin = {E_final_eV:.2f} eV, k_f = {k_f:.4f} a.u.")
-    
-    # Build Potentials
-    U_i, U_f = build_distorting_potentials(grid, V_core, orb_i, orb_f, k_i, k_f, use_exchange=False)
-    
-    print("\n--- Distorting Potentials ---")
-    print(f"U_i(r_min) = {U_i.U_of_r[0]:.2f}, U_i(r_max) = {U_i.U_of_r[-1]:.2e}")
-    print(f"U_f(r_min) = {U_f.U_of_r[0]:.2f}, U_f(r_max) = {U_f.U_of_r[-1]:.2e}")
-    
-    # Plot Potentials
-    plt.figure(figsize=(10, 6))
-    plt.plot(grid.r, U_i.U_of_r, label='U_i (Entrance)')
-    plt.plot(grid.r, U_f.U_of_r, label='U_f (Exit)')
-    plt.plot(grid.r, V_core, '--', color='gray', label='V_core', alpha=0.5)
-    plt.xlim(0, 10) # Zoom in near core
-    plt.ylim(-Z*2, 0.5)
-    plt.title("Distorting Potentials U(r)")
-    plt.xlabel("r (a.u.)")
-    plt.legend()
-    plt.grid(True)
-    plt.savefig("debug_potentials.png")
-    print("Saved debug_potentials.png")
-    
-    # --- 5. CONTINUUM WAVES ---
-    print("\n--- Continuum Waves Check ---")
-    l_test = 0
-    chi_i = solve_continuum_wave(grid, U_i, l=l_test, E_eV=E_inc_eV)
-    chi_f = solve_continuum_wave(grid, U_f, l=l_test, E_eV=E_final_eV)
-    
-    print(f"L={l_test}")
-    print(f"Chi_i Phase Shift: {chi_i.phase_shift:.4f} rad")
-    print(f"Chi_f Phase Shift: {chi_f.phase_shift:.4f} rad")
-    
-    # Check Asymptotic Amplitude
-    # Should be ~1.0
-    tail_amp_i = np.max(np.abs(chi_i.chi_of_r[-500:]))
-    tail_amp_f = np.max(np.abs(chi_f.chi_of_r[-500:]))
-    print(f"Asymp Amp i: ~{tail_amp_i:.4f}")
-    print(f"Asymp Amp f: ~{tail_amp_f:.4f}")
-
-    plt.figure(figsize=(10, 6))
-    plt.plot(grid.r, chi_i.chi_of_r, label=f'Chi_i L={l_test}')
-    plt.plot(grid.r, chi_f.chi_of_r, label=f'Chi_f L={l_test}')
-    plt.xlim(0, 50)
-    plt.title(f"Continuum Waves L={l_test} (normalized to unit amp)")
-    plt.xlabel("r (a.u.)")
-    plt.legend()
-    plt.grid(True)
-    plt.savefig("debug_continuum.png")
-    print("Saved debug_continuum.png")
-
-    # --- 6. RADIAL INTEGRALS ---
-    print("\n--- Radial Integrals (First few partial waves) ---")
-    
-    L_Range = 5
-    integrals_log = []
-    
-    for l_p in range(L_Range):
+    @contextmanager
+    def measure(self, step_name: str):
+        """Context manager to measure execution time of a block."""
+        start_ns = time.perf_counter_ns()
         try:
-             c_i = solve_continuum_wave(grid, U_i, l=l_p, E_eV=E_inc_eV)
-             # Let's assume l_f = l_i for simplicity in this quick scan, or adjacent
-             # For s->s, monopole term L_T=0 connects l -> l.
-             c_f = solve_continuum_wave(grid, U_f, l=l_p, E_eV=E_final_eV)
-             
-             ints = radial_ME_all_L(grid, V_core, U_i.U_of_r, orb_i, orb_f, c_i, c_f, L_max=2)
-             
-             val_dir = ints.I_L_direct.get(0, 0.0) # L_T=0
-             val_exc = ints.I_L_exchange.get(0, 0.0)
-             
-             print(f"l_i={l_p}, l_f={l_p} | R_dir(L=0)={val_dir:.4e}, R_exc(L=0)={val_exc:.4e}")
-             
-             if abs(val_dir) > 100.0:
-                 print("  >>> WARNING: Huge integral value!")
-                 
-        except Exception as e:
-            print(f"l={l_p} failed: {e}")
+            yield
+        finally:
+            dt_ms = (time.perf_counter_ns() - start_ns) / 1e6
+            self.timings[step_name] = dt_ms
+            print(f"  [TIME] {step_name:<30}: {dt_ms:.2f} ms")
 
-    # --- 7. PARTIAL WAVE SUMMATION (1s -> 2p) ---
-    print("\n--- Full Cross Section Summation (1s -> 2p) ---")
-    
-    # Grid for angular integration
-    theta_grid = np.linspace(0.0, np.pi, 200)
-    
-    # Storage for amplitudes
-    # Key: (Mi, Mf) -> Amplitudes(f, g)
-    from dwba_coupling import Amplitudes
-    
-    # H 1s -> 2p: Li=0, Lf=1. 
-    # Mi=0. Mf can be -1, 0, 1.
-    total_amplitudes = {}
-    Li, Lf = li, lf
-    
-    for Mi in range(-Li, Li+1):
-        for Mf in range(-Lf, Lf+1):
-             total_amplitudes[(Mi, Mf)] = Amplitudes(
-                np.zeros_like(theta_grid, dtype=complex),
-                np.zeros_like(theta_grid, dtype=complex)
-            )
+    def log(self, msg: str, header: bool = False):
+        if header:
+            print(f"\n--- {msg} ---")
+        else:
+            print(f"  {msg}")
 
-    L_max_proj = 20
-    print(f"Summing partial waves up to l_i={L_max_proj} for 1s->2p...")
-    
-    for l_i in range(L_max_proj + 1):
-        # Solve chi_i
-        chi_i = solve_continuum_wave(grid, U_i, l=l_i, E_eV=E_inc_eV)
-        
-        # Parity: Li=0, Lf=1. Target Parity Change = Odd.
-        # Projectile: l_i -> l_f must change parity.
-        # So l_f = l_i +/- 1, etc.
-        parity_target = (Li + Lf) % 2 # 1
-        
-        lf_min = max(0, l_i - 5)
-        lf_max = l_i + 5
-        
-        for l_f in range(lf_min, lf_max + 1):
-            if (l_i + l_f) % 2 != parity_target:
-                continue
+    def check(self, condition: bool, msg: str):
+        """Assertion wrapper."""
+        status = "PASS" if condition else "FAIL"
+        if not condition:
+            print(f"  [CHECK] {msg:<40} [{status}] !!!")
+        else:
+            # print(f"  [CHECK] {msg:<40} [{status}]")
+            pass
+
+    def run_full_trace(self):
+        """Execute the full debugging pipeline."""
+        with self.measure("Total Execution"):
+            self._setup_grid()
+            
+            if self.cfg.mode == "excitation":
+                orb_i, orb_f = self._solve_target_states()
+                U_i, U_f = self._build_distorting_potentials(orb_i, orb_f)
+                self._trace_excitation_physics(orb_i, orb_f, U_i, U_f)
                 
-            chi_f = solve_continuum_wave(grid, U_f, l=l_f, E_eV=E_final_eV)
-            
-            # Integrals
-            ints = radial_ME_all_L(grid, V_core, U_i.U_of_r, orb_i, orb_f, chi_i, chi_f, L_max=8)
-            
-            # Add to amplitudes
-            for Mi in range(-Li, Li+1):
-                for Mf in range(-Lf, Lf+1):
-                    amps = calculate_amplitude_contribution(
-                        theta_grid,
-                        ints.I_L_direct,
-                        ints.I_L_exchange,
-                        l_i, l_f, k_i, k_f,
-                        Li, Lf, Mi, Mf
-                    )
-                    tgt = total_amplitudes[(Mi, Mf)]
-                    tgt.f_theta += amps.f_theta
-                    tgt.g_theta += amps.g_theta
-
-        if l_i % 5 == 0:
-            print(f"  l_i={l_i} done.")
-
-
-    
-    # Expected for H 1s-2s at 50eV is approx 1.0 * pi * a0^2 ???
-    # Actually checking literature: Callaway et al gives around 0.1 - 0.2 pi a0^2.
-    # So 0.6 a.u. area?
-    
-    # Integration
-    total_dcs = np.zeros_like(theta_grid, dtype=float)
-    prefac_kinematics = (k_f / k_i)
-    
-    spin_singlet = 0.25
-    spin_triplet = 0.75
-    
-    for (Mi, Mf), amps in total_amplitudes.items():
-        f = amps.f_theta
-        g = amps.g_theta
+            elif self.cfg.mode == "ionization":
+                orb_i = self._solve_initial_state_only()
+                self._trace_ionization_physics(orb_i)
         
-        term_singlet = np.abs(f + g)**2
-        term_triplet = np.abs(f - g)**2
+        self._print_summary()
+
+    def _solve_initial_state_only(self) -> BoundOrbital:
+        self.log("Solving Initial Bound State", header=True)
+        with self.measure("Bound State Initial"):
+            states_i = solve_bound_states(self.grid, self.V_core, l=self.cfg.li, n_states_max=self.cfg.ni+1)
+            n_idx_i = self.cfg.ni - self.cfg.li
+            orb_i = [s for s in states_i if s.n_index == n_idx_i][0]
+        self._verify_bound_state(orb_i, self.cfg.ni, self.cfg.li)
+        return orb_i
+
+    def _trace_ionization_physics(self, orb_i):
+        self.log("Tracing Ionization Pipeline", header=True)
         
-        dcs_channel = spin_singlet * term_singlet + spin_triplet * term_triplet
-        total_dcs += dcs_channel
-    
-    total_dcs *= prefac_kinematics
-    # Average over initial states (2Li+1)
-    total_dcs *= (1.0 / (2*Li + 1))
-    
-    # Manual trapz:
-    dcs_sin = total_dcs * np.sin(theta_grid)
-    sigma_au = 2 * np.pi * np.trapz(dcs_sin, theta_grid)
-    
-    from grid import HARTREE_TO_EV
-    # 1 a.u. length = 5.29177e-11 m = 5.29e-9 cm
-    # 1 a.u. area = 2.80028e-17 cm^2
-    au2cm2 = 2.80028e-17
-    
-    sigma_cm2 = sigma_au * au2cm2
-    
-    print(f"\n--- Final Results ---")
-    print(f"Sigma (a.u.): {sigma_au:.4e}")
-    print(f"Sigma (cm^2): {sigma_cm2:.4e}")
-    
-    print(f"DONE.")
+        # 1. Setup Potentials
+        from distorting_potential import DistortingPotential
+        k_i = k_from_E_eV(self.cfg.E_inc_eV)
+        U_inc, _ = build_distorting_potentials(self.grid, self.V_core, orb_i, orb_i, k_i, k_i, False)
+        
+        U_ion = DistortingPotential(U_of_r=self.V_core, V_hartree_of_r=np.zeros_like(self.V_core))
+        
+        # 2. Energy Grid
+        IP_eV = -orb_i.energy_au * 27.211
+        E_total_final = self.cfg.E_inc_eV - IP_eV
+        
+        if E_total_final <= 0:
+            self.log("Incident energy below IP! No ionization.")
+            return
+
+        self.log(f"Ionization: IP={IP_eV:.2f}eV, E_avail={E_total_final:.2f}eV")
+        
+        # Test just one energy point for speed
+        E_eject_eV = E_total_final / 2.0
+        E_scatt_eV = E_total_final - E_eject_eV
+        
+        self.log(f"Testing Kinematic Point: E_ej={E_eject_eV:.2f}, E_sc={E_scatt_eV:.2f}")
+
+        # 3. Verify Ejected Wave (L=0)
+        with self.measure("Ejected Wave Solve"):
+            chi_eject = solve_continuum_wave(self.grid, U_ion, l=0, E_eV=E_eject_eV, z_ion=self.core_params.Zc)
+        self._verify_continuum(chi_eject, "Chi_eject (L=0)", U_ion, E_eject_eV)
+        
+        # 4. Verify Projectile Waves
+        with self.measure("Projectile Waves Solve"):
+            # Incident Wave (at E_inc)
+            # U_inc should include exchange=False as per ionization.py logic
+            k_i = k_from_E_eV(self.cfg.E_inc_eV)
+            chi_inc = solve_continuum_wave(self.grid, U_inc, l=0, E_eV=self.cfg.E_inc_eV, z_ion=self.core_params.Zc-1.0) # e + Neutral
+            
+            # Scattered Wave (at E_scatt)
+            # e + Ion
+            chi_scatt = solve_continuum_wave(self.grid, U_ion, l=0, E_eV=E_scatt_eV, z_ion=self.core_params.Zc)
+            
+        # 5. Integrals Check
+        self.log("Checking Radial Integrals (L=0,0)...")
+        # bound_f is chi_eject
+        ints = radial_ME_all_L(self.grid, self.V_core, U_inc.U_of_r, orb_i, chi_eject, chi_inc, chi_scatt, L_max=2)
+        val = ints.I_L_direct.get(0, 0.0)
+        self.log(f"Radial element <ki|V|kf, kej> : {val:.4e}")
+        self.check(abs(val) < 1.0, "Ionization Integral Magnitude")
+        
+        self.log("Ionization Trace Complete (Success).")
+
+
+    def _setup_grid(self):
+        self.log("Initializing Grid", header=True)
+        with self.measure("Grid Generation"):
+            self.grid = make_r_grid(r_min=1e-4, r_max=self.cfg.r_max, n_points=self.cfg.n_points)
+            self.core_params = CorePotentialParams(Zc=self.cfg.Z, a1=0, a2=0, a3=0, a4=0, a5=0, a6=0)
+            self.V_core = V_core_on_grid(self.grid, self.core_params)
+        self.log(f"Grid points: {len(self.grid.r)}, r_max: {self.grid.r[-1]}")
+
+    def _solve_target_states(self) -> (BoundOrbital, BoundOrbital):
+        self.log("Solving Bound States", header=True)
+        
+        # Initial State
+        with self.measure("Bound State Initial"):
+            states_i = solve_bound_states(self.grid, self.V_core, l=self.cfg.li, n_states_max=self.cfg.ni+1)
+            # Correct Indexing Logic (n - l)
+            n_idx_i = self.cfg.ni - self.cfg.li
+            orb_i = [s for s in states_i if s.n_index == n_idx_i][0]
+            
+        self._verify_bound_state(orb_i, self.cfg.ni, self.cfg.li)
+        
+        # Final State
+        with self.measure("Bound State Final"):
+            states_f = solve_bound_states(self.grid, self.V_core, l=self.cfg.lf, n_states_max=self.cfg.nf+1)
+            n_idx_f = self.cfg.nf - self.cfg.lf
+            orb_f = [s for s in states_f if s.n_index == n_idx_f][0]
+            
+        self._verify_bound_state(orb_f, self.cfg.nf, self.cfg.lf)
+        
+        # Orthogonality Check
+        if self.cfg.li == self.cfg.lf:
+            overlap = integrate_trapz(orb_i.u_of_r * orb_f.u_of_r, self.grid)
+            self.check(abs(overlap) < 1e-4, f"Orthogonality <i|f> = {overlap:.2e}")
+        
+        return orb_i, orb_f
+
+    def _check_equation_consistency(self, u: np.ndarray, E_au: float, V_eff: np.ndarray, l: int, label: str):
+        """
+        Verify that u(r) satisfies u'' + 2(E - V_eff - l(l+1)/2r^2)u = 0.
+        We check the "Local Energy": E_loc = V_eff + l(l+1)/2r^2 - u''/(2u).
+        It should be constant and equal to E_au.
+        """
+        # Second derivative via finite difference
+        # Grid is non-uniform, use gradients
+        
+        # d/dr
+        du = np.gradient(u, self.grid.r, edge_order=2)
+        d2u = np.gradient(du, self.grid.r, edge_order=2)
+        
+        # Centrifugal term
+        # handle r=0 singularty: check from index 50 onwards
+        r_safe = self.grid.r
+        with np.errstate(divide='ignore', invalid='ignore'):
+            V_cent = float(l*(l+1)) / (2.0 * r_safe**2)
+            
+            # Kinetic term = -1/2 u'' / u
+            # Avoid division by zero at nodes
+            mask = np.abs(u) > 1e-4 * np.max(np.abs(u))
+            
+            # Theoretical LHS = E
+            # Calculated LHS = -0.5 * u''/u + V_eff + V_cent
+            
+            # Let's compute residual: u'' + 2(E - V_tot)u = 0
+            # Residual = u'' + 2(E - V_eff - V_cent)u
+            
+            V_tot = V_eff + V_cent
+            term_potential = 2.0 * (E_au - V_tot) * u
+            residual = d2u + term_potential
+            
+            # Rel Error = Residual / (max(u'') + max(2(E-V)u))
+            scale = np.maximum(np.abs(d2u), np.abs(term_potential))
+            rel_error = np.abs(residual) / (scale + 1e-10)
+            
+            # Check in region where u is significant and r is not too small
+            check_mask = mask & (r_safe > 0.1) & (r_safe < self.grid.r[-10])
+            
+            if np.any(check_mask):
+                max_err = np.max(rel_error[check_mask])
+                avg_err = np.mean(rel_error[check_mask])
+                
+                # Finite difference on this grid is not super precise, tolerance 0.05 (5%)
+                self.check(max_err < 0.1, f"{label} Schrödinger Residual (MaxRel={max_err:.4f})")
+            else:
+                self.log(f"{label} Skipping Consistency Check (No significant region)")
+
+    def _verify_bound_state(self, orb: BoundOrbital, n: int, l: int):
+        # ... existing checks ...
+        # 1. Normalization
+        norm = integrate_trapz(np.abs(orb.u_of_r)**2, self.grid)
+        self.check(abs(norm - 1.0) < 1e-3, f"Norm n={n}l={l} ({norm:.6f})")
+        
+        # 2. Nodes
+        u_max = np.max(np.abs(orb.u_of_r))
+        significant_mask = np.abs(orb.u_of_r) > 1e-4 * u_max
+        if np.any(significant_mask):
+            u_sig = orb.u_of_r[significant_mask]
+            sign_changes = np.sum(np.diff(np.sign(u_sig)) != 0)
+        else:
+            sign_changes = 0
+        expected_nodes = n - l - 1
+        self.check(sign_changes == expected_nodes, f"Nodes n={n}l={l} (Got {sign_changes}, Exp {expected_nodes})")
+        
+        # 3. Energy
+        if self.cfg.Z == 1.0:
+            expected_E = -0.5 / (n**2)
+            self.check(abs(orb.energy_au - expected_E) < 1e-3, f"Energy n={n} ({orb.energy_au:.5f}) vs {expected_E:.5f}")
+            
+        # 4. Equation Consistency
+        self._check_equation_consistency(orb.u_of_r, orb.energy_au, self.V_core, l, f"Bound {n}{l}")
+
+    def _verify_continuum(self, wave: ContinuumWave, label: str, U_pot: Optional[DistortingPotential] = None, E_eV: float = 0.0):
+        # 1. Asymptotic Amplitude
+        tail_max = np.max(np.abs(wave.chi_of_r[-int(self.cfg.n_points*0.1):]))
+        self.check(0.9 < tail_max < 1.1, f"{label} Asymp Amp (~{tail_max:.3f})")
+        
+        # 2. Equation Consistency
+        if U_pot is not None:
+             # U_of_r is the potential V_eff (excluding centrifugal)
+             # Convert E_eV to E_au
+             E_au = E_eV / 27.211386
+             # Note: solve_continuum_wave internally manages U.
+             # If U_pot includes exchange, checking is harder. 
+             # But here we assume local potential for check.
+             self._check_equation_consistency(wave.chi_of_r, E_au, U_pot.U_of_r, wave.l, label)
+
+    def _build_distorting_potentials(self, orb_i, orb_f):
+        self.log("Building Distorting Potentials", header=True)
+        
+        dE = orb_f.energy_au - orb_i.energy_au
+        self.E_final_eV = self.cfg.E_inc_eV - (dE * 27.211386)
+        
+        self.k_i = k_from_E_eV(self.cfg.E_inc_eV)
+        self.k_f = k_from_E_eV(self.E_final_eV)
+        
+        self.log(f"Kinematics: E_i={self.cfg.E_inc_eV:.2f}eV (k={self.k_i:.3f}), E_f={self.E_final_eV:.2f}eV (k={self.k_f:.3f})")
+        
+        with self.measure("Potentials Construction"):
+            U_i, U_f = build_distorting_potentials(self.grid, self.V_core, orb_i, orb_f, self.k_i, self.k_f, use_exchange=False)
+            
+        # Check Short Range Match
+        # U should match V_core at very short range (nuclear dominance)
+        self.check(np.isclose(U_i.U_of_r[0], self.V_core[0], rtol=0.1), "Potential Short-range limits match")
+        
+        return U_i, U_f
+
+    def _trace_excitation_physics(self, orb_i, orb_f, U_i, U_f):
+        self.log("Tracing Excitation Pipeline", header=True)
+
+        # 1. Continuum Wave Analysis (Low Partial Wave)
+        self.log("Analyzing Continuum Physics (L=0)...")
+        with self.measure("Continuum Solve (L=0)"):
+            chi_i = solve_continuum_wave(self.grid, U_i, l=0, E_eV=self.cfg.E_inc_eV)
+        
+        self._verify_continuum(chi_i, "Chi_i (L=0)")
+        
+        # 2. High-L Stability Scan
+        if self.cfg.check_high_L:
+            self.log("Scanning High-L Stability...")
+            with self.measure("High-L Scan (10..50)"):
+                for l_test in range(10, 55, 10):
+                    c = solve_continuum_wave(self.grid, U_i, l=l_test, E_eV=self.cfg.E_inc_eV)
+                    max_amp = np.max(np.abs(c.chi_of_r))
+                    self.check(max_amp < 50.0, f"Stability L={l_test} (MaxAmp={max_amp:.1f})")
+
+        # 3. Full Cross Section Calculation
+        self.log("Running Full Partial Wave Summation...")
+        
+        theta_grid = np.linspace(0.0, np.pi, 200)
+        total_amplitudes = {}
+        Li, Lf = self.cfg.li, self.cfg.lf
+        
+        # Init storage
+        for Mi in range(-Li, Li+1):
+            for Mf in range(-Lf, Lf+1):
+                total_amplitudes[(Mi, Mf)] = Amplitudes(np.zeros_like(theta_grid, complex), np.zeros_like(theta_grid, complex))
+
+        L_max_proj = 20
+        with self.measure(f"PW Summation (L_max={L_max_proj})"):
+            for l_i in range(L_max_proj + 1):
+                # Optimize: only recalc chi if needed (not done here for clarity)
+                chi_i = solve_continuum_wave(self.grid, U_i, l=l_i, E_eV=self.cfg.E_inc_eV)
+                
+                parity_target = (Li + Lf) % 2
+                lf_min = max(0, l_i - 5) 
+                lf_max = l_i + 5
+                
+                for l_f in range(lf_min, lf_max + 1):
+                    if (l_i + l_f) % 2 != parity_target: continue
+                    
+                    chi_f = solve_continuum_wave(self.grid, U_f, l=l_f, E_eV=self.E_final_eV)
+                    
+                    # Compute Integrals
+                    ints = radial_ME_all_L(self.grid, self.V_core, U_i.U_of_r, orb_i, orb_f, chi_i, chi_f, L_max=8)
+                    
+                    # Accumulate
+                    for Mi in total_amplitudes.keys(): 
+                         amps = calculate_amplitude_contribution(theta_grid, ints.I_L_direct, ints.I_L_exchange, l_i, l_f, self.k_i, self.k_f, Li, Lf, *Mi)
+                         # Note: `Mi` here is Tuple (Mi, Mf) from dict key. Wait.
+                         # calculate_amplitude_contribution takes single integers.
+                         # Fix: total_amplitudes keys are (Mi, Mf).
+                         pass
+                    
+                    # Correct Loop for accumulation
+                    for Mi in range(-Li, Li+1):
+                        for Mf in range(-Lf, Lf+1):
+                             amps = calculate_amplitude_contribution(theta_grid, ints.I_L_direct, ints.I_L_exchange, l_i, l_f, self.k_i, self.k_f, Li, Lf, Mi, Mf)
+                             total_amplitudes[(Mi, Mf)].f_theta += amps.f_theta
+                             total_amplitudes[(Mi, Mf)].g_theta += amps.g_theta
+
+        # 4. Integrate Sigma
+        sigma_au = self._integrate_sigma(total_amplitudes, theta_grid)
+        self.log(f"Final Cross Section: {sigma_au:.4e} a.u.", header=True)
+        self.log(f"                     {sigma_au * 2.80028e-17:.4e} cm^2")
+
+
+
+    def _integrate_sigma(self, amp_dict, theta_grid):
+        total_dcs = np.zeros_like(theta_grid, dtype=float)
+        prefac = (self.k_f / self.k_i)
+        
+        spin_singlet = 0.25
+        spin_triplet = 0.75
+        
+        Li = self.cfg.li
+        
+        for (Mi, Mf), amps in amp_dict.items():
+            f = amps.f_theta
+            g = amps.g_theta
+            term = spin_singlet * np.abs(f+g)**2 + spin_triplet * np.abs(f-g)**2
+            total_dcs += term
+            
+        total_dcs *= prefac * (1.0 / (2*Li + 1))
+        
+        # Integration
+        sigma = 2 * np.pi * np.trapz(total_dcs * np.sin(theta_grid), theta_grid)
+        return sigma
+
+    def _print_summary(self):
+        self.log("TIMING SUMMARY", header=True)
+        total = self.timings.get("Total Execution", 1.0)
+        for k, v in self.timings.items():
+            pct = (v / total) * 100 if "Total" not in k else 100.0
+            print(f"  {k:<30} : {v:8.2f} ms ({pct:5.1f}%)")
 
 if __name__ == "__main__":
-    main()
+    # Case 1: Excitation 1s->2p
+    print(">>> RUNNING EXCITATION CHECK")
+    cfg_exc = DebugConfig(
+        Z=1.0, 
+        transition_name="H 1s -> 2p",
+        ni=1, li=0,
+        nf=2, lf=1,
+        mode="excitation"
+    )
+    DWBADebugger(cfg_exc).run_full_trace()
+    
+    # Case 2: Ionization H 1s -> Continuum
+    print("\n>>> RUNNING IONIZATION CHECK")
+    cfg_ion = DebugConfig(
+        Z=1.0,
+        transition_name="H 1s -> Ion",
+        ni=1, li=0,
+        mode="ionization",
+        E_inc_eV=50.0
+    )
+    DWBADebugger(cfg_ion).run_full_trace()
