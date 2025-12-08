@@ -59,6 +59,22 @@ def get_input_int(prompt, default=None):
         print("Invalid integer.")
         return get_input_int(prompt, default)
 
+        return get_input_int(prompt, default)
+
+def select_target():
+    print("\n--- Target Selection ---")
+    print("1. Hydrogen (H)    [Z=1]")
+    print("2. Helium Ion (He+) [Z=2]")
+    print("3. Custom Nucleus")
+    
+    c = input("Choice [1]: ").strip()
+    if c == '2': 
+        return 2.0
+    elif c == '3':
+        return get_input_float("Enter Nuclear Charge Z")
+    else:
+        return 1.0
+
 def get_energy_list_interactive():
     print("\n--- Energy Selection ---")
     print("1. Single Energy")
@@ -152,7 +168,8 @@ def run_scan_excitation(run_name):
         return
 
     print("\n=== EXCITATION CALCULATION ===")
-    Z = get_input_float("Nuclear Charge Z", 1.0)
+    Z = select_target()
+    print(f"Selected Z = {Z}")
       
     print("Initial State:")
     ni = get_input_int("  n", 1)
@@ -193,9 +210,12 @@ def run_scan_excitation(run_name):
     pilot_E = 1000.0
     
     # Determine n-p vs n-s (approximate check)
-    t_type = "1s-2p"
-    if li == 0 and lf == 0:
-        t_type = "1s-2s"
+    # Determine n-p vs n-s (approximate check)
+    # Generalized: if final state is S (l=0), use s-s params. Else use s-p params.
+    # Note: Article only explicitly covers starting from 1s. We assume this generalizes.
+    t_type = "s-p"
+    if lf == 0:
+        t_type = "s-s"
     
     # We need threshold energy to init model.
     # We can get it from a quick bound state check or run one calc.
@@ -286,7 +306,8 @@ def run_scan_ionization(run_name):
         return
 
     print("\n=== IONIZATION CALCULATION ===")
-    Z = get_input_float("Nuclear Charge Z", 1.0)
+    Z = select_target()
+    print(f"Selected Z = {Z}")
     
     print("Initial State:")
     ni = get_input_int("  n", 1)

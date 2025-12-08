@@ -67,10 +67,16 @@ class TongModel:
         self.epsilon_exc_au = epsilon_exc_au
         
         # Select parameters
-        if transition_type == "1s-2s":
+        # Select parameters
+        # Generalized Logic:
+        # Article specifies Set 1 for 1s->ns (s-s transitions).
+        # Article specifies Set 2 for 1s->np (s-p transitions).
+        # We generalize this: 's-s' uses Set 1, others (like 's-p', 's-d') use Set 2.
+        
+        if "s-s" in transition_type:
             self.params = PARAMS_1S_2S
         else:
-            # Default to 1s-np (dipole allowed-like) behavior
+            # Default to 1s-np (dipole allowed-like) behavior for others
             self.params = PARAMS_1S_NP
             
         self.alpha: float = 1.0

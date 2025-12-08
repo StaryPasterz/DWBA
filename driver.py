@@ -199,7 +199,8 @@ def compute_total_excitation_cs(
     r_min: float = 1e-5,
     r_max: float = 200.0,
     n_points: int = 3000,
-    match_high_energy_eV: float = 1000.0
+    match_high_energy_eV: float = 1000.0,
+    n_theta: int = 200
 ) -> DWBAResult:
     """
     Main high-level function.
@@ -247,7 +248,7 @@ def compute_total_excitation_cs(
     )
     
     # 5. Partial Wave Loop
-    theta_grid = np.linspace(0.0, np.pi, 200) # Grid for angular integration
+    theta_grid = np.linspace(0.0, np.pi, n_theta) # Grid for angular integration
     
     # Amplitudes f_{Mf, Mi}(theta)
     # We store them in a dict keyed by (Mi, Mf)
@@ -273,7 +274,27 @@ def compute_total_excitation_cs(
 
     # Loop over projectile l_i
     # We restore L_max_projectile default to 25 in datastruct (via caller or explicit set)
-    L_max_proj = chan.L_max_projectile if chan.L_max_projectile > 5 else 25 
+    # Dynamic L_max estimation to ensure convergence at high energies.
+    # Semi-classical argument: L ~ k*R. For effective range R~10-15 a.u. (n=2), 
+    # and k_i up to ~6 a.u. (500 eV), we need L ~ 60-90.
+    
+    L_requested = chan.L_max_projectile
+    # Heuristic: L_dynamic = k_i_au * R_eff + buffer.
+    # Using R_eff = 10.0 (generous for low n) + safety 10.
+    L_dynamic = int(k_i_au * 12.0) + 15
+    
+    # We take the maximum of requested (user spec) and dynamic (convergence safety)
+    # But we also clamp it to avoid excessive runtime if E is huge, 
+    # though 1000 eV requires ~80-100.
+    L_max_proj = max(L_requested, L_dynamic)
+    
+    # Cap global max to reasonable value (e.g. 150) to prevent infinite/too long runs
+    L_max_proj = min(L_max_proj, 150)
+    
+    # If user explicitly set a very high L in chan, respect it if < 150 (already handled by max)
+    # If user set small L (e.g. 5 default), this dynamic logic overrides it properly.
+    
+    # print(f"  [Auto-L] E={E_incident_eV:.1f} eV (k={k_i_au:.2f}) -> L_max_proj={L_max_proj}") 
     
     # --- Execution Strategy Selection ---
     USE_GPU = False
