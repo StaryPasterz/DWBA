@@ -182,8 +182,35 @@ def _initial_conditions_regular(r0: float, l: int) -> np.ndarray:
     if r0 <= 0.0:
         raise ValueError("r0 must be > 0 for regular boundary condition.")
     ell = float(l)
-    chi0 = r0 ** (ell + 1.0)
-    dchi0 = (ell + 1.0) * (r0 ** ell)
+    
+    # Calculate physical value
+    # Beware of underflow for large l and small r0 (e.g. 0.05^100)
+    # chi_phys ~ r0^(l+1)
+    # We only care about the shape (log-derivative), as the amplitude is normalized later.
+    # So we can scale this to be within a safe numerical range (e.g. 1e-20).
+    
+    try:
+        # Check magnitude in log space to avoid immediate underflow
+        log_chi = (ell + 1.0) * np.log(r0)
+        
+        target_log = -20.0 # ~1e-9 .. 1e-10 range is safe for standard tolerances
+        
+        if log_chi < target_log:
+            # We are in underflow/tiny territory.
+            # We set chi0 = exp(target_log)
+            # And dchi0 must preserve ratio: dchi/chi = (l+1)/r0
+            chi0 = np.exp(target_log)
+            dchi0 = chi0 * (ell + 1.0) / r0
+        else:
+            # Safe to compute directly
+            chi0 = r0 ** (ell + 1.0)
+            dchi0 = (ell + 1.0) * (r0 ** ell)
+            
+    except:
+        # Fallback if logs fail (shouldn't happen for r0>0)
+        chi0 = 1e-10
+        dchi0 = chi0 * (ell + 1.0) / r0
+
     return np.array([chi0, dchi0], dtype=float)
 
 
@@ -414,15 +441,34 @@ def solve_continuum_wave(
     # spline interpolation of U(r) so we can evaluate it at arbitrary r during integration
     U_spline = CubicSpline(r, U_arr, bc_type="natural")
 
-    # initial conditions at the first grid point r_min
-    r_min = float(r[0])
-    y0 = _initial_conditions_regular(r_min, l)
+    # --- Optimization: For high l, skip deep tunneling region ---
+    # The centrifugal barrier l(l+1)/r^2 is huge at small r.
+    # The solution is effectively zero until we approach the classical turning point r_c ~ sqrt(l(l+1))/k.
+    # Integrating from r_min (e.g. 0.05) when r_c is 12 (for l=100) causes extreme stiffness and failure.
+    
+    idx_start = 0
+    if l > 5:
+        r_turn = np.sqrt(l*(l+1)) / k_au
+        # Start at a fraction of turning point (e.g. 0.3) where wavefunction is still tiny but ODE is stable
+        r_safe = r_turn * 0.3
+        
+        # Find index in grid
+        idx_found = np.searchsorted(r, r_safe)
+        if idx_found > 0 and idx_found < len(r) - 20: 
+            idx_start = idx_found
+            
+    # Define integration sub-grid
+    r_eval = r[idx_start:]
+    
+    # initial conditions at the first grid point of evaluation
+    r0_int = float(r_eval[0])
+    y0 = _initial_conditions_regular(r0_int, l)
 
     # define RHS of ODE system
     rhs = _schrodinger_rhs_factory(l=l, U_spline=U_spline, k_au=k_au)
 
     # integrate outward up to r_max
-    r_max = float(r[-1])
+    # r_max = float(r[-1]) # Not needed explicitly if using t_eval
 
     # Determine max_step to avoid aliasing oscillations (lambda = 2pi/k)
     # We want at least 10-20 steps per wavelength.
@@ -434,13 +480,15 @@ def solve_continuum_wave(
         max_step_val = 0.1 # default safe step
         
     # Cap max_step to avoid being too small or too large
+    # For high L, we might need smaller steps initially, but RK45 adapts. 
+    # Just ensure we don't miss oscillations.
     max_step_val = min(max_step_val, 0.2) 
 
     sol = solve_ivp(
         fun=rhs,
-        t_span=(r_min, r_max),
+        t_span=(r0_int, float(r_eval[-1])),
         y0=y0,
-        t_eval=r,          
+        t_eval=r_eval,          
         method="RK45",
         max_step=max_step_val,
         rtol=rtol,
@@ -451,8 +499,14 @@ def solve_continuum_wave(
     if not sol.success:
         raise RuntimeError(f"solve_continuum_wave: ODE solver failed: {sol.message}")
 
-    # Extract χ(r) from solution
-    chi_raw = sol.y[0, :]  # shape (N,)
+    # Extract χ(r) from solution and pad with zeros if needed
+    chi_computed = sol.y[0, :]  # shape (N_eval,)
+    
+    if idx_start > 0:
+        chi_raw = np.zeros_like(r, dtype=float)
+        chi_raw[idx_start:] = chi_computed
+    else:
+        chi_raw = chi_computed
 
     # Sanity: remove any global sign if necessary (not physically important).
     # We won't flip sign here because the asymptotic fit will absorb it into δ_l anyway.
