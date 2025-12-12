@@ -450,7 +450,7 @@ def solve_continuum_wave(
     if l > 5:
         r_turn = np.sqrt(l*(l+1)) / k_au
         # Start at a fraction of turning point (e.g. 0.3) where wavefunction is still tiny but ODE is stable
-        r_safe = r_turn * 0.3
+        r_safe = r_turn * 0.9
         
         # Find index in grid
         idx_found = np.searchsorted(r, r_safe)
@@ -535,6 +535,11 @@ def solve_continuum_wave(
     # Renormalize χ so asymptotic amplitude is 1
     chi_norm = chi_raw / A_amp
 
+    # Stability check: Normalized wave should have amplitude ~ 1.
+    # If it deviates significantly (e.g. > 10), it implies numerical divergence or bad fit.
+    if np.max(np.abs(chi_norm)) > 10.0:
+        raise RuntimeError(f"solve_continuum_wave: unstable solution (max amp {np.max(np.abs(chi_norm)):.1f}).")
+
     # Done. Package result.
     cw = ContinuumWave(
         l=l,
@@ -543,3 +548,4 @@ def solve_continuum_wave(
         phase_shift=delta_l
     )
     return cw
+

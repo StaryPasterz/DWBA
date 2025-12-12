@@ -249,40 +249,52 @@ def run_scan_excitation(run_name):
     
     print(f"\nStarting calculation for {key} ({len(energies)} points)...")
     
-    for E in energies:
-        if E <= 0.01: continue
-        print(f"E={E:.2f} eV...", end=" ", flush=True)
-        try:
-            res = compute_total_excitation_cs(E, spec, core_params, r_max=100.0, n_points=3000)
-            
-            if res.ok_open_channel:
-                # Calculate Calibration
-                sigma_raw = res.sigma_total_cm2
-                sigma_cal = tong_model.calculate_sigma_cm2(E)
-                factor_C = tong_model.get_calibration_factor(E, sigma_raw)
+    try:
+        for E in energies:
+            if E <= 0.01: continue
+            print(f"E={E:.2f} eV...", end=" ", flush=True)
+            try:
+                res = compute_total_excitation_cs(E, spec, core_params, r_max=100.0, n_points=3000)
                 
-                print(f"OK. σ_dwba={sigma_raw:.2e} | σ_cal={sigma_cal:.2e} | C={factor_C:.3f}")
+                if res.ok_open_channel:
+                    # Calculate Calibration
+                    sigma_raw = res.sigma_total_cm2
+                    sigma_cal = tong_model.calculate_sigma_cm2(E)
+                    factor_C = tong_model.get_calibration_factor(E, sigma_raw)
+                    
+                    print(f"OK. σ_dwba={sigma_raw:.2e} | σ_cal={sigma_cal:.2e} | C={factor_C:.3f}")
+                    
+                    results.append({
+                        "energy_eV": E,
+                        "sigma_au": res.sigma_total_au,
+                        "sigma_cm2": sigma_raw,
+                        "sigma_mtong_cm2": sigma_cal,
+                        "calibration_factor_C": factor_C,
+                        "Threshold_eV": res.E_excitation_eV
+                    })
+                else:
+                    print(f"Closed (Thr={res.E_excitation_eV:.2f})")
+                    results.append({
+                        "energy_eV": E,
+                        "sigma_au": 0.0,
+                        "sigma_cm2": 0.0,
+                        "sigma_mtong_cm2": 0.0,
+                        "calibration_factor_C": 1.0, 
+                        "Threshold_eV": res.E_excitation_eV
+                    })
                 
-                results.append({
-                    "energy_eV": E,
-                    "sigma_au": res.sigma_total_au,
-                    "sigma_cm2": sigma_raw,
-                    "sigma_mtong_cm2": sigma_cal,
-                    "calibration_factor_C": factor_C,
-                    "Threshold_eV": res.E_excitation_eV
-                })
-            else:
-                print(f"Closed (Thr={res.E_excitation_eV:.2f})")
-                results.append({
-                    "energy_eV": E,
-                    "sigma_au": 0.0,
-                    "sigma_cm2": 0.0,
-                    "sigma_mtong_cm2": 0.0,
-                    "calibration_factor_C": 1.0, 
-                    "Threshold_eV": res.E_excitation_eV
-                })
-        except Exception as e:
-            print(f"Error: {e}")
+                # Incremental Save
+                save_results(filename, {key: results})
+
+            except Exception as e:
+                print(f"Error ({E} eV): {e}")
+
+    except KeyboardInterrupt:
+        print("\n\n[STOP] Calculation interrupted by user (Ctrl+C).")
+        print(f"[INFO] Saving {len(results)} data points collected so far...")
+        save_results(filename, {key: results})
+        print("[INFO] Partial results saved successfully.")
+        return
 
     save_results(filename, {key: results})
     print("Calculation complete.")
@@ -335,30 +347,42 @@ def run_scan_ionization(run_name):
 
     print(f"\nStarting calculation for {key} ({len(energies)} points)...")
 
-    for E in energies:
-        print(f"E={E:.2f} eV...", end=" ", flush=True)
-        try:
-            res = compute_ionization_cs(E, spec, core_params, r_max=100.0, n_points=3000)
-            
-            if res.sigma_total_cm2 > 0:
-                print(f"OK. σ={res.sigma_total_cm2:.2e} cm2")
-                ip = res.IP_eV
-                scale = E / (E + ip) if (E + ip) > 0 else 0.0
-                mt = res.sigma_total_cm2 * scale
+    try:
+        for E in energies:
+            print(f"E={E:.2f} eV...", end=" ", flush=True)
+            try:
+                res = compute_ionization_cs(E, spec, core_params, r_max=100.0, n_points=3000)
                 
-                results.append({
-                    "energy_eV": E,
-                    "sigma_au": res.sigma_total_au,
-                    "sigma_cm2": res.sigma_total_cm2,
-                    "sigma_mtong_cm2": mt,
-                    "calibration_factor_C": 1.0,
-                    "Threshold_eV": ip,
-                    "IP_eV": ip
-                })
-            else:
-                 print("Closed/Zero")
-        except Exception as e:
-            print(f"Error: {e}")
+                if res.sigma_total_cm2 > 0:
+                    print(f"OK. σ={res.sigma_total_cm2:.2e} cm2")
+                    ip = res.IP_eV
+                    scale = E / (E + ip) if (E + ip) > 0 else 0.0
+                    mt = res.sigma_total_cm2 * scale
+                    
+                    results.append({
+                        "energy_eV": E,
+                        "sigma_au": res.sigma_total_au,
+                        "sigma_cm2": res.sigma_total_cm2,
+                        "sigma_mtong_cm2": mt,
+                        "calibration_factor_C": 1.0,
+                        "Threshold_eV": ip,
+                        "IP_eV": ip
+                    })
+                else:
+                        print("Closed/Zero")
+                
+                # Incremental Save
+                save_results(filename, {key: results})
+
+            except Exception as e:
+                print(f"Error ({E} eV): {e}")
+
+    except KeyboardInterrupt:
+        print("\n\n[STOP] Calculation interrupted by user (Ctrl+C).")
+        print(f"[INFO] Saving {len(results)} data points collected so far...")
+        save_results(filename, {key: results})
+        print("[INFO] Partial results saved successfully.")
+        return
 
     save_results(filename, {key: results})
     print("Calculation complete.")

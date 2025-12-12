@@ -1,0 +1,908 @@
+===========================================
+   DWBA CALCULATION SUITE - UNIFIED V2
+===========================================
+Enter Simulation Name (e.g. 'run1'): He+2p
+Active Run Name: He+2p
+Outputs will be: results_He+2p_exc.json / results_He+2p_ion.json
+
+--- Main Menu ---
+Current Run: He+2p
+1. Calculate Excitation Cross Sections
+2. Calculate Ionization Cross Sections
+3. Generate Plots (Load any file)
+4. Change Run Name
+q. Quit
+
+Select Mode: 1
+
+=== EXCITATION CALCULATION ===
+
+--- Target Selection ---
+1. Hydrogen (H)    [Z=1]
+2. Helium Ion (He+) [Z=2]
+3. Custom Nucleus
+Choice [1]: 2
+Selected Z = 2.0
+Initial State:
+  n [1]: 1
+  l [0]: 0
+Final State:
+  n [2]: 2
+  l [0]: 1
+
+--- Energy Selection ---
+1. Single Energy
+2. Linear Grid (Start, End, Step)
+3. Custom List (comma separated)
+Select mode [2]: 2
+  Start [eV] [10.0]: 2
+  End   [eV] [200.0]: Traceback (most recent call last):
+  File "C:\Users\Jan\Desktop\Projekty\QRS\DW_antigravity_v2\Dw_main.py", line 468, in <module>
+    main()
+    ~~~~^^
+  File "C:\Users\Jan\Desktop\Projekty\QRS\DW_antigravity_v2\Dw_main.py", line 451, in main
+    run_scan_excitation(run_name)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^
+  File "C:\Users\Jan\Desktop\Projekty\QRS\DW_antigravity_v2\Dw_main.py", line 182, in run_scan_excitation
+    energies = get_energy_list_interactive()
+  File "C:\Users\Jan\Desktop\Projekty\QRS\DW_antigravity_v2\Dw_main.py", line 93, in get_energy_list_interactive
+    end   = get_input_float("  End   [eV]", 200.0)
+  File "C:\Users\Jan\Desktop\Projekty\QRS\DW_antigravity_v2\Dw_main.py", line 40, in get_input_float
+    val = input(f"{prompt} [{default}]: ")
+KeyboardInterrupt
+PS C:\Users\Jan\Desktop\Projekty\QRS\DW_antigravity_v2> python Dw_main.py
+
+===========================================
+   DWBA CALCULATION SUITE - UNIFIED V2
+===========================================
+Enter Simulation Name (e.g. 'run1'): He+2p
+Active Run Name: He+2p
+Outputs will be: results_He+2p_exc.json / results_He+2p_ion.json
+
+--- Main Menu ---
+Current Run: He+2p
+1. Calculate Excitation Cross Sections
+2. Calculate Ionization Cross Sections
+3. Generate Plots (Load any file)
+4. Change Run Name
+q. Quit
+
+Select Mode: 1
+
+=== EXCITATION CALCULATION ===
+
+--- Target Selection ---
+1. Hydrogen (H)    [Z=1]
+2. Helium Ion (He+) [Z=2]
+3. Custom Nucleus
+Choice [1]: 2
+Selected Z = 2.0
+Initial State:
+  n [1]: 1
+  l [0]: 0
+Final State:
+  n [2]: 2
+  l [0]: 1
+
+--- Energy Selection ---
+1. Single Energy
+2. Linear Grid (Start, End, Step)
+3. Custom List (comma separated)
+Select mode [2]: 2
+  Start [eV] [10.0]: 40.8
+  End   [eV] [200.0]: 70
+  Step  [eV] [5.0]: 0.2
+
+[Calibration] Running Pilot Calculation at 1000 eV for Alpha Matching...
+  [GPU Accelerated] Summing Partial Waves l_i=0..117 on GPU (Single Process)...
+    l_i=0 done.
+    l_i=5 done.
+    l_i=10 done.
+    l_i=15 done.
+    l_i=20 done.
+    l_i=25 done.
+    l_i=30 done.
+    l_i=35 done.
+    l_i=40 done.
+    l_i=45 done.
+    l_i=50 done.
+    l_i=55 done.
+    l_i=60 done.
+    l_i=65 done.
+    l_i=70 done.
+    l_i=75 done.
+    l_i=80 done.
+    l_i=85 done.
+    l_i=90 done.
+    l_i=95 done.
+    l_i=100 done.
+    l_i=105 done.
+    l_i=110 done.
+    l_i=115 done.
+  Summation complete in 11019.197 s
+[Calibration] Alpha determined: 0.1004 (Matched to DWBA at 1000 eV)
+
+Starting calculation for Excitation_Z2.0_n1l0_to_n2l1 (147 points)...
+E=40.80 eV... Closed (Thr=40.81)
+E=41.00 eV...   [GPU Accelerated] Summing Partial Waves l_i=0..35 on GPU (Single Process)...
+    l_i=0 done.
+    l_i=5 done.
+    l_i=10 done.
+    l_i=15 done.
+    l_i=20 done.
+    l_i=25 done.
+C:\Users\Jan\Desktop\Projekty\QRS\DW_antigravity_v2\continuum.py:327: RuntimeWarning: overflow encountered in scalar power
+  A = np.sqrt(c1**2 + c2**2)
+    l_i=30 done.
+    l_i=35 done.
+  Summation complete in 670.699 s
+OK. σ_dwba=2.23e+70 | σ_cal=2.65e-20 | C=0.000
+E=41.20 eV...   [GPU Accelerated] Summing Partial Waves l_i=0..35 on GPU (Single Process)...
+    l_i=0 done.
+    l_i=5 done.
+    l_i=10 done.
+    l_i=15 done.
+    l_i=20 done.
+    l_i=25 done.
+    l_i=30 done.
+    l_i=35 done.
+  Summation complete in 720.725 s
+OK. σ_dwba=3.40e+64 | σ_cal=5.47e-20 | C=0.000
+E=41.40 eV...   [GPU Accelerated] Summing Partial Waves l_i=0..35 on GPU (Single Process)...
+    l_i=0 done.
+    l_i=5 done.
+    l_i=10 done.
+    l_i=15 done.
+    l_i=20 done.
+    l_i=25 done.
+    l_i=30 done.
+    l_i=35 done.
+  Summation complete in 788.701 s
+OK. σ_dwba=1.45e+62 | σ_cal=8.27e-20 | C=0.000
+E=41.60 eV...   [GPU Accelerated] Summing Partial Waves l_i=0..35 on GPU (Single Process)...
+    l_i=0 done.
+    l_i=5 done.
+    l_i=10 done.
+    l_i=15 done.
+    l_i=20 done.
+    l_i=25 done.
+    l_i=30 done.
+    l_i=35 done.
+  Summation complete in 823.704 s
+OK. σ_dwba=4.98e+59 | σ_cal=1.10e-19 | C=0.000
+E=41.80 eV...   [GPU Accelerated] Summing Partial Waves l_i=0..36 on GPU (Single Process)...
+    l_i=0 done.
+    l_i=5 done.
+    l_i=10 done.
+    l_i=15 done.
+    l_i=20 done.
+    l_i=25 done.
+    l_i=30 done.
+    l_i=35 done.
+  Summation complete in 841.199 s
+OK. σ_dwba=3.70e+55 | σ_cal=1.38e-19 | C=0.000
+E=42.00 eV...   [GPU Accelerated] Summing Partial Waves l_i=0..36 on GPU (Single Process)...
+    l_i=0 done.
+    l_i=5 done.
+    l_i=10 done.
+    l_i=15 done.
+    l_i=20 done.
+    l_i=25 done.
+    l_i=30 done.
+    l_i=35 done.
+  Summation complete in 862.994 s
+OK. σ_dwba=4.56e+53 | σ_cal=1.65e-19 | C=0.000
+E=42.20 eV...   [GPU Accelerated] Summing Partial Waves l_i=0..36 on GPU (Single Process)...
+    l_i=0 done.
+    l_i=5 done.
+    l_i=10 done.
+    l_i=15 done.
+    l_i=20 done.
+    l_i=25 done.
+    l_i=30 done.
+    l_i=35 done.
+  Summation complete in 900.668 s
+OK. σ_dwba=2.27e+51 | σ_cal=1.93e-19 | C=0.000
+E=42.40 eV...   [GPU Accelerated] Summing Partial Waves l_i=0..36 on GPU (Single Process)...
+    l_i=0 done.
+    l_i=5 done.
+    l_i=10 done.
+    l_i=15 done.
+    l_i=20 done.
+    l_i=25 done.
+    l_i=30 done.
+    l_i=35 done.
+  Summation complete in 1023.502 s
+OK. σ_dwba=2.32e+53 | σ_cal=2.19e-19 | C=0.000
+E=42.60 eV...   [GPU Accelerated] Summing Partial Waves l_i=0..36 on GPU (Single Process)...
+    l_i=0 done.
+    l_i=5 done.
+    l_i=10 done.
+    l_i=15 done.
+    l_i=20 done.
+    l_i=25 done.
+    l_i=30 done.
+    l_i=35 done.
+  Summation complete in 994.722 s
+OK. σ_dwba=9.47e+48 | σ_cal=2.46e-19 | C=0.000
+E=42.80 eV...   [GPU Accelerated] Summing Partial Waves l_i=0..36 on GPU (Single Process)...
+    l_i=0 done.
+    l_i=5 done.
+    l_i=10 done.
+    l_i=15 done.
+    l_i=20 done.
+    l_i=25 done.
+    l_i=30 done.
+    l_i=35 done.
+  Summation complete in 1040.398 s
+OK. σ_dwba=6.95e+45 | σ_cal=2.72e-19 | C=0.000
+E=43.00 eV...   [GPU Accelerated] Summing Partial Waves l_i=0..36 on GPU (Single Process)...
+    l_i=0 done.
+    l_i=5 done.
+    l_i=10 done.
+    l_i=15 done.
+    l_i=20 done.
+    l_i=25 done.
+    l_i=30 done.
+    l_i=35 done.
+  Summation complete in 1103.911 s
+OK. σ_dwba=9.91e+44 | σ_cal=2.98e-19 | C=0.000
+E=43.20 eV...   [GPU Accelerated] Summing Partial Waves l_i=0..36 on GPU (Single Process)...
+    l_i=0 done.
+    l_i=5 done.
+    l_i=10 done.
+    l_i=15 done.
+    l_i=20 done.
+    l_i=25 done.
+    l_i=30 done.
+    l_i=35 done.
+  Summation complete in 56185.837 s
+OK. σ_dwba=4.56e+41 | σ_cal=3.24e-19 | C=0.000
+E=43.40 eV...   [GPU Accelerated] Summing Partial Waves l_i=0..36 on GPU (Single Process)...
+    l_i=0 done.
+    l_i=5 done.
+    l_i=10 done.
+    l_i=15 done.
+    l_i=20 done.
+    l_i=25 done.
+    l_i=30 done.
+    l_i=35 done.
+  Summation complete in 1297.943 s
+OK. σ_dwba=1.97e+41 | σ_cal=3.50e-19 | C=0.000
+E=43.60 eV...   [GPU Accelerated] Summing Partial Waves l_i=0..36 on GPU (Single Process)...
+    l_i=0 done.
+    l_i=5 done.
+    l_i=10 done.
+    l_i=15 done.
+    l_i=20 done.
+    l_i=25 done.
+    l_i=30 done.
+    l_i=35 done.
+  Summation complete in 1229.707 s
+OK. σ_dwba=5.97e+38 | σ_cal=3.75e-19 | C=0.000
+E=43.80 eV...   [GPU Accelerated] Summing Partial Waves l_i=0..36 on GPU (Single Process)...
+    l_i=0 done.
+    l_i=5 done.
+    l_i=10 done.
+    l_i=15 done.
+    l_i=20 done.
+    l_i=25 done.
+    l_i=30 done.
+    l_i=35 done.
+  Summation complete in 1285.558 s
+OK. σ_dwba=3.72e+37 | σ_cal=4.00e-19 | C=0.000
+E=44.00 eV...   [GPU Accelerated] Summing Partial Waves l_i=0..36 on GPU (Single Process)...
+    l_i=0 done.
+    l_i=5 done.
+    l_i=10 done.
+    l_i=15 done.
+    l_i=20 done.
+    l_i=25 done.
+    l_i=30 done.
+    l_i=35 done.
+  Summation complete in 1515.559 s
+OK. σ_dwba=1.44e+37 | σ_cal=4.25e-19 | C=0.000
+E=44.20 eV...   [GPU Accelerated] Summing Partial Waves l_i=0..36 on GPU (Single Process)...
+    l_i=0 done.
+    l_i=5 done.
+    l_i=10 done.
+    l_i=15 done.
+    l_i=20 done.
+    l_i=25 done.
+    l_i=30 done.
+    l_i=35 done.
+  Summation complete in 1372.848 s
+OK. σ_dwba=2.74e+35 | σ_cal=4.49e-19 | C=0.000
+E=44.40 eV...   [GPU Accelerated] Summing Partial Waves l_i=0..36 on GPU (Single Process)...
+    l_i=0 done.
+    l_i=5 done.
+    l_i=10 done.
+    l_i=15 done.
+    l_i=20 done.
+    l_i=25 done.
+    l_i=30 done.
+    l_i=35 done.
+  Summation complete in 1684.156 s
+OK. σ_dwba=1.38e+32 | σ_cal=4.73e-19 | C=0.000
+E=44.60 eV...   [GPU Accelerated] Summing Partial Waves l_i=0..36 on GPU (Single Process)...
+    l_i=0 done.
+    l_i=5 done.
+    l_i=10 done.
+Traceback (most recent call last):
+  File "C:\Users\Jan\Desktop\Projekty\QRS\DW_antigravity_v2\Dw_main.py", line 468, in <module>
+    print("3. Generate Plots (Load any file)")
+    ^^
+  File "C:\Users\Jan\Desktop\Projekty\QRS\DW_antigravity_v2\Dw_main.py", line 451, in main
+    print("\n===========================================")
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Jan\Desktop\Projekty\QRS\DW_antigravity_v2\Dw_main.py", line 256, in run_scan_excitation
+    try:
+
+  File "C:\Users\Jan\Desktop\Projekty\QRS\DW_antigravity_v2\driver.py", line 338, in compute_total_excitation_cs
+    if (l_i + l_f) % 2 != target_parity_change: continue
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+    try:
+    ^
+  File "C:\Users\Jan\Desktop\Projekty\QRS\DW_antigravity_v2\dwba_matrix_elements.py", line 324, in radial_ME_all_L_gpu
+    I_L_dir[L] = float(I_dir) # Explicit cast triggers sync
+                 ~~~~~^^^^^^^
+KeyboardInterrupt
+PS C:\Users\Jan\Desktop\Projekty\QRS\DW_antigravity_v2> 
+
+===========================================
+   DWBA CALCULATION SUITE - UNIFIED V2
+===========================================
+Enter Simulation Name (e.g. 'run1'): He+2pv2
+Active Run Name: He+2pv2
+Outputs will be: results_He+2pv2_exc.json / results_He+2pv2_ion.json
+
+--- Main Menu ---
+Current Run: He+2pv2
+1. Calculate Excitation Cross Sections
+2. Calculate Ionization Cross Sections
+3. Generate Plots (Load any file)
+4. Change Run Name
+q. Quit
+
+Select Mode: 1
+
+=== EXCITATION CALCULATION ===
+
+--- Target Selection ---
+1. Hydrogen (H)    [Z=1]
+2. Helium Ion (He+) [Z=2]
+3. Custom Nucleus
+Choice [1]: 2
+Selected Z = 2.0
+Initial State:
+  n [1]: 1
+  l [0]: 0
+Final State:
+  n [2]: 2
+  l [0]: 1
+
+--- Energy Selection ---
+1. Single Energy
+2. Linear Grid (Start, End, Step)
+3. Custom List (comma separated)
+Select mode [2]: 2
+  Start [eV] [10.0]: 80
+  End   [eV] [200.0]: 200
+  Step  [eV] [5.0]: 10
+
+[Calibration] Running Pilot Calculation at 1000 eV for Alpha Matching...
+  [GPU Accelerated] Summing Partial Waves l_i=0..117 on GPU (Single Process)...
+    l_i=0 done.
+    l_i=5 done.
+    l_i=10 done.
+    l_i=15 done.
+    l_i=20 done.
+    l_i=25 done.
+    l_i=30 done.
+    l_i=35 done.
+    l_i=40 done.
+    l_i=45 done.
+    l_i=50 done.
+    l_i=55 done.
+    l_i=60 done.
+    l_i=65 done.
+    l_i=70 done.
+    l_i=75 done.
+    l_i=80 done.
+    l_i=85 done.
+    l_i=90 done.
+    l_i=95 done.
+    l_i=100 done.
+    l_i=105 done.
+    l_i=110 done.
+    l_i=115 done.
+  Summation complete in 11150.042 s
+[Calibration] Alpha determined: 0.1004 (Matched to DWBA at 1000 eV)
+
+Starting calculation for Excitation_Z2.0_n1l0_to_n2l1 (13 points)...
+E=80.00 eV...   [GPU Accelerated] Summing Partial Waves l_i=0..44 on GPU (Single Process)...
+    l_i=0 done.
+    l_i=5 done.
+    l_i=10 done.
+    l_i=15 done.
+    l_i=20 done.
+    l_i=25 done.
+    l_i=30 done.
+    l_i=35 done.
+    l_i=40 done.
+  Summation complete in 3270.264 s
+OK. σ_dwba=5.14e-18 | σ_cal=1.92e-18 | C=0.374
+E=90.00 eV...   [GPU Accelerated] Summing Partial Waves l_i=0..45 on GPU (Single Process)...
+    l_i=0 done.
+    l_i=5 done.
+    l_i=10 done.
+    l_i=15 done.
+    l_i=20 done.
+    l_i=25 done.
+    l_i=30 done.
+    l_i=35 done.
+    l_i=40 done.
+    l_i=45 done.
+  Summation complete in 3314.130 s
+OK. σ_dwba=4.66e-18 | σ_cal=1.94e-18 | C=0.416
+E=100.00 eV...   [GPU Accelerated] Summing Partial Waves l_i=0..47 on GPU (Single Process)...
+    l_i=0 done.
+    l_i=5 done.
+    l_i=10 done.
+    l_i=15 done.
+    l_i=20 done.
+    l_i=25 done.
+    l_i=30 done.
+    l_i=35 done.
+    l_i=40 done.
+    l_i=45 done.
+  Summation complete in 54610.720 s
+OK. σ_dwba=4.27e-18 | σ_cal=1.92e-18 | C=0.449
+E=110.00 eV...   [GPU Accelerated] Summing Partial Waves l_i=0..49 on GPU (Single Process)...
+    l_i=0 done.
+    l_i=5 done.
+    l_i=10 done.
+    l_i=15 done.
+    l_i=20 done.
+    l_i=25 done.
+    l_i=30 done.
+    l_i=35 done.
+    l_i=40 done.
+    l_i=45 done.
+  Summation complete in 7275.870 s
+OK. σ_dwba=3.97e-18 | σ_cal=1.88e-18 | C=0.474
+E=120.00 eV...   [GPU Accelerated] Summing Partial Waves l_i=0..50 on GPU (Single Process)...
+    l_i=0 done.
+    l_i=5 done.
+    l_i=10 done.
+    l_i=15 done.
+    l_i=20 done.
+    l_i=25 done.
+    l_i=30 done.
+    l_i=35 done.
+    l_i=40 done.
+    l_i=45 done.
+    l_i=50 done.
+  Summation complete in 3734.045 s
+OK. σ_dwba=3.71e-18 | σ_cal=1.84e-18 | C=0.496
+E=130.00 eV...   [GPU Accelerated] Summing Partial Waves l_i=0..52 on GPU (Single Process)...
+    l_i=0 done.
+    l_i=5 done.
+    l_i=10 done.
+    l_i=15 done.
+    l_i=20 done.
+    l_i=25 done.
+    l_i=30 done.
+    l_i=35 done.
+Traceback (most recent call last):
+  File "C:\Users\Jan\Desktop\Projekty\QRS\DW_antigravity_v2\Dw_main.py", line 468, in <module>
+    print("3. Generate Plots (Load any file)")
+    ^^
+  File "C:\Users\Jan\Desktop\Projekty\QRS\DW_antigravity_v2\Dw_main.py", line 451, in main
+    print("\n===========================================")
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Jan\Desktop\Projekty\QRS\DW_antigravity_v2\Dw_main.py", line 256, in run_scan_excitation
+    try:
+
+  File "C:\Users\Jan\Desktop\Projekty\QRS\DW_antigravity_v2\driver.py", line 322, in compute_total_excitation_cs
+    # Logic similar to worker but sequential and utilizing GPU integrals where possible
+  File "C:\Users\Jan\Desktop\Projekty\QRS\DW_antigravity_v2\continuum.py", line 530, in solve_continuum_wave
+    A_amp, delta_l = _fit_asymptotic_phase_coulomb(r_tail, chi_tail, l, k_au, z_ion)
+                     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Jan\Desktop\Projekty\QRS\DW_antigravity_v2\continuum.py", line 312, in _fit_asymptotic_phase_coulomb
+    g = float(mpmath.coulombg(l, eta, rho))
+              ~~~~~~~~~~~~~~~^^^^^^^^^^^^^
+  File "C:\Users\Jan\AppData\Local\Programs\Python\Python313\Lib\site-packages\mpmath\ctx_mp_python.py", line 1023, in f_wrapped
+    retval = f(ctx, *args, **kwargs)
+  File "C:\Users\Jan\AppData\Local\Programs\Python\Python313\Lib\site-packages\mpmath\functions\bessel.py", line 782, in coulombg
+    v = ctx.hypercomb(h, [l,eta], **kwargs)
+  File "C:\Users\Jan\AppData\Local\Programs\Python\Python313\Lib\site-packages\mpmath\functions\hypergeometric.py", line 125, in hypercomb
+    v = ctx.fprod([ctx.hyper(a_s, b_s, z, **kwargs)] + \
+                   ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Jan\AppData\Local\Programs\Python\Python313\Lib\site-packages\mpmath\functions\hypergeometric.py", line 222, in hyper
+    if   q == 1: return ctx._hyp1f1(a_s, b_s, z, **kwargs)
+                        ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Jan\AppData\Local\Programs\Python\Python313\Lib\site-packages\mpmath\functions\hypergeometric.py", line 342, in _hyp1f1
+    v = ctx.hypsum(1, 1, (atype, btype), [a, b], z, **kwargs)
+  File "C:\Users\Jan\AppData\Local\Programs\Python\Python313\Lib\site-packages\mpmath\ctx_mp.py", line 714, in hypsum
+    zv, have_complex, magnitude = summator(coeffs, v, prec, wp, \
+                                  ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+        epsshift, mag_dict, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<string>", line 51, in hypsum_1_1_C_R_C
+KeyboardInterrupt
+PS C:\Users\Jan\Desktop\Projekty\QRS\DW_antigravity_v2> ===========================================
+   DWBA CALCULATION SUITE - UNIFIED V2
+===========================================
+Enter Simulation Name (e.g. 'run1'): He+2pv2
+Active Run Name: He+2pv2
+Outputs will be: results_He+2pv2_exc.json / results_He+2pv2_ion.json
+
+--- Main Menu ---
+Current Run: He+2pv2
+1. Calculate Excitation Cross Sections
+2. Calculate Ionization Cross Sections
+3. Generate Plots (Load any file)
+4. Change Run Name
+q. Quit
+
+Select Mode: 1
+
+=== EXCITATION CALCULATION ===
+
+--- Target Selection ---
+1. Hydrogen (H)    [Z=1]
+2. Helium Ion (He+) [Z=2]
+3. Custom Nucleus
+Choice [1]: 2
+Selected Z = 2.0
+Initial State:
+  n [1]: 1
+  l [0]: 0
+Final State:
+  n [2]: 2
+  l [0]: 1
+
+--- Energy Selection ---
+1. Single Energy
+2. Linear Grid (Start, End, Step)
+3. Custom List (comma separated)
+Select mode [2]: 2
+  Start [eV] [10.0]: 80
+  End   [eV] [200.0]: 200
+  Step  [eV] [5.0]: 10
+
+[Calibration] Running Pilot Calculation at 1000 eV for Alpha Matching...
+  [GPU Accelerated] Summing Partial Waves l_i=0..117 on GPU (Single Process)...
+    l_i=0 done.
+    l_i=5 done.
+    l_i=10 done.
+    l_i=15 done.
+    l_i=20 done.
+    l_i=25 done.
+    l_i=30 done.
+    l_i=35 done.
+    l_i=40 done.
+    l_i=45 done.
+    l_i=50 done.
+    l_i=55 done.
+    l_i=60 done.
+    l_i=65 done.
+    l_i=70 done.
+    l_i=75 done.
+    l_i=80 done.
+    l_i=85 done.
+    l_i=90 done.
+    l_i=95 done.
+    l_i=100 done.
+    l_i=105 done.
+    l_i=110 done.
+    l_i=115 done.
+  Summation complete in 11150.042 s
+[Calibration] Alpha determined: 0.1004 (Matched to DWBA at 1000 eV)
+
+Starting calculation for Excitation_Z2.0_n1l0_to_n2l1 (13 points)...
+E=80.00 eV...   [GPU Accelerated] Summing Partial Waves l_i=0..44 on GPU (Single Process)...
+    l_i=0 done.
+    l_i=5 done.
+    l_i=10 done.
+    l_i=15 done.
+    l_i=20 done.
+    l_i=25 done.
+    l_i=30 done.
+    l_i=35 done.
+    l_i=40 done.
+  Summation complete in 3270.264 s
+OK. σ_dwba=5.14e-18 | σ_cal=1.92e-18 | C=0.374
+E=90.00 eV...   [GPU Accelerated] Summing Partial Waves l_i=0..45 on GPU (Single Process)...
+    l_i=0 done.
+    l_i=5 done.
+    l_i=10 done.
+    l_i=15 done.
+    l_i=20 done.
+    l_i=25 done.
+    l_i=30 done.
+    l_i=35 done.
+    l_i=40 done.
+    l_i=45 done.
+  Summation complete in 3314.130 s
+OK. σ_dwba=4.66e-18 | σ_cal=1.94e-18 | C=0.416
+E=100.00 eV...   [GPU Accelerated] Summing Partial Waves l_i=0..47 on GPU (Single Process)...
+    l_i=0 done.
+    l_i=5 done.
+    l_i=10 done.
+    l_i=15 done.
+    l_i=20 done.
+    l_i=25 done.
+    l_i=30 done.
+    l_i=35 done.
+    l_i=40 done.
+    l_i=45 done.
+  Summation complete in 54610.720 s
+OK. σ_dwba=4.27e-18 | σ_cal=1.92e-18 | C=0.449
+E=110.00 eV...   [GPU Accelerated] Summing Partial Waves l_i=0..49 on GPU (Single Process)...
+    l_i=0 done.
+    l_i=5 done.
+    l_i=10 done.
+    l_i=15 done.
+    l_i=20 done.
+    l_i=25 done.
+    l_i=30 done.
+    l_i=35 done.
+    l_i=40 done.
+    l_i=45 done.
+  Summation complete in 7275.870 s
+OK. σ_dwba=3.97e-18 | σ_cal=1.88e-18 | C=0.474
+E=120.00 eV...   [GPU Accelerated] Summing Partial Waves l_i=0..50 on GPU (Single Process)...
+    l_i=0 done.
+    l_i=5 done.
+    l_i=10 done.
+    l_i=15 done.
+    l_i=20 done.
+    l_i=25 done.
+    l_i=30 done.
+    l_i=35 done.
+    l_i=40 done.
+    l_i=45 done.
+    l_i=50 done.
+  Summation complete in 3734.045 s
+OK. σ_dwba=3.71e-18 | σ_cal=1.84e-18 | C=0.496
+E=130.00 eV...   [GPU Accelerated] Summing Partial Waves l_i=0..52 on GPU (Single Process)...
+    l_i=0 done.
+    l_i=5 done.
+    l_i=10 done.
+    l_i=15 done.
+    l_i=20 done.
+    l_i=25 done.
+    l_i=30 done.
+    l_i=35 done.
+Traceback (most recent call last):
+  File "C:\Users\Jan\Desktop\Projekty\QRS\DW_antigravity_v2\Dw_main.py", line 468, in <module>
+    print("3. Generate Plots (Load any file)")
+    ^^
+  File "C:\Users\Jan\Desktop\Projekty\QRS\DW_antigravity_v2\Dw_main.py", line 451, in main
+    print("\n===========================================")
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Jan\Desktop\Projekty\QRS\DW_antigravity_v2\Dw_main.py", line 256, in run_scan_excitation
+    try:
+
+  File "C:\Users\Jan\Desktop\Projekty\QRS\DW_antigravity_v2\driver.py", line 322, in compute_total_excitation_cs
+    # Logic similar to worker but sequential and utilizing GPU integrals where possible
+  File "C:\Users\Jan\Desktop\Projekty\QRS\DW_antigravity_v2\continuum.py", line 530, in solve_continuum_wave
+    A_amp, delta_l = _fit_asymptotic_phase_coulomb(r_tail, chi_tail, l, k_au, z_ion)
+                     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Jan\Desktop\Projekty\QRS\DW_antigravity_v2\continuum.py", line 312, in _fit_asymptotic_phase_coulomb
+    g = float(mpmath.coulombg(l, eta, rho))
+              ~~~~~~~~~~~~~~~^^^^^^^^^^^^^
+  File "C:\Users\Jan\AppData\Local\Programs\Python\Python313\Lib\site-packages\mpmath\ctx_mp_python.py", line 1023, in f_wrapped
+    retval = f(ctx, *args, **kwargs)
+  File "C:\Users\Jan\AppData\Local\Programs\Python\Python313\Lib\site-packages\mpmath\functions\bessel.py", line 782, in coulombg
+    v = ctx.hypercomb(h, [l,eta], **kwargs)
+  File "C:\Users\Jan\AppData\Local\Programs\Python\Python313\Lib\site-packages\mpmath\functions\hypergeometric.py", line 125, in hypercomb
+    v = ctx.fprod([ctx.hyper(a_s, b_s, z, **kwargs)] + \
+                   ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Jan\AppData\Local\Programs\Python\Python313\Lib\site-packages\mpmath\functions\hypergeometric.py", line 222, in hyper
+    if   q == 1: return ctx._hyp1f1(a_s, b_s, z, **kwargs)
+                        ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Jan\AppData\Local\Programs\Python\Python313\Lib\site-packages\mpmath\functions\hypergeometric.py", line 342, in _hyp1f1
+    v = ctx.hypsum(1, 1, (atype, btype), [a, b], z, **kwargs)
+  File "C:\Users\Jan\AppData\Local\Programs\Python\Python313\Lib\site-packages\mpmath\ctx_mp.py", line 714, in hypsum
+    zv, have_complex, magnitude = summator(coeffs, v, prec, wp, \
+                                  ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+        epsshift, mag_dict, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<string>", line 51, in hypsum_1_1_C_R_C
+KeyboardInterrupt
+PS C:\Users\Jan\Desktop\Projekty\QRS\DW_antigravity_v2> 
+
+===========================================
+   DWBA CALCULATION SUITE - UNIFIED V2
+===========================================
+Enter Simulation Name (e.g. 'run1'): He+2pv3
+Active Run Name: He+2pv3
+Outputs will be: results_He+2pv3_exc.json / results_He+2pv3_ion.json
+
+--- Main Menu ---
+Current Run: He+2pv3
+1. Calculate Excitation Cross Sections
+2. Calculate Ionization Cross Sections
+3. Generate Plots (Load any file)
+4. Change Run Name
+q. Quit
+
+Select Mode: 1
+
+=== EXCITATION CALCULATION ===
+
+--- Target Selection ---
+1. Hydrogen (H)    [Z=1]
+2. Helium Ion (He+) [Z=2]
+3. Custom Nucleus
+Choice [1]: 2
+Selected Z = 2.0
+Initial State:
+  n [1]: 1
+  l [0]: 0
+Final State:
+  n [2]: 2
+  l [0]: 1
+
+--- Energy Selection ---
+1. Single Energy
+2. Linear Grid (Start, End, Step)
+3. Custom List (comma separated)
+Select mode [2]: 2
+  Start [eV] [10.0]: 300
+  End   [eV] [200.0]: 1000
+  Step  [eV] [5.0]: 100
+
+[Calibration] Running Pilot Calculation at 1000 eV for Alpha Matching...
+  [GPU Accelerated] Summing Partial Waves l_i=0..117 on GPU (Single Process)...
+    l_i=0 done.
+    l_i=5 done.
+    l_i=10 done.
+    l_i=15 done.
+    l_i=20 done.
+    l_i=25 done.
+    l_i=30 done.
+    l_i=35 done.
+    l_i=40 done.
+    l_i=45 done.
+    l_i=50 done.
+    l_i=55 done.
+    l_i=60 done.
+    l_i=65 done.
+    l_i=70 done.
+    l_i=75 done.
+    l_i=80 done.
+    l_i=85 done.
+    l_i=90 done.
+    l_i=95 done.
+    l_i=100 done.
+    l_i=105 done.
+    l_i=110 done.
+    l_i=115 done.
+  Summation complete in 11035.071 s
+[Calibration] Alpha determined: 0.1004 (Matched to DWBA at 1000 eV)
+
+Starting calculation for Excitation_Z2.0_n1l0_to_n2l1 (8 points)...
+E=300.00 eV...   [GPU Accelerated] Summing Partial Waves l_i=0..71 on GPU (Single Process)...
+    l_i=0 done.
+    l_i=5 done.
+    l_i=10 done.
+    l_i=15 done.
+    l_i=20 done.
+    l_i=25 done.
+    l_i=30 done.
+    l_i=35 done.
+    l_i=40 done.
+    l_i=45 done.
+    l_i=50 done.
+    l_i=55 done.
+    l_i=60 done.
+    l_i=65 done.
+    l_i=70 done.
+  Summation complete in 3984.324 s
+OK. σ_dwba=1.76e-18 | σ_cal=1.18e-18 | C=0.673
+E=400.00 eV...   [GPU Accelerated] Summing Partial Waves l_i=0..80 on GPU (Single Process)...
+    l_i=0 done.
+    l_i=5 done.
+    l_i=10 done.
+    l_i=15 done.
+    l_i=20 done.
+    l_i=25 done.
+    l_i=30 done.
+    l_i=35 done.
+    l_i=40 done.
+    l_i=45 done.
+    l_i=50 done.
+    l_i=55 done.
+    l_i=60 done.
+    l_i=65 done.
+    l_i=70 done.
+    l_i=75 done.
+    l_i=80 done.
+  Summation complete in 4054.346 s
+OK. σ_dwba=1.37e-18 | σ_cal=1.00e-18 | C=0.729
+E=500.00 eV...   [GPU Accelerated] Summing Partial Waves l_i=0..87 on GPU (Single Process)...
+    l_i=0 done.
+    l_i=5 done.
+    l_i=10 done.
+    l_i=15 done.
+    l_i=20 done.
+    l_i=25 done.
+    l_i=30 done.
+    l_i=35 done.
+    l_i=40 done.
+    l_i=45 done.
+    l_i=50 done.
+    l_i=55 done.
+    l_i=60 done.
+    l_i=65 done.
+    l_i=70 done.
+    l_i=75 done.
+    l_i=80 done.
+    l_i=85 done.
+  Summation complete in 59181.001 s
+OK. σ_dwba=1.10e-18 | σ_cal=8.71e-19 | C=0.789
+E=600.00 eV...   [GPU Accelerated] Summing Partial Waves l_i=0..94 on GPU (Single Process)...
+    l_i=0 done.
+    l_i=5 done.
+    l_i=10 done.
+    l_i=15 done.
+    l_i=20 done.
+    l_i=25 done.
+    l_i=30 done.
+    l_i=35 done.
+    l_i=40 done.
+    l_i=45 done.
+    l_i=50 done.
+    l_i=55 done.
+    l_i=60 done.
+    l_i=65 done.
+    l_i=70 done.
+    l_i=75 done.
+    l_i=80 done.
+    l_i=85 done.
+    l_i=90 done.
+  Summation complete in 4407.057 s
+OK. σ_dwba=9.38e-19 | σ_cal=7.76e-19 | C=0.827
+E=700.00 eV...   [GPU Accelerated] Summing Partial Waves l_i=0..101 on GPU (Single Process)...
+    l_i=0 done.
+    l_i=5 done.
+    l_i=10 done.
+    l_i=15 done.
+    l_i=20 done.
+    l_i=25 done.
+    l_i=30 done.
+    l_i=35 done.
+    l_i=40 done.
+    l_i=45 done.
+    l_i=50 done.
+    l_i=55 done.
+    l_i=60 done.
+    l_i=65 done.
+Traceback (most recent call last):
+  File "C:\Users\Jan\Desktop\Projekty\QRS\DW_antigravity_v2\Dw_main.py", line 468, in <module>
+    print("3. Generate Plots (Load any file)")
+    ^^
+  File "C:\Users\Jan\Desktop\Projekty\QRS\DW_antigravity_v2\Dw_main.py", line 451, in main
+    print("\n===========================================")
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Jan\Desktop\Projekty\QRS\DW_antigravity_v2\Dw_main.py", line 256, in run_scan_excitation
+    try:
+
+  File "C:\Users\Jan\Desktop\Projekty\QRS\DW_antigravity_v2\driver.py", line 338, in compute_total_excitation_cs
+    if (l_i + l_f) % 2 != target_parity_change: continue
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+    try:
+    ^
+  File "C:\Users\Jan\Desktop\Projekty\QRS\DW_antigravity_v2\dwba_matrix_elements.py", line 324, in radial_ME_all_L_gpu
+    I_L_dir[L] = float(I_dir) # Explicit cast triggers sync
+                 ~~~~~^^^^^^^
+KeyboardInterrupt
+PS C:\Users\Jan\Desktop\Projekty\QRS\DW_antigravity_v2> 

@@ -133,9 +133,16 @@ def _worker_partial_wave(
     # Optimization: We re-solve chi_i here. 
     # In multiprocessing, sharing cache across processes is hard without Manager.
     # Re-solving is safer and likely negligible overhead vs radial integrals.
-    chi_i = solve_continuum_wave(grid, U_i, l_i, E_incident_eV, z_ion) 
+    try:
+        chi_i = solve_continuum_wave(grid, U_i, l_i, E_incident_eV, z_ion) 
+    except Exception as e:
+        # If solver fails (e.g. stiffness/instability at high L), we skip this partial wave.
+        # This acts as an effective L_max cutoff when numerics break down.
+        chi_i = None
+    
     if chi_i is None:
         return l_i, {}
+
 
     # Local storage for Amplitudes contributed by this l_i
     # Key: (Mi, Mf)
@@ -220,8 +227,9 @@ def compute_total_excitation_cs(
     # We solve for enough states to catch the requested index
     states_i = solve_bound_states(grid, V_core, l=chan.l_i, n_states_max=chan.n_index_i+1)
     states_f = solve_bound_states(grid, V_core, l=chan.l_f, n_states_max=chan.n_index_f+1)
-
+    
     orb_i = _pick_bound_orbital(tuple(states_i), chan.n_index_i)
+
     orb_f = _pick_bound_orbital(tuple(states_f), chan.n_index_f)
     
     epsilon_exc = orb_f.energy_au
@@ -287,6 +295,7 @@ def compute_total_excitation_cs(
     # But we also clamp it to avoid excessive runtime if E is huge, 
     # though 1000 eV requires ~80-100.
     L_max_proj = max(L_requested, L_dynamic)
+
     
     # Cap global max to reasonable value (e.g. 150) to prevent infinite/too long runs
     L_max_proj = min(L_max_proj, 150)
