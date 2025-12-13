@@ -115,8 +115,10 @@ def radial_ME_all_L(
     u_f = bound_f.u_of_r
     chi_i = cont_i.chi_of_r
     chi_f = cont_f.chi_of_r
-    w = grid.w_trapz
+    # High-Accuracy Optimization: Use Simpson's weights (O(h^4)) suitable for oscillatory functions
+    w = grid.w_simpson 
     r = grid.r
+
 
     # --- Precompute densities ---
     rho1_dir = w * chi_f * chi_i
@@ -254,7 +256,8 @@ def radial_ME_all_L_gpu(
     # 1. Transfer Data to GPU
     # Arrays are 1D (size N). Transfer is fast (few KB).
     r_gpu = cp.asarray(grid.r)
-    w_gpu = cp.asarray(grid.w_trapz)
+    # High-Accuracy Optimization: Use Simpson's weights (O(h^4))
+    w_gpu = cp.asarray(grid.w_simpson)
     
     u_i_gpu = cp.asarray(bound_i.u_of_r)
     u_f_gpu = cp.asarray(bound_f.u_of_r)

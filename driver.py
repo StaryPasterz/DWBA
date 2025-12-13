@@ -133,12 +133,7 @@ def _worker_partial_wave(
     # Optimization: We re-solve chi_i here. 
     # In multiprocessing, sharing cache across processes is hard without Manager.
     # Re-solving is safer and likely negligible overhead vs radial integrals.
-    try:
-        chi_i = solve_continuum_wave(grid, U_i, l_i, E_incident_eV, z_ion) 
-    except Exception as e:
-        # If solver fails (e.g. stiffness/instability at high L), we skip this partial wave.
-        # This acts as an effective L_max cutoff when numerics break down.
-        chi_i = None
+    chi_i = solve_continuum_wave(grid, U_i, l_i, E_incident_eV, z_ion) 
     
     if chi_i is None:
         return l_i, {}

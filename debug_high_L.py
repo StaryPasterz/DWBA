@@ -5,17 +5,15 @@ from distorting_potential import DistortingPotential
 from continuum import solve_continuum_wave
 
 def test_high_L():
-    print("=== HIGH L CONTINUUM CHECK (1000 eV, L=100) ===")
+    print("=== HIGH L CONTINUUM CHECK (1000 eV, L=100) -- He+ Case ===")
     
     # Grid
     grid = make_r_grid(r_min=1e-5, r_max=100.0, n_points=3000)
     
-    # Potential: Pure Coulomb -1/r (H+ target seen by projectile in Born? No, H seen by proj is neutral-ish, but let's use -1/r for worst case)
-    # Actually, U_channel includes V_static + V_exc.
-    # DistortingPotential object wraps U_of_r.
-    # Let's simple -1/r potential.
-    
-    U_arr = -1.0 / grid.r  # Simple Coulomb
+    # Potential: He+ (Z=2 nucleus, 1 electron).
+    # Short range: -2/r. Long range: -1/r.
+    # U = -1/r - 1/r * exp(-2r) (approx)
+    U_arr = -1.0/grid.r - (1.0/grid.r)*np.exp(-2*grid.r)
     U_obj = DistortingPotential(U_arr, grid)
     
     E_eV = 1000.0

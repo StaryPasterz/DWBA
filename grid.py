@@ -49,14 +49,15 @@ class RadialGrid:
         so dr has same length as r. This is useful for quick finite
         differences / integrations where we just need a local scale.
     w_trapz : np.ndarray
-        Trapezoidal-rule weights for integrating a function f(r):
-            ∫ f(r) dr  ≈  Σ_i  w_trapz[i] * f(r[i])
-        Shape (N,).  These assume the given nonuniform grid r.
-        We'll reuse these everywhere we need 1D integrals in r.
+        Trapezoidal-rule weights for integrating a function f(r).
+    w_simpson : np.ndarray
+        Simpson's rule weights (O(h^4)) for higher accuracy integration.
+        Requires N to be odd; if N is even, last interval uses trapezoidal correction.
     """
     r: np.ndarray
     dr: np.ndarray
     w_trapz: np.ndarray
+    w_simpson: np.ndarray
 
 
 def ev_to_au(E_eV: float | np.ndarray) -> float | np.ndarray:
@@ -170,6 +171,53 @@ def _trapz_weights_nonuniform(r: np.ndarray) -> np.ndarray:
         w[1:-1] = 0.5 * (r[2:] - r[:-2])
     return w
 
+def _simpson_weights_nonuniform(r: np.ndarray) -> np.ndarray:
+    """
+    Build Simpson's rule weights for nonuniform grid.
+    Approximate O(h^4).
+    """
+    N = r.size
+    w = np.zeros(N)
+    if N < 3:
+        return _trapz_weights_nonuniform(r) # Fallback
+        
+    diffs = np.diff(r) # h_i = r[i+1] - r[i]
+    
+    # We iterate over pairs of intervals (triplets of points)
+    # i=0,1,2 -> interval 0 and 1.
+    # i=2,3,4 -> interval 2 and 3.
+    # If N is even, we have N-1 intervals (odd count).
+    # We can fit pairs up to N-2 (leaving 1 interval).
+    
+    # Logic: loop stride 2.
+    for i in range(0, N-2, 2):
+        h1 = diffs[i]
+        h2 = diffs[i+1]
+        
+        # Coefficients for parabola over r[i], r[i+1], r[i+2]
+        # derived from Lagrange polynomials integration
+        alpha = (2*h1**3 - h2**3 + 3*h1*h2*(h1+h2)) / (6*h1*(h1+h2)) # Wait, simple?
+        # Standard Simpson nonuniform:
+        # Integral = (h1+h2)/6 * [ (2 - h2/h1) f0 + (h1+h2)^2/(h1h2) f1 + (2 - h1/h2) f2 ]
+        
+        c0 = (h1+h2)/6.0 * (2.0 - h2/h1)
+        c1 = (h1+h2)/6.0 * ( (h1+h2)**2 / (h1*h2) )
+        c2 = (h1+h2)/6.0 * (2.0 - h1/h2)
+        
+        w[i]   += c0
+        w[i+1] += c1
+        w[i+2] += c2
+        
+    # Handle remainder if N is even (N-1 intervals is odd number of intervals, so last one is left over)
+    if N % 2 == 0:
+        # Last interval (N-2 to N-1) using Trapezoidal (or 2nd order) correction
+        h_last = diffs[-1]
+        w[-2] += 0.5 * h_last
+        w[-1] += 0.5 * h_last
+        
+    return w
+
+
 
 def make_r_grid(
     r_min: float = 1e-5,
@@ -271,8 +319,9 @@ def make_r_grid(
 
     # trapezoidal weights for ∫ f(r) dr
     w_trapz = _trapz_weights_nonuniform(r)
+    w_simpson = _simpson_weights_nonuniform(r)
 
-    return RadialGrid(r=r, dr=dr, w_trapz=w_trapz)
+    return RadialGrid(r=r, dr=dr, w_trapz=w_trapz, w_simpson=w_simpson)
 
 
 # ---- Convenience helpers for later stages ----
