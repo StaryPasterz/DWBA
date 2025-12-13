@@ -111,83 +111,7 @@ class IonizationResult:
     sdcs_data: Optional[List[Tuple[float, float]]] = None # (E_eject_eV, dcs_cm2/eV)
 
 
-def _worker_ionization_projectile(
-    l_i_proj: int,
-    E_incident_eV: float,
-    E_scatt_eV: float,
-    z_ion_inc: float,
-    z_ion_final: float,
-    U_inc_obj: DistortingPotential,
-    U_ion_obj: DistortingPotential,
-    grid: RadialGrid,
-    V_core: np.ndarray,
-    orb_i: BoundOrbital,
-    chi_eject: ContinuumWave,
-    chan: IonizationChannelSpec,
-    theta_grid: np.ndarray,
-    k_i_au: float,
-    k_scatt_au: float,
-    Li: int,
-    Lf: int
-) -> Tuple[int, Dict[Tuple[int, int], Amplitudes]]:
-    """
-    Worker function for ionization projectile loop (CPU Parallel).
-    """
-    local_amplitudes = {}
-    
-    # chi_i (incident)
-    try:
-        chi_i = solve_continuum_wave(grid, U_inc_obj, l_i_proj, E_incident_eV, z_ion=z_ion_inc)
-    except:
-        return l_i_proj, {}
-    if chi_i is None: return l_i_proj, {}
-    
-    # l_f range
-    lf_min = max(0, l_i_proj - 10)
-    lf_max = l_i_proj + 10
-    target_parity_change = (Li + Lf) % 2
-    
-    for l_f_proj in range(lf_min, lf_max + 1):
-        if (l_i_proj + l_f_proj) % 2 != target_parity_change:
-            continue
-            
-        try:
-            chi_scatt_wave = solve_continuum_wave(grid, U_ion_obj, l_f_proj, E_scatt_eV, z_ion=z_ion_final)
-        except:
-            chi_scatt_wave = None
-        if chi_scatt_wave is None: continue
-            
-        # Matrix Elements (CPU)
-        integrals = radial_ME_all_L(
-            grid, V_core, U_inc_obj.U_of_r,
-            bound_i=orb_i,
-            bound_f=chi_eject, 
-            cont_i=chi_i,
-            cont_f=chi_scatt_wave,
-            L_max=chan.L_max
-        )
-        
-        # Accumulate contribution
-        for Mi in range(-Li, Li+1):
-            for Mf in range(-Lf, Lf+1):
-                amps = calculate_amplitude_contribution(
-                    theta_grid, 
-                    integrals.I_L_direct, 
-                    integrals.I_L_exchange,
-                    l_i_proj, l_f_proj, k_i_au, k_scatt_au,
-                    Li, Lf, Mi, Mf
-                )
-                
-                key = (Mi, Mf)
-                if key not in local_amplitudes:
-                    local_amplitudes[key] = Amplitudes(
-                        np.zeros_like(theta_grid, dtype=complex),
-                        np.zeros_like(theta_grid, dtype=complex)
-                    )
-                local_amplitudes[key].f_theta += amps.f_theta
-                local_amplitudes[key].g_theta += amps.g_theta
-                
-    return l_i_proj, local_amplitudes
+
 
 
 def compute_ionization_cs(
@@ -197,7 +121,10 @@ def compute_ionization_cs(
     r_min: float = 1e-4,
     r_max: float = 200.0,
     n_points: int = 4000,
-    n_energy_steps: int = 10
+    n_energy_steps: int = 10,
+    use_exchange: bool = False,
+    use_polarization: bool = False,
+    exchange_method: str = 'fumc'
 ) -> IonizationResult:
     """
     Calculate Total Ionization Cross Section (TICS) via Partial Wave DWBA.
@@ -236,212 +163,299 @@ def compute_ionization_cs(
 
     # 4. Potentials
     # U_inc: Target=Neutral. Includes V_Hartree(orb_i).
-    # We allow exchange=False (Static) consistent with driver.py default.
+    # We apply the selected model (Static / DWSE / SEP) to the Incident Channel.
     k_i_au_in = float(k_from_E_eV(E_incident_eV))
-    U_inc_obj, _ = build_distorting_potentials(grid, V_core, orb_i, orb_i, k_i_au=k_i_au_in, use_exchange=False)
+    U_inc_obj, _ = build_distorting_potentials(
+        grid, V_core, orb_i, orb_i, 
+        k_i_au=k_i_au_in, 
+        use_exchange=use_exchange,
+        use_polarization=use_polarization,
+        exchange_method=exchange_method
+    )
     
-    # U_ion: Target=Ion. Pure core potential. Ejected & Scattered electrons see this.
-    # No hartree part.
-    U_ion_vals = V_core # Assuming only core
+def _compute_sdcs_at_energy(
+    E_eject_eV: float,
+    E_incident_eV: float,
+    E_total_final_eV: float,
+    chan: IonizationChannelSpec,
+    core_params: CorePotentialParams,
+    grid: RadialGrid,
+    V_core: np.ndarray,
+    orb_i: BoundOrbital,
+    U_inc_vals: np.ndarray, # Passed as array to be picklable/light
+    V_hartree_inc: np.ndarray,
+    use_gpu: bool
+) -> float:
+    """
+    Worker to compute SDCS (dSigma/dE) at a specific ejected energy.
+    Can be run in parallel (CPU) or sequentially (GPU).
+    """
+    E_scatt_eV = E_total_final_eV - E_eject_eV
+    
+    k_i_au = k_from_E_eV(E_incident_eV)
+    k_scatt_au = k_from_E_eV(E_scatt_eV)
+    k_eject_au = k_from_E_eV(E_eject_eV)
+    
+    z_ion_inc = core_params.Zc - 1.0
+    z_ion_final = core_params.Zc
+    
+    # Reconstruct Potentials
+    # U_inc
+    U_inc_obj = DistortingPotential(U_of_r=U_inc_vals, V_hartree_of_r=V_hartree_inc)
+    
+    # U_ion: Pure core
+    U_ion_vals = V_core
     U_ion_obj = DistortingPotential(U_of_r=U_ion_vals, V_hartree_of_r=np.zeros_like(V_core))
-
-    # Caching continuum waves for this energy step is useful for l_eject loop
-    # but since E_eject changes, we can't cache across energy steps much.
     
-    # Loop over Ejected Energy
+    sigma_energy_au = 0.0
+    
+    # Pre-calc chi_eject if possible? No, it depends on l_ej.
+    
+    theta_grid = np.linspace(0, np.pi, 200)
+
+    for l_ej in range(chan.l_eject_max + 1):
+        # Solve ejected wave
+        chi_eject = solve_continuum_wave(grid, U_ion_obj, l_ej, E_eject_eV, z_ion=z_ion_final)
+        if chi_eject is None: continue
+        
+        Li = chan.l_i
+        Lf = l_ej 
+        
+        # Accumulate amplitudes
+        total_amplitudes: Dict[Tuple[int, int], Amplitudes] = {}
+        for Mi in range(-Li, Li+1):
+            for Mf in range(-Lf, Lf+1):
+                total_amplitudes[(Mi, Mf)] = Amplitudes(
+                    np.zeros_like(theta_grid, dtype=complex),
+                    np.zeros_like(theta_grid, dtype=complex)
+                )
+
+        L_max_proj = chan.L_max_projectile
+        
+        # Inner Projectile Loop
+        # If we are in this worker on CPU, we run sequentially here 
+        # (because we parallelized the outer loop).
+        # If use_gpu is True, we run GPU logic here.
+        
+        if use_gpu and HAS_CUPY and check_cupy_runtime():
+             # GPU PATH (Sequential inside worker, but worker might be sequential too)
+             for l_i_proj in range(L_max_proj + 1):
+                chi_i = solve_continuum_wave(grid, U_inc_obj, l_i_proj, E_incident_eV, z_ion=z_ion_inc)
+                if chi_i is None: break
+                
+                lf_min = max(0, l_i_proj - 10)
+                lf_max = l_i_proj + 10
+                target_parity_change = (Li + Lf) % 2
+                
+                for l_f_proj in range(lf_min, lf_max + 1):
+                    if (l_i_proj + l_f_proj) % 2 != target_parity_change: continue
+                    try:
+                        chi_scatt_wave = solve_continuum_wave(grid, U_ion_obj, l_f_proj, E_scatt_eV, z_ion=z_ion_final)
+                    except: chi_scatt_wave = None
+                    if chi_scatt_wave is None: continue
+                    
+                    # GPU Integrals
+                    integrals = radial_ME_all_L_gpu(
+                        grid, V_core, U_inc_obj.U_of_r,
+                        bound_i=orb_i,
+                        bound_f=chi_eject, 
+                        cont_i=chi_i,
+                        cont_f=chi_scatt_wave,
+                        L_max=chan.L_max
+                    )
+                    
+                    for Mi in range(-Li, Li+1):
+                        for Mf in range(-Lf, Lf+1):
+                            amps = calculate_amplitude_contribution(
+                                theta_grid, 
+                                integrals.I_L_direct, 
+                                integrals.I_L_exchange,
+                                l_i_proj, l_f_proj, k_i_au, k_scatt_au,
+                                Li, Lf, Mi, Mf
+                            )
+                            tgt = total_amplitudes[(Mi, Mf)]
+                            tgt.f_theta += amps.f_theta
+                            tgt.g_theta += amps.g_theta
+
+        else:
+            # CPU PATH (Sequential inner loop, Parallel outer loop)
+            # No inner multiprocessing here to avoid nesting.
+             for l_i_proj in range(L_max_proj + 1):
+                chi_i = solve_continuum_wave(grid, U_inc_obj, l_i_proj, E_incident_eV, z_ion=z_ion_inc)
+                if chi_i is None: break # Higher L won't work either usually
+                
+                lf_min = max(0, l_i_proj - 10)
+                lf_max = l_i_proj + 10
+                target_parity_change = (Li + Lf) % 2
+    
+                for l_f_proj in range(lf_min, lf_max + 1):
+                    if (l_i_proj + l_f_proj) % 2 != target_parity_change: continue
+                    
+                    try:
+                        chi_scatt_wave = solve_continuum_wave(grid, U_ion_obj, l_f_proj, E_scatt_eV, z_ion=z_ion_final)
+                    except: chi_scatt_wave = None
+                    if chi_scatt_wave is None: continue
+                        
+                    # CPU Integrals
+                    integrals = radial_ME_all_L(
+                        grid, V_core, U_inc_obj.U_of_r,
+                        bound_i=orb_i,
+                        bound_f=chi_eject, 
+                        cont_i=chi_i,
+                        cont_f=chi_scatt_wave,
+                        L_max=chan.L_max
+                    )
+                    
+                    for Mi in range(-Li, Li+1):
+                        for Mf in range(-Lf, Lf+1):
+                            amps = calculate_amplitude_contribution(
+                                theta_grid, 
+                                integrals.I_L_direct, 
+                                integrals.I_L_exchange,
+                                l_i_proj, l_f_proj, k_i_au, k_scatt_au,
+                                Li, Lf, Mi, Mf
+                            )
+                            tgt = total_amplitudes[(Mi, Mf)]
+                            tgt.f_theta += amps.f_theta
+                            tgt.g_theta += amps.g_theta
+        
+        # Calculate DCS for this l_eject
+        total_dcs = np.zeros_like(theta_grid, dtype=float)
+        for (Mi, Mf), amps in total_amplitudes.items():
+            f = amps.f_theta
+            g = amps.g_theta
+            chan_dcs = dcs_dwba(
+                theta_grid, f, g, 
+                k_i_au, k_scatt_au, 
+                Li, chan.N_equiv
+            )
+            total_dcs += chan_dcs
+        
+        dos_factor = 2.0 / (np.pi * k_eject_au)
+        total_dcs *= dos_factor
+        
+        sigma_l_eject_au = integrate_dcs_over_angles(theta_grid, total_dcs)
+        sigma_energy_au += sigma_l_eject_au
+        
+    return sigma_energy_au
+
+def compute_ionization_cs(
+    E_incident_eV: float,
+    chan: IonizationChannelSpec,
+    core_params: CorePotentialParams,
+    r_min: float = 1e-4,
+    r_max: float = 200.0,
+    n_points: int = 4000,
+    n_energy_steps: int = 10,
+    use_exchange: bool = False,
+    use_polarization: bool = False,
+    exchange_method: str = 'fumc'
+) -> IonizationResult:
+    """
+    Calculate Total Ionization Cross Section (TICS) via Partial Wave DWBA.
+    """
+
+    # 1. Setup Grid & Potential
+    grid = make_r_grid(r_min, r_max, n_points)
+    V_core = V_core_on_grid(grid, core_params)
+
+    # 2. Initial Bound State
+    states_i = solve_bound_states(grid, V_core, l=chan.l_i, n_states_max=chan.n_index_i+2)
+    orb_i: Optional[BoundOrbital] = None
+    for s in states_i:
+        if s.n_index == chan.n_index_i:
+            orb_i = s
+            break
+    if orb_i is None:
+        raise ValueError(f"Initial bound state n={chan.n_index_i} l={chan.l_i} not found.")
+
+    E_bound_au = orb_i.energy_au
+    IP_au = -E_bound_au
+    IP_eV = IP_au / ev_to_au(1.0)
+    
+    if E_incident_eV <= IP_eV:
+        return IonizationResult(E_incident_eV, IP_eV, 0.0, 0.0)
+
+    E_total_final_eV = E_incident_eV - IP_eV
+    
+    # 3. Energy Integration Grid (E_eject integration)
+    steps = np.linspace(0.0, E_total_final_eV / 2.0, n_energy_steps + 1)
+    if steps[0] == 0.0:
+        steps[0] = 0.5 * (steps[1] - steps[0]) * 0.1 
+
+    sdcs_values_au = [] 
+
+    # 4. Potentials
+    k_i_au_in = float(k_from_E_eV(E_incident_eV))
+    U_inc_obj, _ = build_distorting_potentials(
+        grid, V_core, orb_i, orb_i, 
+        k_i_au=k_i_au_in, 
+        use_exchange=use_exchange,
+        use_polarization=use_polarization,
+        exchange_method=exchange_method
+    )
+    
+    # 5. Energy Integration Implementation
+    # Check GPU availability
+    USE_GPU = False
+    if HAS_CUPY and check_cupy_runtime():
+        USE_GPU = True
+        
     print(f"  Ionization Scan E_inc={E_incident_eV:.1f} eV: Integrating dSigma/dE...")
     
-    for idx_E, E_eject_eV in enumerate(steps):
-        E_scatt_eV = E_total_final_eV - E_eject_eV
+    if USE_GPU:
+        # GPU PATH: Run sequentially to avoid context conflicts
+        # The inner worker uses GPU.
+        print("    [Mode] GPU Acceleration (Sequential Energy Scan)")
+        for idx_E, E_eject_eV in enumerate(steps):
+             print(f"    Step {idx_E+1}/{len(steps)}: E_ej={E_eject_eV:.2f} eV...", end=" ", flush=True)
+             val = _compute_sdcs_at_energy(
+                 E_eject_eV, E_incident_eV, E_total_final_eV,
+                 chan, core_params, grid, V_core, orb_i,
+                 U_inc_obj.U_of_r, U_inc_obj.V_hartree_of_r,
+                 True # use_gpu
+             )
+             sdcs_values_au.append(val)
+             print(f"SDCS={val:.2e}")
+             
+    else:
+        # CPU PATH: Run Parallel on Energies (Coarse-Grained)
+        import multiprocessing
+        max_workers = os.cpu_count()
+        if max_workers is None: max_workers = 1
         
-        k_i_au = k_from_E_eV(E_incident_eV)
-        k_scatt_au = k_from_E_eV(E_scatt_eV)
-        k_eject_au = k_from_E_eV(E_eject_eV)
+        print(f"    [Mode] CPU Parallel (Workers={max_workers})")
         
-        # Effective Z for Coulomb tails
-        z_ion_inc = core_params.Zc - 1.0   # e + Neutral
-        z_ion_final = core_params.Zc       # e + Ion+
+        # Prepare valid static args for pickling
+        # Note: DistortingPotential involves arrays, better pass as np.ndarray
         
-        # Accumulate cross section for this energy partition
-        sigma_energy_au = 0.0
+        with multiprocessing.Pool(processes=max_workers) as pool:
+            # Create tasks
+            tasks = []
+            for E_eject_eV in steps:
+                tasks.append((
+                     E_eject_eV, E_incident_eV, E_total_final_eV,
+                     chan, core_params, grid, V_core, orb_i,
+                     U_inc_obj.U_of_r, U_inc_obj.V_hartree_of_r,
+                     False # use_gpu
+                ))
+            
+            # Map
+            results = pool.starmap(_compute_sdcs_at_energy, tasks)
+            sdcs_values_au = results
+            
+            # Print brief summary
+            for i, val in enumerate(sdcs_values_au):
+                 print(f"    Step {i+1}: E_ej={steps[i]:.2f} eV -> SDCS={val:.2e}")
 
-        # Loop over Ejected Angular Momentum l_ej
-        for l_ej in range(chan.l_eject_max + 1):
-            print(f"    [Progress] E_eject={E_eject_eV:.1f} eV | l_eject={l_ej}...", end=" ", flush=True)
-            
-            # Solve ejected wave (acts as 'final bound state')
-            # Normalized to unit amplitude -> Need to apply DoS factor later.
-            # Solve ejected wave (acts as 'final bound state')
-            # Normalized to unit amplitude -> Need to apply DoS factor later.
-            chi_eject = solve_continuum_wave(grid, U_ion_obj, l_ej, E_eject_eV, z_ion=z_ion_final)
-
-            # Now we run the Standard DWBA Partial Wave Loop 
-            # treating chi_eject as 'orb_f' with L_target_f = l_ej.
-            
-            Li = chan.l_i
-            Lf = l_ej # Final "target" angular momentum is just the ejected electron L
-            
-            theta_grid = np.linspace(0, np.pi, 200)
-            
-            # Dictionary for amplitudes: (Mi, Mf) -> Amplitudes
-            # Mi: -Li..Li
-            # Mf: -Lf..Lf (represents m_eject)
-            total_amplitudes: Dict[Tuple[int, int], Amplitudes] = {}
-            for Mi in range(-Li, Li+1):
-                for Mf in range(-Lf, Lf+1):
-                    total_amplitudes[(Mi, Mf)] = Amplitudes(
-                        np.zeros_like(theta_grid, dtype=complex),
-                        np.zeros_like(theta_grid, dtype=complex)
-                    )
-
-            # --- Projectile Partial Wave Loop ---
-            L_max_proj = chan.L_max_projectile
-            
-            # Decide on Strategy
-            USE_GPU = False
-            if HAS_CUPY and check_cupy_runtime():
-                USE_GPU = True
-                
-            if USE_GPU:
-                # print(f"    [GPU] E_ej={E_eject_eV:.1f} l_ej={l_ej} Summing Proj l=0..{L_max_proj}")
-                
-                for l_i_proj in range(L_max_proj + 1):
-                    # Sequential GPU Code
-                    chi_i = solve_continuum_wave(grid, U_inc_obj, l_i_proj, E_incident_eV, z_ion=z_ion_inc)
-                    if chi_i is None: break
-                    
-                    lf_min = max(0, l_i_proj - 10)
-                    lf_max = l_i_proj + 10
-                    target_parity_change = (Li + Lf) % 2
-                    
-                    for l_f_proj in range(lf_min, lf_max + 1):
-                        if (l_i_proj + l_f_proj) % 2 != target_parity_change: continue
-                        
-                        try:
-                            chi_scatt_wave = solve_continuum_wave(grid, U_ion_obj, l_f_proj, E_scatt_eV, z_ion=z_ion_final)
-                        except: chi_scatt_wave = None
-                        if chi_scatt_wave is None: continue
-                        
-                        # GPU Integrals
-                        integrals = radial_ME_all_L_gpu(
-                            grid, V_core, U_inc_obj.U_of_r,
-                            bound_i=orb_i,
-                            bound_f=chi_eject, 
-                            cont_i=chi_i,
-                            cont_f=chi_scatt_wave,
-                            L_max=chan.L_max
-                        )
-                        
-                        for Mi in range(-Li, Li+1):
-                            for Mf in range(-Lf, Lf+1):
-                                amps = calculate_amplitude_contribution(
-                                    theta_grid, 
-                                    integrals.I_L_direct, 
-                                    integrals.I_L_exchange,
-                                    l_i_proj, l_f_proj, k_i_au, k_scatt_au,
-                                    Li, Lf, Mi, Mf
-                                )
-                                key = (Mi, Mf)
-                                tgt = total_amplitudes[key]
-                                tgt.f_theta += amps.f_theta
-                                tgt.g_theta += amps.g_theta
-
-            else:
-                # CPU Parallel Execution
-                # print(f"    [CPU] E_ej={E_eject_eV:.1f} l_ej={l_ej} Summing Proj l=0..{L_max_proj}")
-                
-                import multiprocessing
-                max_workers = os.cpu_count()
-                if max_workers is None: max_workers = 1
-                
-                tasks = []
-                for l_i_proj in range(L_max_proj + 1):
-                    tasks.append((
-                         l_i_proj, E_incident_eV, E_scatt_eV, z_ion_inc, z_ion_final,
-                         U_inc_obj, U_ion_obj, grid, V_core, orb_i, chi_eject,
-                         chan, theta_grid, k_i_au, k_scatt_au, Li, Lf
-                    ))
-                
-                try:
-                    with multiprocessing.Pool(processes=max_workers) as pool:
-                        results_iter = pool.starmap_async(_worker_ionization_projectile, tasks)
-                        
-                        # Wait for results
-                        # Note: starmap_async.get() blocks.
-                        results = results_iter.get(timeout=None)
-                        
-                        for l_done, partial_amps in results:
-                            for key, part_amp in partial_amps.items():
-                                tgt = total_amplitudes[key]
-                                tgt.f_theta += part_amp.f_theta
-                                tgt.g_theta += part_amp.g_theta
-
-                except KeyboardInterrupt:
-                    print("\n[User Interrupt] Terminating worker processes...")
-                    pool.terminate()
-                    pool.join()
-                    raise
-                except Exception as e:
-                    print(f"      Worker execution failed: {e}")
-
-            
-            # --- End Projectile Loop ---
-            
-            # Calculate DCS for this l_eject
-            total_dcs = np.zeros_like(theta_grid, dtype=float)
-            spin_weight = 1.0 # Simple sum? No, need spin stats.
-            # Ionization from singlet ground state:
-            # We assume unpolarized.
-            # Same formulas apply: 1/4 S + 3/4 T.
-            
-            for (Mi, Mf), amps in total_amplitudes.items():
-                f = amps.f_theta
-                g = amps.g_theta
-                
-                # Use standard DCS (includes 2pi^4 and flux factors)
-                # k_f is k_scatt here.
-                chan_dcs = dcs_dwba(
-                    theta_grid, f, g, 
-                    k_i_au, k_scatt_au, 
-                    Li, chan.N_equiv
-                )
-                total_dcs += chan_dcs
-            
-            # Apply Density of States for ejected electron
-            # Factor 2 / (pi * k) comes from box normalization of continuum states.
-            # (See standard scattering theory texts, e.g. Taylor).
-            dos_factor = 2.0 / (np.pi * k_eject_au)
-            
-            total_dcs *= dos_factor
-            
-            # (2pi)^4 is already in dcs_dwba
-            # Kinematics prefactor is already in dcs_dwba
-            
-            # Integrated over scattering angles
-            sigma_l_eject_au = integrate_dcs_over_angles(theta_grid, total_dcs)
-            
-            sigma_energy_au += sigma_l_eject_au
-            print(f"Done. (sigma_part={sigma_l_eject_au:.2e})")
-            
-        # Store SDCS (sigma per energy)
-        sdcs_values_au.append(sigma_energy_au)
-        print(f"    --> SDCS(E_ej={E_eject_eV:.1f}) = {sigma_energy_au:.2e} a.u.")
-
-    # 5. Integrate SDCS over E_eject
-    # Int [0, Etot/2] dSigma/dE dE
-    # dE in Hartree needed for consistent units.
-    
+    # 6. Integrate SDCS
     steps_au = [ev_to_au(e) for e in steps]
     total_sigma_au = np.trapz(sdcs_values_au, steps_au)
     total_sigma_cm2 = sigma_au_to_cm2(total_sigma_au)
     
-    # Store detailed data
-    sdcs_data_list = list(zip(steps, [sigma_au_to_cm2(s*ev_to_au(1.0)) for s in sdcs_values_au]))
-    # Note: sdcs_values_au is dS/dE_au. To get dS/dE_eV, we multiply by dE_au/dE_eV = 1/27.21 ?
-    # Dimensionally: Sigma = Integrate[ (dS/dE)_au * dE_au ].
-    # If we want plot vs eV: (dS/dE)_eV = (dS/dE)_au * (dE_au/dE_eV).
-    
     print(f"  Total Ionization Sigma = {total_sigma_cm2:.2e} cm^2")
+    
+    sdcs_data_list = list(zip(steps, [sigma_au_to_cm2(s*ev_to_au(1.0)) for s in sdcs_values_au]))
 
     return IonizationResult(
         E_incident_eV, IP_eV,

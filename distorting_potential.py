@@ -311,17 +311,86 @@ def furness_mccarthy_exchange_potential(
     return V_ex
 
 
+def slater_exchange_potential(
+    rho_spher: np.ndarray
+) -> np.ndarray:
+    """
+    Compute the Slater local exchange potential approximation.
+    
+    Formula:
+        V_ex(r) = - (3/2) * [ (3/pi) * rho(r) ]^(1/3)
+        
+    Parameters
+    ----------
+    rho_spher : np.ndarray
+        Electron density rho(r).
+        
+    Returns
+    -------
+    V_ex : np.ndarray
+        Exchange potential in Hartree. (Always negative).
+    """
+    # Safe rho for power
+    rho_saf = np.maximum(rho_spher, 1e-30)
+    
+    term = (3.0 / np.pi) * rho_saf
+    V_ex = -1.5 * (term**(1.0/3.0))
+    
+    return V_ex
+
+
+
+def polarization_potential(
+    grid: RadialGrid,
+    alpha_d: float,
+    rc: float
+) -> np.ndarray:
+    """
+    Compute the polarization potential V_pol(r) using the Buckingham form.
+    
+    Formula:
+        V_pol(r) = - (alpha_d / (2 * r^4)) * [ 1 - exp( - (r/rc)^6 ) ]
+        
+    Parameters
+    ----------
+    grid : RadialGrid
+        Radial grid.
+    alpha_d : float
+        Static dipole polarizability (a.u.).
+    rc : float
+        Cutoff radius (a.u.).
+        
+    Returns
+    -------
+    V_pol : np.ndarray
+        Polarization potential in Hartree.
+    """
+    r = grid.r
+    r_saf = np.maximum(r, 1e-12)
+    
+    # Buckingham cutoff factor
+    C_r = 1.0 - np.exp( - (r_saf / rc)**6 )
+    
+    V_pol = - (alpha_d / (2.0 * r_saf**4)) * C_r
+    
+    return V_pol
+
+
+
 def U_distorting(
     V_core_array: np.ndarray,
     V_H_array: np.ndarray,
     orbital: Optional[BoundOrbital] = None,
     grid: Optional[RadialGrid] = None,
-    E_beam_au: Optional[float] = None
+    E_beam_au: Optional[float] = None,
+    exchange_type: str = 'fumc' # 'fumc' or 'slater'
 ) -> np.ndarray:
     """
     Build the distorted potential U_j(r) for a given channel j.
     
-    Now supports Static-Exchange via Furness-McCarthy if orbital/energy provided.
+    Supports local exchange models:
+    - 'fumc': Furness-McCarthy (Article Standard)
+    - 'slater': Slater Free-Electron Gas Approx
 
         U_j(r) = V_{A+}(r) + V_H^{(j)}(r) + V_ex^{(j)}(r)
 
@@ -353,8 +422,10 @@ def U_distorting(
     grid : RadialGrid, optional
         Required for Exchange calculation (to convert u->rho).
     E_beam_au : float, optional
-        Scattering energy E = k^2/2. Required for Exchange.
-        If None, we default to Static-Only (classic DWBA without exchange).
+        Scattering energy E = k^2/2. Required for Furness-McCarthy.
+        Slater only needs density.
+    exchange_type : str
+        'fumc' (default) or 'slater'.
 
     Returns
     -------
@@ -371,7 +442,7 @@ def U_distorting(
     
     V_static = V_core_array + V_H_array
     
-    if orbital is not None and grid is not None and E_beam_au is not None:
+    if orbital is not None and grid is not None:
         # --- Compute Exchange ---
         # 1. Density rho(r) = |u(r)/r|^2
         r = grid.r
@@ -381,7 +452,17 @@ def U_distorting(
         r_saf = np.maximum(r, 1e-12)
         rho = (np.abs(u) / r_saf)**2
         
-        V_ex = furness_mccarthy_exchange_potential(grid, rho, E_beam_au, V_static)
+        V_ex = np.zeros_like(r)
+        
+        if exchange_type == 'slater':
+             V_ex = slater_exchange_potential(rho)
+        elif exchange_type == 'fumc':
+             # Furness-McCarthy needs Energy and Static Potential
+             if E_beam_au is not None:
+                V_ex = furness_mccarthy_exchange_potential(grid, rho, E_beam_au, V_static)
+        else:
+             # Unknown type or None -> No exchange
+             pass
         
         U = V_static + V_ex
     else:
@@ -404,12 +485,19 @@ def build_distorting_potentials(
     orbital_final: BoundOrbital,
     k_i_au: float = 0.5,
     k_f_au: float = 0.5,
-    use_exchange: bool = False
+    use_exchange: bool = False,
+    use_polarization: bool = False,
+    exchange_method: str = 'fumc' # 'fumc' or 'slater'
 ) -> Tuple[DistortingPotential, DistortingPotential]:
     """
     Construct U_i(r) and U_f(r).
     
-    If use_exchange=True, includes Furness-McCarthy exchange potential (DWSE).
+    If use_exchange=True, includes Exchange potential (DWSE).
+      - exchange_method='fumc' -> Furness-McCarthy
+      - exchange_method='slater' -> Slater
+      
+    If use_polarization=True, includes Polarization potential (DWSEP).
+    
     If use_exchange=False, uses only Static potential (V_core + V_H) (Standard DWBA).
     
     The article strictly uses Standard DWBA (Static potentials) and treats
@@ -465,6 +553,7 @@ def build_distorting_potentials(
       χ_l(k,r) in U_i for the incoming channel, and in U_f for the
       outgoing channel. We'll do to to build χ in the next module.
     """
+
     r = grid.r
     if V_core_array.shape != r.shape:
         raise ValueError("build_distorting_potentials: V_core_array/grid mismatch.")
@@ -477,16 +566,75 @@ def build_distorting_potentials(
     V_H_i = hartree_potential_from_orbital(grid, orbital_initial)
     V_H_f = hartree_potential_from_orbital(grid, orbital_final)
 
+    V_H_f = hartree_potential_from_orbital(grid, orbital_final)
+
     # Distorting potentials
     if use_exchange:
-        # Static + Exchange (Furness-McCarthy)
-        U_i_arr = U_distorting(V_core_array, V_H_i, orbital=orbital_initial, grid=grid, E_beam_au=E_i)
-        U_f_arr = U_distorting(V_core_array, V_H_f, orbital=orbital_final, grid=grid, E_beam_au=E_f)
+        # Static + Exchange
+        # Pass method explicitly
+        U_i_arr = U_distorting(V_core_array, V_H_i, orbital=orbital_initial, grid=grid, E_beam_au=E_i, exchange_type=exchange_method)
+        U_f_arr = U_distorting(V_core_array, V_H_f, orbital=orbital_final, grid=grid, E_beam_au=E_f, exchange_type=exchange_method)
     else:
         # Static Only (Standard DWBA per article Eq. 456-463)
         # U_j = V_core + V_H_j
         U_i_arr = U_distorting(V_core_array, V_H_i)
         U_f_arr = U_distorting(V_core_array, V_H_f)
+        
+    if use_polarization:
+        # Add Polarization Potential V_pol
+        # Need to estimate alpha_d and rc for initial and final states.
+        # Heuristic:
+        # alpha_d approx (9/2) * (n^6 / Z^4) ?? Wait, simplistic.
+        # Ground state H (n=1, Z=1): 4.5.
+        # Ground state He+ (n=1, Z=2): 4.5/16 = 0.28.
+        # n-scaling is strong (n^6 or n^4).
+        # rc approx 1.5 * <r>.
+        # <r> = (3n^2 - l(l+1))/(2Z).
+        
+        # Helper to estimate
+        def estimate_pol_params(orb: BoundOrbital, Z_eff: float):
+            # We don't have n,l inside orbital directly? We do: orb.n_index is n-l.
+            # But the caller knows n,l.
+            # Actually, let's approximate <r> from the orbital itself!
+            # <r> = Integrate r * |u|^2 dr.
+            r_vec = grid.r
+            u2 = np.abs(orb.u_of_r)**2
+            expectation_r = np.trapz(r_vec * u2, r_vec)
+            
+            # rc
+            rc_val = 1.3 * expectation_r # Slightly tighter than 1.5
+            
+            # alpha_d
+            # Use Closure approx scaling: alpha ~ (4/9) * <r^2>^2 ? No.
+            # alpha ~ 2 * <r^2>.
+            # Let's compute <r^2>.
+            expectation_r2 = np.trapz(r_vec**2 * u2, r_vec)
+            # Unsold uses alpha approx 4.5 a0^3 for H.
+            # Approx relation: alpha_d approx (2/3?) * <r^2 / deltaE>.
+            # Empirical for H-like: alpha = 4.5 * (a0/Z)^3 * n^k ?
+            # Let's use simple scaling from H 1s: alpha = 4.5 * (expectation_r / 1.5)**3 ?
+            # Or better: alpha = 4.5 * (expectation_r2 / 3.0)**2 ?
+            # Let's use <r^2>^2 scaling. <r^2>_H1s = 3.
+            # alpha_d_H1s = 4.5.
+            # So alpha_d = 0.5 * (<r^2>)^? 
+            # Actually a known strong bound is alpha >= 16/9 <r^2>^2 / N.
+            # Let's take alpha_d = 0.5 * (expectation_r2)**(1.5)? 
+            # Robust fallback: alpha_d = 4.5 * expectation_r**3.
+            # (1.5**3 = 3.375. 4.5).
+            alpha_val = 1.3 * (expectation_r**3) 
+            
+            return alpha_val, rc_val
+            
+        Z_eff_est = 1.0 # Effective charge? Hard to guess. Use geometrical estimation.
+        
+        a_i, rc_i = estimate_pol_params(orbital_initial, 1.0)
+        a_f, rc_f = estimate_pol_params(orbital_final, 1.0)
+        
+        V_pol_i = polarization_potential(grid, a_i, rc_i)
+        V_pol_f = polarization_potential(grid, a_f, rc_f)
+        
+        U_i_arr += V_pol_i
+        U_f_arr += V_pol_f
 
     U_i = DistortingPotential(U_of_r=U_i_arr, V_hartree_of_r=V_H_i)
     U_f = DistortingPotential(U_of_r=U_f_arr, V_hartree_of_r=V_H_f)

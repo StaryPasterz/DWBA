@@ -75,11 +75,41 @@ def select_target():
     else:
         return 1.0
 
+def generate_flexible_energy_grid(start_eV: float, end_eV: float, density_factor: float = 1.0) -> np.ndarray:
+    """
+    Generates a grid that is dense at low energies (start) and sparse at high energies (end).
+    Logic: Uses geometric progression for 'excess energy' (E - start).
+    """
+    epsilon_min = 0.05 # 50 meV above threshold
+    if end_eV <= start_eV + epsilon_min:
+        return np.array([start_eV + epsilon_min])
+        
+    epsilon_max = end_eV - start_eV
+    
+    # Estimate decent number of points
+    # Log range is np.log10(epsilon_max / epsilon_min)
+    # E.g. 1000/0.05 = 20000 -> 4.3 decades.
+    # Base density = 15 points/decade.
+    
+    decades = np.log10(epsilon_max / epsilon_min)
+    n_points = int(decades * 15.0 * density_factor)
+    n_points = max(n_points, 10) # Minimum safety
+    
+    # Generate excess
+    excess = np.geomspace(epsilon_min, epsilon_max, n_points)
+    
+    energies = start_eV + excess
+    
+    # Ensure they are unique and sorted (geomspace should be, but safety first)
+    return np.unique(np.round(energies, 3))
+
+
 def get_energy_list_interactive():
     print("\n--- Energy Selection ---")
     print("1. Single Energy")
     print("2. Linear Grid (Start, End, Step)")
     print("3. Custom List (comma separated)")
+    print("4. Flexible/Log Grid (Dense at low, Sparse at high)")
     
     choice = input("Select mode [2]: ").strip()
     if not choice: choice = '2'
@@ -103,6 +133,12 @@ def get_energy_list_interactive():
         except ValueError:
             print("Invalid format. Defaulting to 50.0 eV.")
             return np.array([50.0])
+
+    elif choice == '4':
+        start = get_input_float("  Threshold/Start [eV]", 10.0)
+        end   = get_input_float("  End [eV]", 1000.0)
+        dens  = get_input_float("  Density Factor (1.0=Normal, 2.0=Dense)", 1.0)
+        return generate_flexible_energy_grid(start, end, dens)
     
     print("Invalid choice. Defaulting to Grid 10-200.")
     return np.arange(10.0, 201.0, 5.0)
@@ -179,6 +215,36 @@ def run_scan_excitation(run_name):
     nf = get_input_int("  n", 2)
     lf = get_input_int("  l", 0)
     
+    print("\n--- Model Selection ---")
+    print("1. Static Only (Standard DWBA) - Matches Article (Default)")
+    print("2. Static + Exchange (DWSE) - Improved Physics")
+    print("3. Static + Exchange + Polarization (SEP) - Advanced")
+    choice = input("Select Model [1-3] (default=1): ").strip()
+    
+    use_ex = False # Default 1 is Static Only
+    use_pol = False
+    
+    if choice == '2':
+        use_ex = True
+    elif choice == '3':
+        use_ex = True
+        use_pol = True
+    elif choice == '1':
+        pass # Default
+    else:
+        # Default -> 1
+        pass
+    
+    # Sub-selection for Exchange
+    ex_method = 'fumc'
+    if use_ex:
+        print("\n  [Exchange Potential Options]")
+        print("  1. Furness-McCarthy (Article Standard, Default)")
+        print("  2. Slater (Free Electron Gas Approx)")
+        ex_choice = input("  Select Exchange Method [1-2] (default=1): ").strip()
+        if ex_choice == '2':
+            ex_method = 'slater'
+    
     energies = get_energy_list_interactive()
     
     # Convert quantum number n to sorting index n_index
@@ -202,6 +268,7 @@ def run_scan_excitation(run_name):
     # Default core params (Coulomb only), logic could be extended for Ne+ etc.
     core_params = CorePotentialParams(Zc=Z, a1=0, a2=0, a3=0, a4=0, a5=0, a6=0)
 
+
     key = f"Excitation_Z{Z}_n{ni}l{li}_to_n{nf}l{lf}"
     results = []
     
@@ -209,7 +276,6 @@ def run_scan_excitation(run_name):
     print("\n[Calibration] Running Pilot Calculation at 1000 eV for Alpha Matching...")
     pilot_E = 1000.0
     
-    # Determine n-p vs n-s (approximate check)
     # Determine n-p vs n-s (approximate check)
     # Generalized: if final state is S (l=0), use s-s params. Else use s-p params.
     # Note: Article only explicitly covers starting from 1s. We assume this generalizes.
@@ -223,7 +289,8 @@ def run_scan_excitation(run_name):
     # We will run it once.
     
     try:
-        res_pilot = compute_total_excitation_cs(pilot_E, spec, core_params, r_max=100.0, n_points=3000)
+        # Article uses large box (200 au)
+        res_pilot = compute_total_excitation_cs(pilot_E, spec, core_params, r_max=200.0, n_points=3000, use_exchange_potential=use_ex, use_polarization_potential=use_pol, exchange_method=ex_method)
     except Exception as e:
         print(f"[Calibration] Pilot failed: {e}. Defaulting Alpha=1.0")
         res_pilot = None
@@ -254,7 +321,8 @@ def run_scan_excitation(run_name):
             if E <= 0.01: continue
             print(f"E={E:.2f} eV...", end=" ", flush=True)
             try:
-                res = compute_total_excitation_cs(E, spec, core_params, r_max=100.0, n_points=3000)
+                # Article uses large box (200 au)
+                res = compute_total_excitation_cs(E, spec, core_params, r_max=200.0, n_points=3000, use_exchange_potential=use_ex, use_polarization_potential=use_pol, exchange_method=ex_method)
                 
                 if res.ok_open_channel:
                     # Calculate Calibration
@@ -264,13 +332,20 @@ def run_scan_excitation(run_name):
                     
                     print(f"OK. σ_dwba={sigma_raw:.2e} | σ_cal={sigma_cal:.2e} | C={factor_C:.3f}")
                     
+                    # Print Dominant Partial Waves (Top 3)
+                    if res.partial_waves:
+                        sorted_pw = sorted(res.partial_waves.items(), key=lambda x: x[1], reverse=True)[:3]
+                        pw_str = ", ".join([f"{k}:{v:.1e}" for k, v in sorted_pw])
+                        print(f"    Dominant L: {pw_str}")
+
                     results.append({
                         "energy_eV": E,
                         "sigma_au": res.sigma_total_au,
                         "sigma_cm2": sigma_raw,
                         "sigma_mtong_cm2": sigma_cal,
                         "calibration_factor_C": factor_C,
-                        "Threshold_eV": res.E_excitation_eV
+                        "Threshold_eV": res.E_excitation_eV,
+                        "partial_waves": res.partial_waves
                     })
                 else:
                     print(f"Closed (Thr={res.E_excitation_eV:.2f})")
@@ -325,6 +400,35 @@ def run_scan_ionization(run_name):
     ni = get_input_int("  n", 1)
     li = get_input_int("  l", 0)
     
+    print("\n--- Model Selection ---")
+    print("1. Static Only (Standard DWBA) - Matches Article (Default)")
+    print("2. Static + Exchange (DWSE) - Improved Incident Physics")
+    print("3. Static + Exchange + Polarization (SEP) - Advanced")
+    choice = input("Select Model [1-3] (default=1): ").strip()
+
+    use_ex = False 
+    use_pol = False
+    
+    if choice == '2':
+        use_ex = True
+    elif choice == '3':
+        use_ex = True
+        use_pol = True
+    elif choice == '1':
+        pass 
+    else:
+        pass
+    
+    # Sub-selection for Exchange
+    ex_method = 'fumc'
+    if use_ex:
+        print("\n  [Exchange Potential Options]")
+        print("  1. Furness-McCarthy (Article Standard, Default)")
+        print("  2. Slater (Free Electron Gas Approx)")
+        ex_choice = input("  Select Exchange Method [1-2] (default=1): ").strip()
+        if ex_choice == '2':
+            ex_method = 'slater'
+
     energies = get_energy_list_interactive()
     
     n_idx_i = ni - li
@@ -351,7 +455,13 @@ def run_scan_ionization(run_name):
         for E in energies:
             print(f"E={E:.2f} eV...", end=" ", flush=True)
             try:
-                res = compute_ionization_cs(E, spec, core_params, r_max=100.0, n_points=3000)
+                res = compute_ionization_cs(
+                    E, spec, core_params, 
+                    r_max=200.0, n_points=3000, 
+                    use_exchange=use_ex, 
+                    use_polarization=use_pol,
+                    exchange_method=ex_method
+                )
                 
                 if res.sigma_total_cm2 > 0:
                     print(f"OK. σ={res.sigma_total_cm2:.2e} cm2")
