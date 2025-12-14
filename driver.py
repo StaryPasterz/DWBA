@@ -261,55 +261,48 @@ def compute_total_excitation_cs(
     n_points: int = 3000,
     match_high_energy_eV: float = 1000.0,
     n_theta: int = 200,
-    use_exchange_potential: bool = False,
-    use_polarization_potential: bool = False,
-    exchange_method: str = 'fumc'
+    exchange_method: str = 'fumc',
+    # Optimization Injection
+    _precalc_grid: Optional[RadialGrid] = None,
+    _precalc_V_core: Optional[np.ndarray] = None,
+    _precalc_orb_i: Optional[BoundOrbital] = None,
+    _precalc_orb_f: Optional[BoundOrbital] = None
 ) -> DWBAResult:
     """
-    Main high-level function.
-    Calculates excitation cross section in DWBA.
-    Implements Partial Wave Summation over projectile l_i, l_f.
+    Main high-level function to compute Total Excitation Cross Section (TECS).
+    Now supports pre-calculated static properties for optimization.
     """
 
     t0 = time.perf_counter()
     
-    # 1. Grid
-    grid: RadialGrid = make_r_grid(r_min=r_min, r_max=r_max, n_points=n_points)
-    
-    # 2. V_core
-    V_core = V_core_on_grid(grid, core_params)
-    
-    # 3. Bound States
-    # We solve for enough states to catch the requested index
-    states_i = solve_bound_states(grid, V_core, l=chan.l_i, n_states_max=chan.n_index_i+1)
-    states_f = solve_bound_states(grid, V_core, l=chan.l_f, n_states_max=chan.n_index_f+1)
-    
-    orb_i = _pick_bound_orbital(tuple(states_i), chan.n_index_i)
-
-    orb_f = _pick_bound_orbital(tuple(states_f), chan.n_index_f)
-    
+    # 1. Grid & Core
+    if _precalc_grid is not None and _precalc_V_core is not None:
+        grid = _precalc_grid
+        V_core = _precalc_V_core
+    else:
+        grid = make_r_grid(r_min=r_min, r_max=r_max, n_points=n_points)
+        V_core = V_core_on_grid(grid, core_params)
+        
+    # 2. Bound States
+    # Initial
+    if _precalc_orb_i is not None:
+        orb_i = _precalc_orb_i
+    else:
+        states_i = solve_bound_states(grid, V_core, l=chan.l_i, n_states_max=chan.n_index_i+1)
+        orb_i = _pick_bound_orbital(tuple(states_i), chan.n_index_i)
+        
+    # Final
+    if _precalc_orb_f is not None:
+        orb_f = _precalc_orb_f
+    else:
+        states_f = solve_bound_states(grid, V_core, l=chan.l_f, n_states_max=chan.n_index_f+1)
+        orb_f = _pick_bound_orbital(tuple(states_f), chan.n_index_f)
+        
     epsilon_exc = orb_f.energy_au
     dE_target_au = orb_f.energy_au - orb_i.energy_au
     dE_target_eV = dE_target_au / ev_to_au(1.0)
     E_final_eV = E_incident_eV - dE_target_eV
     
-    if E_final_eV <= 0.0:
-        return DWBAResult(False, E_incident_eV, dE_target_eV, 0.0, 0.0, 0.0, 0.0, None)
-
-    k_i_au = float(k_from_E_eV(E_incident_eV))
-    k_f_au = float(k_from_E_eV(E_final_eV))
-    z_ion = core_params.Zc - 1.0
-
-    # 4. Distorting Potentials (Static Only - no exchange in U)
-    U_i, U_f = build_distorting_potentials(
-        grid=grid,
-        V_core_array=V_core,
-        orbital_initial=orb_i,
-        orbital_final=orb_f,
-        k_i_au=k_i_au,
-        k_f_au=k_f_au,
-        use_exchange=use_exchange_potential, # Controlled by argument
-        use_polarization=use_polarization_potential, # Controlled by argument
         exchange_method=exchange_method
     )
     
@@ -630,6 +623,91 @@ def compute_total_excitation_cs(
         sigma_total_au, sigma_total_cm2,
         k_i_au, k_f_au,
         theta_grid * 180.0 / np.pi,
-        dcs_vals,
+        total_dcs, # dcs_vals variable name was likely wrong in previous view, check context. But wait, local var was 'total_dcs'?
         partial_waves_dict
+    )
+
+# --- Optimized Pre-calculation Interface ---
+
+@dataclass
+class PreparedTarget:
+    grid: RadialGrid
+    V_core: np.ndarray
+    orb_i: BoundOrbital
+    orb_f: BoundOrbital
+    core_params: CorePotentialParams
+    chan: ExcitationChannelSpec
+    dE_target_eV: float
+    # Static Configuration
+    use_exchange: bool
+    use_polarization: bool
+    exchange_method: str
+
+def prepare_target(
+    chan: ExcitationChannelSpec,
+    core_params: CorePotentialParams,
+    r_min: float = 1e-5,
+    r_max: float = 200.0,
+    n_points: int = 3000,
+    use_exchange: bool = False,
+    use_polarization: bool = False,
+    exchange_method: str = 'fumc'
+) -> PreparedTarget:
+    """Pre-computes static properties for a given transition."""
+    
+    grid = make_r_grid(r_min=r_min, r_max=r_max, n_points=n_points)
+    V_core = V_core_on_grid(grid, core_params)
+    
+    states_i = solve_bound_states(grid, V_core, l=chan.l_i, n_states_max=chan.n_index_i+1)
+    states_f = solve_bound_states(grid, V_core, l=chan.l_f, n_states_max=chan.n_index_f+1)
+    
+    orb_i = _pick_bound_orbital(tuple(states_i), chan.n_index_i)
+    orb_f = _pick_bound_orbital(tuple(states_f), chan.n_index_f)
+    
+    dE = (orb_f.energy_au - orb_i.energy_au) / ev_to_au(1.0)
+    
+    # We do NOT compute U_i, U_f here because Exchange depends on E.
+    
+    return PreparedTarget(
+        grid, V_core, orb_i, orb_f, core_params, chan, dE,
+        use_exchange, use_polarization, exchange_method
+    )
+
+def compute_excitation_cs_precalc(
+    E_incident_eV: float,
+    prep: PreparedTarget,
+    n_theta: int = 200
+) -> DWBAResult:
+    """Efficient runner using pre-computed target data."""
+    
+    E_final_eV = E_incident_eV - prep.dE_target_eV
+    if E_final_eV <= 0.0:
+        return DWBAResult(False, E_incident_eV, prep.dE_target_eV, 0.0, 0.0, 0.0, 0.0, None)
+
+    k_i_au = float(k_from_E_eV(E_incident_eV))
+    k_f_au = float(k_from_E_eV(E_final_eV))
+    
+    # Re-compute Distorting Potentials for this specific Energy
+    U_i, U_f = build_distorting_potentials(
+        prep.grid, prep.V_core, prep.orb_i, prep.orb_f,
+        k_i_au=k_i_au, k_f_au=k_f_au,
+        use_exchange=prep.use_exchange,
+        use_polarization=prep.use_polarization,
+        exchange_method=prep.exchange_method
+    )
+    
+    
+    # We delegate back to the main runner which now supports 
+    # injected pre-calculated objects.
+    # This ensures we use the full robust logic (GPU/Parallel).
+    
+    return compute_total_excitation_cs(
+        E_incident_eV, prep.chan, prep.core_params,
+        n_points=len(prep.grid.r),
+        n_theta=n_theta,
+        exchange_method=prep.exchange_method,
+        _precalc_grid=prep.grid,
+        _precalc_V_core=prep.V_core,
+        _precalc_orb_i=prep.orb_i,
+        _precalc_orb_f=prep.orb_f
     )

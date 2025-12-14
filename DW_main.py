@@ -29,6 +29,7 @@ from ionization import (
     IonizationChannelSpec
 )
 from potential_core import CorePotentialParams
+import atom_library
 import plotter # Import plotter module
 from calibration import TongModel
 
@@ -59,21 +60,41 @@ def get_input_int(prompt, default=None):
         print("Invalid integer.")
         return get_input_int(prompt, default)
 
-        return get_input_int(prompt, default)
-
 def select_target():
     print("\n--- Target Selection ---")
-    print("1. Hydrogen (H)    [Z=1]")
-    print("2. Helium Ion (He+) [Z=2]")
-    print("3. Custom Nucleus")
+    atoms = atom_library.get_atom_list()
     
-    c = input("Choice [1]: ").strip()
-    if c == '2': 
-        return 2.0
-    elif c == '3':
-        return get_input_float("Enter Nuclear Charge Z")
+    # Display available atoms
+    for i, name in enumerate(atoms):
+        entry = atom_library.get_atom(name)
+        print(f"{i+1}. {entry.name:<5} - {entry.description}")
+    
+    print(f"{len(atoms)+1}. Custom (Manual Z)")
+    
+    raw = input(f"Select Target [1-{len(atoms)+1}] (default=1): ").strip()
+    if not raw: raw = "1"
+    
+    try:
+        idx = int(raw) - 1
+    except ValueError:
+        idx = 0 # default
+        
+    if 0 <= idx < len(atoms):
+        name = atoms[idx]
+        return atom_library.get_atom(name)
     else:
-        return 1.0
+        # manual custom
+        z_in = get_input_float("Enter Nuclear Charge Z")
+        # For custom, we assume simple Coulomb for now (Zc=Z)
+        return atom_library.AtomEntry(
+            name=f"Z={z_in}",
+            Z=z_in,
+            core_params=CorePotentialParams(Zc=z_in, a1=0, a2=1, a3=0, a4=1, a5=0, a6=1),
+            default_n=1,
+            default_l=0,
+            ip_ev=13.6*z_in**2, # approx
+            description="Custom Hydrogen-like"
+        )
 
 def generate_flexible_energy_grid(start_eV: float, end_eV: float, density_factor: float = 1.0) -> np.ndarray:
     """
@@ -187,33 +208,25 @@ def check_file_exists_warning(filename):
 def run_scan_excitation(run_name):
     """
     Interactive workflow for Excitation Cross Section calculation.
-    
-    Steps:
-    1. Ask user for Nuclear Charge (Z) and quantum numbers (n, l) for Initial/Final states.
-    2. Define the energy grid (Single point, Linear, or Custom list).
-    3. Loop over energies, calling `compute_total_excitation_cs`.
-    4. Save results to `results_{run_name}_exc.json`.
     """
     filename = f"results_{run_name}_exc.json"
     
-    # Pre-check if we haven't already
-    # But usually we just append. Let's just warn if it's the first write?
-    # Actually, let's warn at the start of calculation if file exists.
     if not check_file_exists_warning(filename):
         print("Aborting calculation.")
         return
 
     print("\n=== EXCITATION CALCULATION ===")
-    Z = select_target()
-    print(f"Selected Z = {Z}")
+    atom_entry = select_target()
+    Z = atom_entry.Z
+    print(f"Selected Target: {atom_entry.name} (Z={Z})")
       
     print("Initial State:")
-    ni = get_input_int("  n", 1)
-    li = get_input_int("  l", 0)
+    ni = get_input_int("  n", atom_entry.default_n)
+    li = get_input_int("  l", atom_entry.default_l)
     
     print("Final State:")
-    nf = get_input_int("  n", 2)
-    lf = get_input_int("  l", 0)
+    nf = get_input_int("  n", ni + 1)
+    lf = get_input_int("  l", li + 1 if li==0 else li-1)
     
     print("\n--- Model Selection ---")
     print("1. Static Only (Standard DWBA) - Matches Article (Default)")
@@ -230,9 +243,8 @@ def run_scan_excitation(run_name):
         use_ex = True
         use_pol = True
     elif choice == '1':
-        pass # Default
+        pass 
     else:
-        # Default -> 1
         pass
     
     # Sub-selection for Exchange
@@ -260,16 +272,16 @@ def run_scan_excitation(run_name):
     spec = ExcitationChannelSpec(
         l_i=li, l_f=lf,
         n_index_i=n_idx_i, n_index_f=n_idx_f,
-        N_equiv=1,
+        N_equiv=1, # SAE approximation
         L_max_integrals=15, 
         L_target_i=li,
         L_target_f=lf
     )
-    # Default core params (Coulomb only), logic could be extended for Ne+ etc.
-    core_params = CorePotentialParams(Zc=Z, a1=0, a2=0, a3=0, a4=0, a5=0, a6=0)
+    
+    # Use parameters from library
+    core_params = atom_entry.core_params
 
-
-    key = f"Excitation_Z{Z}_n{ni}l{li}_to_n{nf}l{lf}"
+    key = f"Excitation_Z{Z}_{atom_entry.name}_n{ni}l{li}_to_n{nf}l{lf}"
     results = []
     
     # --- Calibration Pilot Run ---
@@ -290,29 +302,66 @@ def run_scan_excitation(run_name):
     
     try:
         # Article uses large box (200 au)
-        res_pilot = compute_total_excitation_cs(pilot_E, spec, core_params, r_max=200.0, n_points=3000, use_exchange_potential=use_ex, use_polarization_potential=use_pol, exchange_method=ex_method)
+        res_pilot = compute_total_excitation_cs(
+            pilot_E, spec, core_params, 
+            r_max=200.0, n_points=3000, 
+            use_exchange_potential=use_ex, 
+            use_polarization_potential=use_pol,
+            exchange_method=ex_method
+        )
     except Exception as e:
         print(f"[Calibration] Pilot failed: {e}. Defaulting Alpha=1.0")
         res_pilot = None
 
     # Init model
-    # If pilot failed, we guess threshold (approx for H-like).
-    dE_thr = res_pilot.E_excitation_eV if res_pilot else 10.2 * Z**2 
-    epsilon_exc_au = -0.5 * (Z**2) / (nf**2) # Approximate if pilot failed, but usually correct from res
+    # If pilot failed, we guess threshold.
+    dE_thr = res_pilot.E_excitation_eV if res_pilot else atom_entry.ip_ev # rough guess
     
-    # If res_pilot worked, use exact epsilon? 
-    # res doesn't allow easy access to epsilon_exc_au directly (it returns E_exc_eV).
-    # E_incident = E_final + dE. dE = E_i - E_f.
-    # We trust the model init.
-    
-    tong_model = TongModel(dE_thr, epsilon_exc_au, transition_type=t_type)
-    
-    if res_pilot and res_pilot.ok_open_channel:
-        alpha = tong_model.calibrate_alpha(pilot_E, res_pilot.sigma_total_cm2)
-        print(f"[Calibration] Alpha determined: {alpha:.4f} (Matched to DWBA at 1000 eV)")
+    # Calculate final state binding energy (epsilon in Eq 493)
+    # E_final = E_initial + dE_thr
+    # E_initial approx -IP
+    # So epsilon = (-IP + dE_thr) in a.u.
+    if res_pilot:
+        # res_pilot doesn't store E_final_bound directly, but we can deduce
+        # We need epsilon_exc_au.
+        # Let's approximate from IP.
+        E_init_eV = -atom_entry.ip_ev
+        E_final_eV = E_init_eV + dE_thr
+        # Check consistency: if dE_thr > IP, then E_final > 0 (Ionization). 
+        # But we are in Excitation. Usually dE < IP.
+        epsilon_exc_au = ev_to_au(E_final_eV)
     else:
-        print("[Calibration] Pilot could not determine Alpha. Using default=1.0")
+        # Fallback for H-like
+        epsilon_exc_au = -0.5 * (Z**2) / (nf**2) 
 
+    tong_model = TongModel(dE_thr, epsilon_exc_au, transition_type=t_type)
+    alpha = 1.0
+    
+    if res_pilot and res_pilot.sigma_total_cm2 > 0:
+        sigma_calc = res_pilot.sigma_total_cm2
+        alpha = tong_model.calibrate(pilot_E, sigma_calc)
+        print(f"[Calibration] Pilot Sigma={sigma_calc:.2e} cm2")
+        print(f"[Calibration] Tong Model Ref={tong_model.get_tong_sigma(pilot_E):.2e} cm2")
+        print(f"[Calibration] ALPHA = {alpha:.4f}")
+    else:
+        print("[Calibration] Pilot result invalid. Using Alpha=1.0")
+        
+    # --- Main Loop ---
+    
+    # Pre-calculate static target properties (Optimization)
+    print("\n[Optimization] Pre-calculating static target properties...")
+    from driver import prepare_target, compute_excitation_cs_precalc
+    
+    prep = prepare_target(
+        chan=spec,
+        core_params=core_params,
+        use_exchange=use_ex,
+        use_polarization=use_pol,
+        exchange_method=ex_method,
+        r_max=200.0,
+        n_points=3000
+    )
+    print("[Optimization] Ready.")
     
     print(f"\nStarting calculation for {key} ({len(energies)} points)...")
     
@@ -321,48 +370,36 @@ def run_scan_excitation(run_name):
             if E <= 0.01: continue
             print(f"E={E:.2f} eV...", end=" ", flush=True)
             try:
-                # Article uses large box (200 au)
-                res = compute_total_excitation_cs(E, spec, core_params, r_max=200.0, n_points=3000, use_exchange_potential=use_ex, use_polarization_potential=use_pol, exchange_method=ex_method)
+                # Optimized call
+                res = compute_excitation_cs_precalc(E, prep)
                 
-                if res.ok_open_channel:
-                    # Calculate Calibration
-                    sigma_raw = res.sigma_total_cm2
-                    sigma_cal = tong_model.calculate_sigma_cm2(E)
-                    factor_C = tong_model.get_calibration_factor(E, sigma_raw)
-                    
-                    print(f"OK. σ_dwba={sigma_raw:.2e} | σ_cal={sigma_cal:.2e} | C={factor_C:.3f}")
-                    
-                    # Print Dominant Partial Waves (Top 3)
-                    if res.partial_waves:
-                        sorted_pw = sorted(res.partial_waves.items(), key=lambda x: x[1], reverse=True)[:3]
-                        pw_str = ", ".join([f"{k}:{v:.1e}" for k, v in sorted_pw])
-                        print(f"    Dominant L: {pw_str}")
-
-                    results.append({
-                        "energy_eV": E,
-                        "sigma_au": res.sigma_total_au,
-                        "sigma_cm2": sigma_raw,
-                        "sigma_mtong_cm2": sigma_cal,
-                        "calibration_factor_C": factor_C,
-                        "Threshold_eV": res.E_excitation_eV,
-                        "partial_waves": res.partial_waves
-                    })
-                else:
-                    print(f"Closed (Thr={res.E_excitation_eV:.2f})")
-                    results.append({
-                        "energy_eV": E,
-                        "sigma_au": 0.0,
-                        "sigma_cm2": 0.0,
-                        "sigma_mtong_cm2": 0.0,
-                        "calibration_factor_C": 1.0, 
-                        "Threshold_eV": res.E_excitation_eV
-                    })
+                # Print dominant partial waves
+                top_pws = []
+                if res.partial_waves:
+                    # Sort by contribution
+                    sorted_pws = sorted(res.partial_waves.items(), key=lambda x: x[1], reverse=True)
+                    # Take top 3
+                    top_pws = [f"{k}={v:.1e}" for k,v in sorted_pws[:3]]
                 
-                # Incremental Save
-                save_results(filename, {key: results})
-
+                pw_info = f" [Top: {', '.join(top_pws)}]" if top_pws else ""
+                
+                print(f"OK. σ={res.sigma_total_cm2:.2e} cm2{pw_info}")
+                
+                tong_sigma = tong_model.get_tong_sigma(E)
+                scaled_sigma = res.sigma_total_cm2 * alpha
+                
+                results.append({
+                    "energy_eV": E,
+                    "sigma_au": res.sigma_total_au,
+                    "sigma_cm2": res.sigma_total_cm2,
+                    "sigma_mtong_cm2": tong_sigma,
+                    "sigma_scaled_cm2": scaled_sigma,
+                    "calibration_alpha": alpha,
+                    "partial_waves": res.partial_waves
+                })
+                
             except Exception as e:
-                print(f"Error ({E} eV): {e}")
+                print(f"Failed: {e}")
 
     except KeyboardInterrupt:
         print("\n\n[STOP] Calculation interrupted by user (Ctrl+C).")
@@ -378,13 +415,6 @@ def run_scan_excitation(run_name):
 def run_scan_ionization(run_name):
     """
     Interactive workflow for Ionization Cross Section calculation.
-    
-    Steps:
-    1. Ask user for Target parameters.
-    2. Define energy grid.
-    3. Loop over incident energies.
-    4. Provide M-Tong scaling (BE-scaling) output for comparison.
-    5. Save results to `results_{run_name}_ion.json`.
     """
     filename = f"results_{run_name}_ion.json"
     
@@ -393,12 +423,13 @@ def run_scan_ionization(run_name):
         return
 
     print("\n=== IONIZATION CALCULATION ===")
-    Z = select_target()
-    print(f"Selected Z = {Z}")
+    atom_entry = select_target()
+    Z = atom_entry.Z
+    print(f"Selected Target: {atom_entry.name} (Z={Z})")
     
     print("Initial State:")
-    ni = get_input_int("  n", 1)
-    li = get_input_int("  l", 0)
+    ni = get_input_int("  n", atom_entry.default_n)
+    li = get_input_int("  l", atom_entry.default_l)
     
     print("\n--- Model Selection ---")
     print("1. Static Only (Standard DWBA) - Matches Article (Default)")
@@ -440,52 +471,76 @@ def run_scan_ionization(run_name):
         l_i=li,
         n_index_i=n_idx_i,
         N_equiv=1,
-        l_eject_max=3,
-        L_max=8,
+        l_eject_max=3,  # Sum up to F waves? 
+        L_max=15, 
         L_i_total=li
     )
-    core_params = CorePotentialParams(Zc=Z, a1=0, a2=0, a3=0, a4=0, a5=0, a6=0)
-
-    key = f"Ionization_Z{Z}_n{ni}l{li}"
-    results = []
+    
+    # Use parameters from library
+    core_params = atom_entry.core_params
+    
+    key = f"Ionization_Z{Z}_{atom_entry.name}_n{ni}l{li}"
+    # --- Main Loop ---
+    
+    # Pre-calculate (Optimization)
+    print("\n[Optimization] Pre-calculating static target properties...")
+    from driver import prepare_target, ExcitationChannelSpec
+    
+    # Adapter: prepare_target expects ExcitationChannelSpec but Ionization needs IonizationChannelSpec.
+    # We can fake the ExcitationChannelSpec just to get grid, V_core, and orb_i.
+    # We set l_f to something valid (l_i + 1) just to pass the solver checks, though we won't use orb_f.
+    
+    tmp_chan = ExcitationChannelSpec(
+        l_i=li, l_f=li+1, n_index_i=n_idx_i, n_index_f=n_idx_i+1, # dummy final
+        N_equiv=1, L_max_integrals=10, L_target_i=li, L_target_f=li+1
+    )
+    
+    prep = prepare_target(
+        chan=tmp_chan,
+        core_params=core_params,
+        use_exchange=use_ex, 
+        use_polarization=use_pol,
+        exchange_method=ex_method,
+        r_max=200.0,
+        n_points=3000
+    )
+    print("[Optimization] Ready.")
 
     print(f"\nStarting calculation for {key} ({len(energies)} points)...")
-
+    
     try:
         for E in energies:
             print(f"E={E:.2f} eV...", end=" ", flush=True)
             try:
                 res = compute_ionization_cs(
-                    E, spec, core_params, 
-                    r_max=200.0, n_points=3000, 
+                    E, spec, 
+                    core_params=core_params, # Ignored for grid/V_core generation if _precalc used
+                    r_max=200.0, n_points=3000,
                     use_exchange=use_ex, 
-                    use_polarization=use_pol,
-                    exchange_method=ex_method
+                    use_polarization=use_pol, 
+                    exchange_method=ex_method,
+                    _precalc_grid=prep.grid,
+                    _precalc_V_core=prep.V_core,
+                    _precalc_orb_i=prep.orb_i
                 )
                 
                 if res.sigma_total_cm2 > 0:
                     print(f"OK. σ={res.sigma_total_cm2:.2e} cm2")
-                    ip = res.IP_eV
-                    scale = E / (E + ip) if (E + ip) > 0 else 0.0
-                    mt = res.sigma_total_cm2 * scale
-                    
-                    results.append({
-                        "energy_eV": E,
-                        "sigma_au": res.sigma_total_au,
-                        "sigma_cm2": res.sigma_total_cm2,
-                        "sigma_mtong_cm2": mt,
-                        "calibration_factor_C": 1.0,
-                        "Threshold_eV": ip,
-                        "IP_eV": ip
-                    })
                 else:
-                        print("Closed/Zero")
+                    print(f"Below Threshold (IP={res.IP_eV:.2f} eV)")
                 
-                # Incremental Save
-                save_results(filename, {key: results})
-
+                results.append({
+                    "energy_eV": E,
+                    "sigma_au": res.sigma_total_au,
+                    "sigma_cm2": res.sigma_total_cm2,
+                    "IP_eV": res.IP_eV,
+                    "sdcs": res.sdcs_data,
+                    "partial_waves": res.partial_waves
+                })
             except Exception as e:
-                print(f"Error ({E} eV): {e}")
+                import traceback
+                traceback.print_exc()
+                print(f"Failed: {e}")
 
     except KeyboardInterrupt:
         print("\n\n[STOP] Calculation interrupted by user (Ctrl+C).")
@@ -575,8 +630,10 @@ def main():
         print(f"Current Run: {run_name}")
         print("1. Calculate Excitation Cross Sections")
         print("2. Calculate Ionization Cross Sections")
-        print("3. Generate Plots (Load any file)")
-        print("4. Change Run Name")
+        print("3. Generate Plots (Cross Sections)")
+        print("4. Partial Wave Analysis (Detailed Plots)")
+        print("5. Fit Potential (New Atom Tool)")
+        print("6. Change Run Name")
         print("q. Quit")
         
         choice = input("\nSelect Mode: ").strip().lower()
@@ -588,6 +645,24 @@ def main():
         elif choice == '3':
             run_visualization()
         elif choice == '4':
+            # Run Partial Wave Analysis
+            try:
+                import partial_wave_plotter
+                print("\n=== PARTIAL WAVE ANALYSIS ===")
+                # It expects a file argument normally, but we can wrap it or call main() if it allows.
+                # Inspecting partial_wave_plotter.py suggests it has a main() that asks for file.
+                # Let's try calling its main logic.
+                partial_wave_plotter.main()
+            except Exception as e:
+                print(f"Error running plotter: {e}")
+        elif choice == '5':
+            # Run Potential Fitter
+            try:
+                import fit_potential
+                fit_potential.main()
+            except Exception as e:
+                print(f"Error running fitter: {e}")
+        elif choice == '6':
             new_name = input("Enter new Simulation Name: ").strip()
             if new_name:
                 run_name = new_name

@@ -1,0 +1,53 @@
+{
+  "H": {
+    "name": "H",
+    "Z": 1.0,
+    "Zc": 1.0,
+    "a_params": [
+      0.0,
+      1.0,
+      0.0,
+      1.0,
+      0.0,
+      1.0
+    ],
+    "default_n": 1,
+    "default_l": 0,
+    "ip_ev": 13.6,
+    "description": "Hydrogen Atom (Exact Coulomb)"
+  },
+  "He+": {
+    "name": "He+",
+    "Z": 2.0,
+    "Zc": 2.0,
+    "a_params": [
+      0.0,
+      1.0,
+      0.0,
+      1.0,
+      0.0,
+      1.0
+    ],
+    "default_n": 1,
+    "default_l": 0,
+    "ip_ev": 54.42,
+    "description": "Helium Ion (Hydrogenic Z=2)"
+  },
+  "Li": {
+    "name": "Li",
+    "Z": 3.0,
+    "Zc": 1.0,
+    "a_params": [
+      1.3148612682064647,
+      1.140558266638788,
+      0.00023806296397561584,
+      1.1587146961962067,
+      -6.551330120555603e-05,
+      1.0014715477082061
+    ],
+    "default_n": 2,
+    "default_l": 0,
+    "ip_ev": 5.3917,
+    "description": "Li (2s matched to NIST)"
+  }
+}
