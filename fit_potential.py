@@ -90,7 +90,9 @@ def save_to_json(name, Z, Zc, n, l, ip_ev, a_params):
     """
     Saves the optimize parameters to atoms.json
     """
-    db_file = os.path.join(os.path.dirname(__file__), "atoms.json")
+    # Use absolute path relative to this script
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    db_file = os.path.join(base_dir, "atoms.json")
     
     data = {}
     if os.path.exists(db_file):
@@ -112,10 +114,12 @@ def save_to_json(name, Z, Zc, n, l, ip_ev, a_params):
         "description": f"{name} ({n}{'spdf'[l] if l<4 else 'l='+str(l)} matched to NIST)"
     }
     
-    with open(db_file, "w") as f:
-        json.dump(data, f, indent=2)
-    
-    print(f"\n[SUCCESS] Automatically saved '{name}' to atoms.json.")
+    try:
+        with open(db_file, "w") as f:
+            json.dump(data, f, indent=2)
+        print(f"\n[SUCCESS] Automatically saved '{name}' to:\n  {db_file}")
+    except Exception as e:
+        print(f"\n[ERROR] Failed to save atoms.json: {e}")
 
 def main():
     print("=== Model Potential Fitter (Self-Consistent) ===")

@@ -100,6 +100,10 @@ class DWBAResult:
 
     k_i_au: float
     k_f_au: float
+
+    # Differential Cross Section Data
+    theta_deg: Optional[np.ndarray] = None
+    dcs_au: Optional[np.ndarray] = None
     
     # Detailed Breakdown
     partial_waves: Dict[str, float] = None 
@@ -262,6 +266,7 @@ def compute_total_excitation_cs(
     match_high_energy_eV: float = 1000.0,
     n_theta: int = 200,
     exchange_method: str = 'fumc',
+    use_polarization_potential: bool = False,
     # Optimization Injection
     _precalc_grid: Optional[RadialGrid] = None,
     _precalc_V_core: Optional[np.ndarray] = None,
@@ -272,6 +277,9 @@ def compute_total_excitation_cs(
     Main high-level function to compute Total Excitation Cross Section (TECS).
     Now supports pre-calculated static properties for optimization.
     """
+    
+    # Derive flags
+    use_exchange = (exchange_method is not None and exchange_method.lower() != 'none')
 
     t0 = time.perf_counter()
     
@@ -302,7 +310,18 @@ def compute_total_excitation_cs(
     dE_target_au = orb_f.energy_au - orb_i.energy_au
     dE_target_eV = dE_target_au / ev_to_au(1.0)
     E_final_eV = E_incident_eV - dE_target_eV
-    
+
+    k_i_au = float(k_from_E_eV(E_incident_eV))
+    k_f_au = float(k_from_E_eV(E_final_eV))
+    z_ion = core_params.Zc - 1.0
+
+    # 4. Distorting Potentials
+    U_i, U_f = build_distorting_potentials(
+        grid, V_core, orb_i, orb_f, 
+        k_i_au=k_i_au, 
+        k_f_au=k_f_au,
+        use_exchange=use_exchange,
+        use_polarization=use_polarization_potential,
         exchange_method=exchange_method
     )
     
@@ -354,7 +373,7 @@ def compute_total_excitation_cs(
     # If user explicitly set a very high L in chan, respect it if < 150 (already handled by max)
     # If user set small L (e.g. 5 default), this dynamic logic overrides it properly.
     
-    # print(f"  [Auto-L] E={E_incident_eV:.1f} eV (k={k_i_au:.2f}) -> L_max_proj={L_max_proj}") 
+    print(f"  [Auto-L] E={E_incident_eV:.1f} eV (k={k_i_au:.2f}) -> L_max_proj={L_max_proj}") 
     
     # --- Execution Strategy Selection ---
     USE_GPU = False
@@ -455,7 +474,13 @@ def compute_total_excitation_cs(
             # Compute contribution of this l_i to total cross section
             sigma_li_contribution = 0.0
             if any_valid_lf:
-                sigma_li_contribution, _ = dcs_dwba(theta_grid, li_amplitudes, Li, chan.N_equiv)
+                # Sum DCS over all magnetic sublevels for this l_i
+                dcs_li_sum = np.zeros_like(theta_grid, dtype=float)
+                for (Mi, Mf), amp in li_amplitudes.items():
+                    dct_term = dcs_dwba(theta_grid, amp.f_theta, amp.g_theta, k_i_au, k_f_au, Li, chan.N_equiv)
+                    dcs_li_sum += dct_term
+                
+                sigma_li_contribution = sigma_au_to_cm2(integrate_dcs_over_angles(theta_grid, dcs_li_sum))
                 partial_waves_dict[f"L{l_i}"] = sigma_li_contribution
 
             for k_amp, v_amp in li_amplitudes.items():
@@ -469,7 +494,7 @@ def compute_total_excitation_cs(
             # Compute Total CS snapshot
             snap_dcs = np.zeros_like(theta_grid, dtype=float)
             for (Mi, Mf), amps in total_amplitudes.items():
-                chan_dcs = dcs_dwba(theta_grid, amps.f_theta, amps.g_theta, k_i_au, k_f_au, Li, chan.N_equiv)[1] # Get dcs array
+                chan_dcs = dcs_dwba(theta_grid, amps.f_theta, amps.g_theta, k_i_au, k_f_au, Li, chan.N_equiv)
                 snap_dcs += chan_dcs
             snap_sigma = sigma_au_to_cm2(integrate_dcs_over_angles(theta_grid, snap_dcs))
             
@@ -531,15 +556,21 @@ def compute_total_excitation_cs(
                         if sigma_li_contrib > 0:
                             partial_waves_dict[f"L{l_done}"] = sigma_li_contrib
 
-                                    np.zeros_like(theta_grid, dtype=complex)
-                                )
-                             total_amplitudes[key].f_theta += part_amp.f_theta
-                             total_amplitudes[key].g_theta += part_amp.g_theta
+                        # Accumulate amplitudes
+                        if partial_amps is not None:
+                            for key, part_amp in partial_amps.items():
+                                if key not in total_amplitudes:
+                                    total_amplitudes[key] = Amplitudes(
+                                        np.zeros_like(theta_grid, dtype=complex),
+                                        np.zeros_like(theta_grid, dtype=complex)
+                                    )
+                                total_amplitudes[key].f_theta += part_amp.f_theta
+                                total_amplitudes[key].g_theta += part_amp.g_theta
                     
                     # Check Convergence after batch
                     snap_dcs = np.zeros_like(theta_grid, dtype=float)
                     for (Mi, Mf), amps in total_amplitudes.items():
-                        chan_dcs = dcs_dwba(theta_grid, amps.f_theta, amps.g_theta, k_i_au, k_f_au, Li, chan.N_equiv)[1] # Get dcs array
+                        chan_dcs = dcs_dwba(theta_grid, amps.f_theta, amps.g_theta, k_i_au, k_f_au, Li, chan.N_equiv)
                         snap_dcs += chan_dcs
                     snap_sigma = sigma_au_to_cm2(integrate_dcs_over_angles(theta_grid, snap_dcs))
                     

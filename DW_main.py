@@ -519,9 +519,9 @@ def run_scan_ionization(run_name):
                     use_exchange=use_ex, 
                     use_polarization=use_pol, 
                     exchange_method=ex_method,
-                    _precalc_grid=prep.grid,
-                    _precalc_V_core=prep.V_core,
-                    _precalc_orb_i=prep.orb_i
+                    use_exchange=use_ex, 
+                    use_polarization=use_pol, 
+                    exchange_method=ex_method
                 )
                 
                 if res.sigma_total_cm2 > 0:

@@ -167,7 +167,9 @@ def calculate_amplitude_contribution(
     Y_li_star = np.sqrt((2*l_i+1)/(4*np.pi)) # Real because m=0
     
     # Common factors
-    pref_common = (1.0/np.pi) * (1.0/(ki*kf))
+    # Eq 412: f = (2/pi) * i^(li+lf) * ...
+    # We use 2.0/np.pi to match Article Eqs. 412 and 448 exactly.
+    pref_common = (2.0/np.pi) * (1.0/(ki*kf))
     
     # Evaluate Spherical Harmonics for scattered electron Y_{l_f, -mu_f}(k_f)
     # k_f direction is theta. phi can be 0 (azimuthal symmetry for TCS).
