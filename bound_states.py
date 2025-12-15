@@ -1,47 +1,43 @@
 # bound_states.py
-#
-# Radial bound-state solver for the single-active-electron Hamiltonian
-# used in the DWBA formulation.
-#
-# We solve the radial Schrödinger equation in atomic units (Hartree system):
-#
-#   [-1/2 d^2/dr^2 + l(l+1)/(2 r^2) + V_core(r)] u(r) = E u(r)
-#
-# where:
-#   - u(r) = r * R(r) is the reduced radial wavefunction,
-#   - l is the orbital angular momentum quantum number of that electron,
-#   - V_core(r) is the effective central potential V_{A+}(r)
-#     from potential_core.V_core_on_grid, consistent with the article's
-#     single-active-electron model.
-#
-# Boundary conditions for bound states:
-#   u(0) = 0,   u(r_max) = 0
-#
-# Numerically we do:
-#   1. Construct a finite-difference Hamiltonian H on the interior grid points
-#      (r[1], ..., r[N-2]) using a second-derivative formula for
-#      a *non-uniform* radial grid.
-#   2. Enforce Dirichlet BCs by removing the endpoints from the basis.
-#   3. Solve sparse symmetric eigenproblem H u = E u (E real).
-#   4. Keep only E < 0 (bound states). Sort them by E (most negative first).
-#   5. Normalize u(r) so that ∫ |u(r)|^2 dr = 1 using trapezoidal weights
-#      from grid.py.
-#
-# Output:
-#   BoundOrbital objects describing each found bound state for given l.
-#
-# Why we do it this way:
-# - This directly matches the one-electron picture in the article.
-# - It produces radial orbitals Φ_i and Φ_f that will later feed:
-#     * the Hartree term for distorted-wave potentials U_i, U_f,
-#     * the DWBA transition matrix elements.
-#
-# Libraries used:
-# - numpy
-# - scipy.sparse, scipy.sparse.linalg
-#
-# We keep this module purely radial / single-electron.
-# No DWBA angular algebra appears here.
+"""
+Single-Active-Electron Bound State Solver
+==========================================
+
+Solves the radial Schrödinger equation for target bound states in the
+single-active-electron (SAE) approximation.
+
+Equation (atomic units)
+-----------------------
+    [-1/2 d²/dr² + l(l+1)/(2r²) + V_core(r)] u(r) = E·u(r)
+
+where:
+- u(r) = r·R(r) is the reduced radial wavefunction
+- l = orbital angular momentum
+- V_core(r) = effective central potential
+
+Boundary Conditions
+-------------------
+    u(0) = 0,  u(r_max) = 0  (Dirichlet)
+
+Algorithm
+---------
+1. Construct finite-difference Hamiltonian on non-uniform grid
+2. Enforce Dirichlet BCs by removing endpoints
+3. Solve sparse symmetric eigenproblem H·u = E·u
+4. Keep E < 0 states (bound), sorted by energy
+5. Normalize: ∫|u(r)|² dr = 1
+
+Output
+------
+BoundOrbital objects containing:
+- n, l, E_au (quantum numbers and energy)
+- u(r) normalized radial wavefunction  
+
+Logging
+-------
+Uses logging_config. Set DWBA_LOG_LEVEL=DEBUG for verbose output.
+"""
+
 
 
 from __future__ import annotations

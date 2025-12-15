@@ -1,66 +1,43 @@
 # continuum.py
-#
-# Distorted-wave continuum solver for scattering electron partial waves χ_l(k,r)
-# in the DWBA formulation from the article.
-#
-# We solve, in atomic units (ħ = m_e = e^2 = 1):
-#
-#   [-1/2 d^2/dr^2 + l(l+1)/(2 r^2) + U_j(r)] χ_l^{(j)}(k,r) = (k^2 / 2) χ_l^{(j)}(k,r)
-#
-# which can be rearranged to:
-#
-#   χ''(r) = [ l(l+1)/r^2 + 2 U_j(r) - k^2 ] χ(r)
-#
-# where:
-#   - l is the partial-wave angular momentum of the scattering electron,
-#   - U_j(r) is the distorted potential for channel j (initial or final),
-#     constructed in distorting_potential.py as
-#        U_j(r) = V_{A+}(r) + V_H^{(j)}(r),
-#     and guaranteed to vanish at large r,
-#   - k is the asymptotic wave number: E = k^2/2  (E > 0).
-#
-# Boundary conditions:
-#   - Regular at the origin: χ(r) ~ r^{l+1} as r -> 0.
-#     Numerically: at r_min (small but >0) we use
-#         χ(r_min)   = r_min**(l+1)
-#         χ'(r_min)  = (l+1) * r_min**l
-#
-#   - Asymptotically (large r, where U_j ~ 0):
-#         χ_l(k,r) ~ A sin(k r - l π/2 + δ_l)
-#     We numerically fit A and δ_l from the tail of χ(r), then rescale so that
-#         χ_l^norm(k,r) ~ sin(k r - l π/2 + δ_l)
-#     i.e. amplitude A = 1. This matches the standard phase-shift normalization.
-#
-# Output:
-#   ContinuumWave objects holding:
-#     - l, k_au,
-#     - χ_l(r) normalized to asymptotic unit incoming amplitude,
-#     - δ_l (phase shift) in radians.
-#
-# This χ_l(k,r) is exactly what the article uses in the DWBA matrix elements
-# for the entrance and exit channels (χ_i^+, χ_f^-).
-#
-# Implementation notes:
-#   - We integrate the ODE with scipy.integrate.solve_ivp using a smooth
-#     spline interpolation of U_j(r), so we are not restricted to uniform grids.
-#   - We evaluate χ_l(k,r) back on the global radial grid so that all later
-#     integrals are consistent with the rest of the codebase.
-#
-#   This avoids fighting a generalized Numerov scheme on a nonuniform grid.
-#
-#   - We assume energies are above threshold so that k is real.
-#     If k^2 <= 0, the channel is closed; in that case DWBA cross section
-#     is zero physically. Higher-level code should check that.
-#
-# Libraries used:
-#   - numpy
-#   - scipy.integrate.solve_ivp
-#   - scipy.interpolate.CubicSpline
-#
-# We keep this solver real-valued. The DWBA formalism in the article uses
-# real distorted waves with phase shifts δ_l. Complex purely-outgoing waves
-# would correspond to different boundary conditions; we don't need that for
-# total excitation cross sections.
+"""
+Distorted-Wave Continuum Solver
+================================
+
+Solves the radial Schrödinger equation for scattering electron partial waves
+χ_l(k,r) in the DWBA formulation.
+
+Equation (atomic units)
+-----------------------
+    [-1/2 d²/dr² + l(l+1)/(2r²) + U_j(r)] χ_l(k,r) = (k²/2) χ_l(k,r)
+
+where:
+- l = partial-wave angular momentum
+- U_j(r) = distorting potential (vanishes at large r)
+- k = asymptotic wave number (E = k²/2)
+
+Boundary Conditions
+-------------------
+- Origin: χ(r) ~ r^(l+1) (regular solution)
+- Asymptotic: χ_l ~ sin(kr - lπ/2 + δ_l) with unit amplitude
+
+Output
+------
+ContinuumWave objects containing:
+- l, k_au (angular momentum, wave number)
+- χ_l(r) normalized to unit asymptotic amplitude
+- δ_l (phase shift in radians)
+
+Implementation
+--------------
+- Uses scipy.integrate.solve_ivp for ODE integration
+- Cubic spline interpolation for smooth potential
+- Coulomb matching for charged targets
+
+Logging
+-------
+Uses logging_config. Set DWBA_LOG_LEVEL=DEBUG for verbose output.
+"""
+
 
 
 from __future__ import annotations

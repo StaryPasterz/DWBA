@@ -1,39 +1,46 @@
 # ionization.py
-#
-# DWBA electron-impact ionization calculator.
-#
-# THEORY & IMPLEMENTATION
-# -----------------------
-# We treat ionization e + A -> e + A+ + e' as "excitation" to a continuum state.
-# 
-# 1. Kinematics:
-#    E_inc + E_bound = E_scatt + E_eject
-#    IP = -E_bound
-#    We integrate the Single Differential Cross Section (SDCS) dσ/dE_eject
-#    from E_eject = 0 to (E_inc - IP)/2.
-#
-# 2. Amplitudes:
-#    We use the same T-matrix formalism as excitation, but the "final bound state"
-#    φ_f is replaced by a distorted continuum wave χ_{l_eject}(k_e, r).
-#
-# 3. Partial Waves:
-#    We sum over:
-#    - Ejected angular momentum l_eject (0..l_eject_max)
-#    - Projectile partial waves l_i, l_f (just like in driver.py)
-#    - Magnetic sublevels M_i (target) and m_eject (ejected electron)
-#
-# 4. Normalization:
-#    - Bound states are normalized to 1.
-#    - Continuum waves χ(k,r) are normalized to unit asymptotic amplitude.
-#    - To get cross sections per unit energy (dσ/dE), we apply the density
-#      of states factor for the ejected electron:
-#         ρ(E) = 1 / (π * k_eject)   [in a.u.]
-#
-# UNITS:
-#    Input: eV.
-#    Internal: Hartree Atomic Units.
-#    Output: cm^2.
-#
+"""
+DWBA Electron-Impact Ionization Calculator
+===========================================
+
+Calculates total and single differential ionization cross sections (SDCS)
+treating ionization as excitation to continuum states.
+
+Theory
+------
+e + A → e + A⁺ + e' is calculated using DWBA T-matrix formalism:
+- The final "bound state" is replaced by a continuum wave χ(k_eject, r)
+- SDCS is integrated over ejected energy: E_eject ∈ [0, (E_inc - IP)/2]
+
+Kinematics
+----------
+    E_inc + E_bound = E_scatt + E_eject
+    IP = -E_bound
+
+Partial Waves
+-------------
+Summation over:
+- Ejected angular momentum l_eject (0 to l_eject_max)
+- Projectile partial waves l_i, l_f
+- Magnetic sublevels M_i, m_eject
+
+Normalization
+-------------
+- Bound states: normalized to 1
+- Continuum waves: unit asymptotic amplitude
+- Density of states: ρ(E) = 1/(π·k_eject) [a.u.]
+
+Units
+-----
+- Input: eV
+- Internal: Hartree atomic units
+- Output: cm²
+
+Logging
+-------
+Uses logging_config. Set DWBA_LOG_LEVEL=DEBUG for verbose output.
+"""
+
 
 from __future__ import annotations
 import numpy as np

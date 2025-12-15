@@ -1,46 +1,37 @@
 # dwba_matrix_elements.py
-#
-# Radial DWBA matrix elements for electron-impact excitation and ionization.
-#
-# THEORY & PHYSICS
-# ----------------
-# This module computes the radial integrals I_L involved in the T-matrix amplitudes.
-#
-# The T-matrix elements for a transition i -> f are defined as:
-#
-#   T_{fi} = < chi_f(r1) psi_f(r2..N) | V - U_f | A { psi_i(r2..N) chi_i(r1) } >
-#
-# In the Distorted Wave Born Approximation (DWBA) with a Single-Active-Electron (SAE) model:
-# - psi_i, psi_f are target bound states (BoundOrbital).
-# - chi_i, chi_f are distorted waves (ContinuumWave) for the projectile.
-# - The interaction V is the Coulomb interaction 1/r12.
-#
-# We compute two types of radial integrals corresponding to Direct and Exchange amplitudes:
-#
-# 1. DIRECT Integral (I_L^D):
-#    Arises from the term where electrons are NOT swapped.
-#    I_L^D = Integral[ dr1 dr2  chi_f(r1) chi_i(r1) * (r_<^L / r_>^{L+1}) * u_f(r2) u_i(r2) ]
-#    * Corrections: For L=0, we add the orthogonality term [V_core(r1) - U_i(r1)] * chi_f * chi_i * delta(orthog).
-#
-# 2. EXCHANGE Integral (I_L^E):
-#    Arises from the term where the projectile electron is swapped with the target electron.
-#    I_L^E = Integral[ dr1 dr2  chi_f(r2) chi_i(r1) * (r_<^L / r_>^{L+1}) * u_f(r1) u_i(r2) ]
-#          = Integral[ dr1 dr2  (u_f(r1) chi_i(r1)) * (r_<^L / r_>^{L+1}) * (chi_f(r2) u_i(r2)) ]
-#
-# UNITS
-# -----
-# - All inputs and outputs are in HARTREE atomic units.
-# - Lengths: Bohr radii (a0).
-# - Energies: Hartree (Ha).
-# - Probabilities/Integrals: Consistent with wavefunctions normalized to 1 (bound) or unit amplitude (continuum).
-#
-# IMPLEMENTATION NOTES
-# --------------------
-# - This module focuses solely on the radial part. Angular factors (3j/6j symbols) are applied in `dwba_coupling.py`.
-# - Integration is performed using matrix-vector multiplication for efficiency on non-uniform grids.
-# - We utilize the multipole expansion of 1/r12:  Sum_L (r_<^L / r_>^{L+1}) P_L(cos theta).
-# - OPTIMIZATION: We utilize a kernel recurrence relation K_L = K_{L-1} * (r_</r_>) to avoid expensive power operations.
-#
+"""
+Radial DWBA Matrix Elements
+===========================
+
+Computes radial integrals I_L for the T-matrix amplitudes in DWBA calculations.
+
+Integral Types
+--------------
+1. **Direct (I_L^D)**:
+   ∫∫ dr₁ dr₂ χ_f(r₁) χ_i(r₁) · [r_<^L / r_>^(L+1)] · u_f(r₂) u_i(r₂)
+   
+2. **Exchange (I_L^E)**:
+   ∫∫ dr₁ dr₂ u_f(r₁) χ_i(r₁) · [r_<^L / r_>^(L+1)] · χ_f(r₂) u_i(r₂)
+
+L=0 Correction
+--------------
+For L=0 monopole, a correction term is added:
+    [V_core - U_i] × ∫χ_f·χ_i × ∫u_f·u_i
+
+For excitation: ∫u_f·u_i = 0 (orthogonality) → correction vanishes
+For ionization: ∫χ_eject·u_i ≠ 0 → correction contributes
+
+Implementation
+--------------
+- Uses kernel recurrence K_L = K_{L-1}·(r_</r_>) for efficiency
+- GPU acceleration via CuPy when available
+- Angular factors applied separately in dwba_coupling.py
+
+Units
+-----
+All inputs/outputs in Hartree atomic units (a₀, Ha).
+"""
+
 
 
 from __future__ import annotations

@@ -1,15 +1,33 @@
 """
-DW_main.py
+DW_main.py - DWBA Calculation Suite v2
+=======================================
 
-Unified Interface for Distorted Wave Born Approximation (DWBA) Calculations and Analysis.
+Unified interactive interface for Distorted Wave Born Approximation (DWBA)
+calculations of electron-atom collision cross sections.
 
-Modes:
-1. Excitation Scan (Single Point or Grid)
-2. Ionization Scan (Single Point or Grid)
-3. Generate Plots (Visualize previously saved results)
-4. Quit
+Main Features
+-------------
+1. Excitation Cross Sections - Calculate e + A → e + A* transitions
+2. Ionization Cross Sections - Calculate e + A → e + A⁺ + e' transitions  
+3. Visualization - Generate plots from saved result files
+4. Partial Wave Analysis - Detailed convergence diagnostics
+5. Potential Fitting - Tool for calibrating atomic potentials
 
-Results are saved to 'results_[RUN_NAME]_[TYPE].json'.
+Output
+------
+Results are saved to JSON files: 'results_[RUN_NAME]_[exc|ion].json'
+
+Usage
+-----
+    python DW_main.py
+
+Environment Variables
+--------------------
+    DWBA_LOG_LEVEL : Set to DEBUG for verbose output
+
+Dependencies
+-----------
+This module integrates: driver, ionization, calibration, plotter, atom_library
 """
 
 import numpy as np

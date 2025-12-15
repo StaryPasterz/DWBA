@@ -1,27 +1,35 @@
 # driver.py
-#
-# High-level orchestration for DWBA excitation calculations.
-#
-# DESCRIPTION
-# -----------
-# This module acts as the computation engine for electron-impact excitation cross sections.
-# It coordinates the entire pipeline:
-# 1. Calculation of Target Bound States (Initial & Final).
-# 2. Construction of Distorted Potentials (Static-Only by default).
-# 3. Partial Wave Loop:
-#    - Iterate l_i (projectile in)
-#    - Iterate l_f (projectile out)
-#    - Iterate M_i, M_f (magnetic sublevels)
-#    - Compute T-matrix radial integrals.
-#    - Accumulate amplitudes f(theta), g(theta).
-# 4. Cross Section Evaluation (Integration over angles).
-# 5. Application of M-Tong Calibration (Empirical Formula).
-#
-# UNITS
-# -----
-# - Internal Physics: Hartree Atomic Units (energy in Ha, length in a0).
-# - Input/Output API: Energy in eV, Cross Sections in cm^2 (and a0^2).
-#
+"""
+DWBA Excitation Cross Section Calculator
+=========================================
+
+High-level orchestration for electron-impact excitation cross section calculations
+using the Distorted Wave Born Approximation (DWBA) method.
+
+Pipeline
+--------
+1. Calculate bound states (initial & final) using SAE model potential
+2. Construct distorting potentials (static/exchange/polarization)
+3. Partial wave loop with adaptive L_max convergence
+4. T-matrix radial integrals via multipole expansion
+5. Angular coupling (direct & exchange amplitudes)
+6. Cross section integration with Born top-up extrapolation
+
+Execution Modes
+---------------
+- GPU Accelerated: Uses CuPy for radial integrals (if available)
+- CPU Parallel: Multiprocessing for partial wave summation
+
+Units
+-----
+- Internal: Hartree atomic units (Ha, a₀)
+- API Input/Output: eV, cm²
+
+Logging
+-------
+Uses logging_config module. Set DWBA_LOG_LEVEL=DEBUG for verbose output.
+"""
+
 
 from __future__ import annotations
 import numpy as np
