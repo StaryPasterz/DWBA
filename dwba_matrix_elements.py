@@ -105,8 +105,62 @@ def radial_ME_all_L(
     L_max: int
 ) -> RadialDWBAIntegrals:
     """
-    Compute set of I_L for L = 0..L_max for both DIRECT and EXCHANGE terms.
-    OPTIMIZED VERSION: Uses kernel recurrence to avoid O(N^2) power operations.
+    Compute radial DWBA integrals I_L for multipoles L = 0 to L_max.
+    
+    This function evaluates the radial matrix elements that appear in the
+    T-matrix for electron-impact excitation and ionization. Both direct
+    and exchange terms are computed.
+    
+    Theory
+    ------
+    The Coulomb interaction 1/|r₁ - r₂| is expanded in multipoles:
+    
+        1/|r₁ - r₂| = Σ_L (r_<^L / r_>^{L+1}) P_L(cos θ₁₂)
+    
+    The radial integrals extract the radial part:
+    
+    Direct (I_L^D):
+        I_L^D = ∫∫ χ_f(r₁)χ_i(r₁) × (r_<^L/r_>^{L+1}) × u_f(r₂)u_i(r₂) dr₁dr₂
+    
+    Exchange (I_L^E):
+        I_L^E = ∫∫ u_f(r₁)χ_i(r₁) × (r_<^L/r_>^{L+1}) × χ_f(r₂)u_i(r₂) dr₁dr₂
+    
+    Parameters
+    ----------
+    grid : RadialGrid
+        Radial grid with integration weights.
+    V_core_array : np.ndarray
+        Core potential V_A+(r) on the grid, in Hartree.
+    U_i_array : np.ndarray
+        Distorting potential U_i(r) for incident channel, in Hartree.
+    bound_i : BoundOrbital
+        Initial target bound state u_i(r).
+    bound_f : BoundOrbital or ContinuumWave
+        Final target state u_f(r). For ionization, this is a ContinuumWave.
+    cont_i : ContinuumWave
+        Incident projectile wave χ_i(r).
+    cont_f : ContinuumWave
+        Scattered projectile wave χ_f(r).
+    L_max : int
+        Maximum multipole order to compute (typically 10-20).
+        
+    Returns
+    -------
+    RadialDWBAIntegrals
+        Container with I_L_direct[L] and I_L_exchange[L] for L = 0..L_max.
+        
+    Notes
+    -----
+    Optimization: Uses kernel recurrence K_L = K_{L-1} × (r_</r_>) to avoid
+    O(N²) power operations at each L. Total complexity is O(L_max × N²).
+    
+    For L=0, a correction term involving (V_core - U_i) is added to account
+    for orthogonality contributions.
+    
+    See Also
+    --------
+    radial_ME_all_L_gpu : GPU-accelerated version using CuPy.
+    dwba_coupling.calculate_amplitude_contribution : Uses these integrals.
     """
     if L_max < 0:
         raise ValueError("radial_ME_all_L: L_max must be >= 0.")

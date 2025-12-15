@@ -649,6 +649,38 @@ def compute_total_excitation_cs(
         # 7. Calibration
     # Moved to calibration.py and driver integration in main
     
+    # --- Born Top-Up (Excitation) ---
+    # Extrapolate higher partial waves using geometric series if applicable
+    
+    if partial_waves_dict:
+        try:
+            # Extract L indices that were computed
+            l_indices = sorted([int(k[1:]) for k in partial_waves_dict.keys() if k.startswith("L")])
+            if len(l_indices) >= 3:
+                L_last = l_indices[-1]
+                val_L   = partial_waves_dict[f"L{L_last}"]
+                val_Lm1 = partial_waves_dict[f"L{L_last-1}"]
+                val_Lm2 = partial_waves_dict[f"L{L_last-2}"]
+                
+                # Check for monotonic decay
+                if (val_L > 0 and val_Lm1 > val_L and val_Lm2 > val_Lm1):
+                    q = val_L / val_Lm1
+                    q_prev = val_Lm1 / val_Lm2
+                    
+                    # Robustness check
+                    if q < 0.95 and abs(q - q_prev) < 0.2:
+                        tail_au = val_L * q / (1.0 - q)
+                        
+                        if tail_au > 1e-50: # Avoid noise
+                            # Add to totals
+                            sigma_total_au += tail_au
+                            sigma_total_cm2 = sigma_au_to_cm2(sigma_total_au)
+                            partial_waves_dict["born_topup"] = tail_au
+                            print(f"    [Top-Up] Added {sigma_au_to_cm2(tail_au):.2e} cm^2 (L>{L_last}, q={q:.3f})")
+        except Exception as e:
+            # Non-critical enhancement
+            print(f"    [Top-Up] Skipped: {e}")
+
     return DWBAResult(
         True, E_incident_eV, dE_target_eV,
         sigma_total_au, sigma_total_cm2,

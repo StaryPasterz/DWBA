@@ -65,13 +65,13 @@
 
 from __future__ import annotations
 import numpy as np
-import mpmath
+# mpmath removed for performance optimization (replaced with WKB approx)
 from dataclasses import dataclass
 from typing import Tuple
 
 from scipy.interpolate import CubicSpline
 from scipy.integrate import solve_ivp
-from scipy.special import spherical_jn
+from scipy.special import spherical_jn, loggamma
 
 
 from grid import RadialGrid, k_from_E_eV, ev_to_au
@@ -218,17 +218,19 @@ def _initial_conditions_regular(r0: float, l: int) -> np.ndarray:
 
 def _initial_conditions_high_L(r0: float, l: int, k_au: float, z_ion: float) -> np.ndarray:
     """
-    Compute precise initial conditions at r0 (inside/near barrier) using
-    exact analytical solutions for the potential-free (or Coulomb) region.
+    Compute precise initial conditions at r0 (inside/near barrier).
     
-    Used when skipping the deep tunneling region to avoid numerical instability.
+    OPTIMIZATION NOTE: 
+    Previously used mpmath.coulombf which is extremely slow (arbitrary precision).
+    For High L, we are typically deep inside the centrifugal barrier where the
+    wavefunction is exponentially growing (tunneling).
     
-    For Neutral (z_ion=0): Riccati-Bessel functions.
-        u(r) = r * j_l(k*r)
-        u'(r) = k*r * j_{l-1}(k*r) - l * j_l(k*r)
-        
-    For Ion (z_ion!=0): Regular Coulomb functions.
-        u(r) = F_l(eta, rho)
+    We use the WKB approximation for the logarithmic derivative:
+        χ'/χ ≈ κ(r) = sqrt( V_eff(r) - E )
+                 = sqrt( l(l+1)/r^2 + 2*U(r) - k^2 )
+    
+    This is accurate enough for initialization of the ODE solver, which then
+    corrects the shape as it integrates outward.
     """
     rho = k_au * r0
     
@@ -248,14 +250,6 @@ def _initial_conditions_high_L(r0: float, l: int, k_au: float, z_ion: float) -> 
         
         # u' = kr j_{l-1} - l j_l
         u_der = rho * jlm1 - l * jl
-        # d/dr = k * d/d(rho). u' wrt r is distinct?
-        # Let's check: u = r j_l(kr).
-        # u' = j_l + r * k * j_l'.
-        # j_l'(z) = j_{l-1}(z) - (l+1)/z j_l(z).
-        # u' = j_l + rho * (j_{l-1} - (l+1)/rho j_l)
-        #    = j_l + rho j_{l-1} - (l+1) j_l
-        #    = rho j_{l-1} - l j_l.
-        # Yes.
         
         # Scaling to avoid underflow
         # Scale to 1e-3 to be well above solver atol (1e-8)
@@ -268,35 +262,35 @@ def _initial_conditions_high_L(r0: float, l: int, k_au: float, z_ion: float) -> 
         return np.array([u_val, u_der], dtype=float)
         
     else:
-        # Ionic target -> Coulomb solution (mpmath)
-
-        eta = -z_ion / k_au
+        # Ionic target -> Coulomb-like region
+        # Use WKB approximation instead of slow Coulomb functions
         
-        # F_l(eta, rho)
-        # mpmath.coulombf(l, eta, z)
-        try:
-           f_val = float(mpmath.coulombf(l, eta, rho))
-           
-           # Finite difference for derivative (robust)
-           # dF/dr = k * dF/drho
-           dr_eps = r0 * 1e-4
-           rho_eps = k_au * (r0 + dr_eps)
-           f_eps = float(mpmath.coulombf(l, eta, rho_eps))
-           
-           df_drho = (f_eps - f_val) / (rho_eps - rho)
-           u_der = df_drho * k_au
-           
-           # Scale here too
-           norm_val = np.sqrt(f_val**2 + u_der**2)
-           if norm_val < 1e-3 and norm_val > 0.0:
-               scale = 1e-3 / norm_val
-               f_val *= scale
-               u_der *= scale
-           
-           return np.array([f_val, u_der], dtype=float)
-        except:
-             # Fallback to zero if mpmath fails (unlikely)
-             return np.array([0.0, 0.0], dtype=float)
+        ell = float(l)
+        # Effective potential terms in the radial equation:
+        # chi'' = [ l(l+1)/r^2 + 2*V(r) - k^2 ] chi
+        # inside barrier, RHS > 0.
+        
+        # Estimate V(r) ~ -z_ion/r (Coulomb)
+        # (ignoring short range deviations of core potential as L term dominates)
+        
+        kappa_sq = ell*(ell+1.0)/(r0*r0) - 2.0*z_ion/r0 - k_au*k_au
+        
+        if kappa_sq > 0:
+            # Inside barrier
+            kappa = np.sqrt(kappa_sq)
+            
+            # WKB solution grows as ~ exp(integral kappa dr)
+            # Log derivative is +kappa (integrating outward)
+            
+            val = 1.0e-20 # Arbitrary small value
+            der = val * kappa
+            
+            return np.array([val, der], dtype=float)
+        else:
+            # We are outside the barrier or logic failed?
+            # Theoretically shouldn't happen if r0 is set to 0.9 * screening_radius
+            # Fallback to neutral bessel or regular condition
+             return _initial_conditions_regular(r0, l)
 
 
 
@@ -372,43 +366,28 @@ def _fit_asymptotic_phase_neutral(
 
     return float(A), float(delta_l)
 
-def _fit_asymptotic_phase_coulomb(
-    r_tail: np.ndarray,
-    chi_tail: np.ndarray,
-    l: int,
-    k_au: float,
-    z_ion: float
-) -> Tuple[float, float]:
+
+def _fit_asymptotic_phase_coulomb(r_tail: np.ndarray, chi_tail: np.ndarray, l: int, k_au: float, z_ion: float) -> Tuple[float, float]:
     """
-    Fit A * [ F_l(eta, rho) * cos(delta) + G_l(eta, rho) * sin(delta) ]
-    representing A * sin(theta_coulomb + delta).
+    Fit A and delta to the tail using asymptotic Coulomb functions.
+    Replaces mpmath with fast asymptotic formulas valid at large r.
     
-    References:
-    F_l ~ sin(kr - lπ/2 + eta ln(2kr) + sigma_l)
-    G_l ~ cos(kr - lπ/2 + eta ln(2kr) + sigma_l)
-    where sigma_l is the Coulomb phase shift arg Gamma(l+1+i eta).
+    F_l ~ sin(theta)
+    G_l ~ cos(theta)
+    theta = kr - l*pi/2 + eta*ln(2kr) + sigma_l
     """
-    # Sommerfeld parameter eta = - Z_scattering / v
-    # Electron (-1) seeing ion (+z_ion). Potential V ~ -z_ion/r.
-    # eta = - z_ion / k (in a.u., v=k).
-    
     eta = -z_ion / k_au
     
-    # Calculate F_l and G_l on the tail using mpmath
-    F_vals = []
-    G_vals = []
+    # Coulomb phase shift sigma_l = arg(Gamma(l + 1 + i*eta))
+    coulomb_phase = np.imag(loggamma(l + 1 + 1j * eta))
     
-    # Cache float conversion function
-    for r_val in r_tail:
-        rho = k_au * r_val
-        # mpmath.coulombf(l, eta, z)
-        f = float(mpmath.coulombf(l, eta, rho))
-        g = float(mpmath.coulombg(l, eta, rho))
-        F_vals.append(f)
-        G_vals.append(g)
-        
-    F_arr = np.array(F_vals)
-    G_arr = np.array(G_vals)
+    rho = k_au * r_tail
+    
+    # Asymptotic argument theta
+    theta = rho - eta * np.log(2.0 * rho) - (l * np.pi / 2.0) + coulomb_phase
+    
+    F_arr = np.sin(theta)
+    G_arr = np.cos(theta)
     
     # Fit chi ~ C1 * F + C2 * G
     # C1 = A cos(delta)

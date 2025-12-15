@@ -1,12 +1,14 @@
 # dwba_coupling.py
-#
-# Angular + spin coupling for DWBA amplitudes.
-# Implements the full formulas (Eq. 412, 448) from the article.
-#
-# Optimization:
-# Uses LRU caching for Wigner symbols and factorials to avoid recomputing
-# expensive recursions/sums for the same sets of quantum numbers.
-#
+"""
+Angular and Spin Coupling for DWBA Amplitudes
+=============================================
+
+This module implements the angular momentum coupling algebra needed for DWBA calculations.
+It handles Wigner 3j/6j symbols, Clebsch-Gordan coefficients, and the summation
+of partial wave amplitudes according to Equations 412 (Direct) and 448 (Exchange).
+
+Calculations are cached to ensure high performance.
+"""
 
 from __future__ import annotations
 import numpy as np
@@ -18,10 +20,11 @@ from functools import lru_cache
 from scipy.special import sph_harm
 
 @lru_cache(maxsize=2000)
-def _log_factorial(n):
+def _log_factorial(n: int) -> float:
+    """Compute natural logarithm of n! safely."""
     if n < 0: return -1.0 
     if n <= 1: return 0.0
-    return np.sum(np.log(np.arange(2, n + 1, dtype=float)))
+    return float(np.sum(np.log(np.arange(2, n + 1, dtype=float))))
 
 def _delta_tri(a, b, c):
     # Helper for Wigner/Racah, no need to cache separately if main funcs are cached
@@ -29,7 +32,14 @@ def _delta_tri(a, b, c):
            _log_factorial(-a + b + c) - _log_factorial(a + b + c + 1)
 
 @lru_cache(maxsize=10000)
-def wigner_3j_num(j1, j2, j3, m1, m2, m3):
+def wigner_3j_num(
+    j1: float, j2: float, j3: float, 
+    m1: float, m2: float, m3: float
+) -> float:
+    """
+    Calculate Wigner 3-j symbol (j1 j2 j3; m1 m2 m3).
+    Includes triangle rules and selection checks.
+    """
     if abs(m1 + m2 + m3) > 1e-9: return 0.0
     if not (abs(j1 - j2) <= j3 <= j1 + j2): return 0.0
     if abs(m1) > j1 or abs(m2) > j2 or abs(m3) > j3: return 0.0
@@ -57,7 +67,11 @@ def wigner_3j_num(j1, j2, j3, m1, m2, m3):
     return sign * sum_val
 
 @lru_cache(maxsize=10000)
-def clebsch_gordan(j1, j2, j3, m1, m2, m3):
+def clebsch_gordan(
+    j1: float, j2: float, j3: float, 
+    m1: float, m2: float, m3: float
+) -> float:
+    """Calculate Clebsch-Gordan coefficient <j1 m1; j2 m2 | j3 m3>."""
     # CG = (-1)^(j1-j2+m3) * sqrt(2j3+1) * 3j(j1 j2 j3; m1 m2 -m3)
     w3j = wigner_3j_num(j1, j2, j3, m1, m2, -m3)
     factor = np.sqrt(2 * j3 + 1)
@@ -65,7 +79,11 @@ def clebsch_gordan(j1, j2, j3, m1, m2, m3):
     return phase * factor * w3j
 
 @lru_cache(maxsize=10000)
-def wigner_6j_num(j1, j2, j3, j4, j5, j6):
+def wigner_6j_num(
+    j1: float, j2: float, j3: float, 
+    j4: float, j5: float, j6: float
+) -> float:
+    """Calculate Wigner 6-j symbol {j1 j2 j3; j4 j5 j6}."""
     # Simplified Racah formula
     if not (abs(j1-j2)<=j3<=j1+j2 and abs(j1-j5)<=j6<=j1+j5 and
             abs(j4-j2)<=j6<=j4+j2 and abs(j4-j5)<=j3<=j4+j5):
@@ -90,7 +108,14 @@ def wigner_6j_num(j1, j2, j3, j4, j5, j6):
     return np.exp(0.5 * log_tri) * sum_val
 
 @lru_cache(maxsize=10000)
-def racah_W(l1, l2, l3, l4, l5, l6):
+def racah_W(
+    l1: float, l2: float, l3: float, 
+    l4: float, l5: float, l6: float
+) -> float:
+    """
+    Calculate Racah W coefficient W(l1 l2 l3 l4; l5 l6).
+    Related to 6j by phase factor.
+    """
     # W(a b c d; e f) = (-1)^(a+b+c+d) * { a b e }
     #                                  { d c f }
     phase = (-1.0)**int(l1 + l2 + l3 + l4)
@@ -146,11 +171,25 @@ def calculate_amplitude_contribution(
     The final cross section formula applies the necessary (2pi)^4 factor
     to convert these T-matrix-like amplitudes to physical cross sections.
     
-    Assumptions:
-    - Quantization axis || k_i.
-    - Thus mu_i = 0.
-    - mu_f is fixed by M conservation: mu_f = M_i + mu_i - M_f = M_i - M_f.
-    
+    Parameters
+    ----------
+    theta_grid : np.ndarray
+        Array of scattering angles (radians).
+    I_L_dir, I_L_exc : dict
+        Radial integrals for Direct and Exchange.
+    l_i, l_f : int
+        Projectile partial wave angular momenta (initial, final).
+    ki, kf : float
+        Wave numbers (a.u.).
+    L_target_i, L_target_f : int
+        Target angular momenta.
+    M_target_i, M_target_f : int
+        Target magnetic quantum numbers.
+        
+    Returns
+    -------
+    Amplitudes
+        Object containing f_theta and g_theta complex arrays.
     """
     mu_i = 0
     mu_f = M_target_i + mu_i - M_target_f
