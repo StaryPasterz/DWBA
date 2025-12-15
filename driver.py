@@ -718,16 +718,6 @@ def compute_excitation_cs_precalc(
     k_i_au = float(k_from_E_eV(E_incident_eV))
     k_f_au = float(k_from_E_eV(E_final_eV))
     
-    # Re-compute Distorting Potentials for this specific Energy
-    U_i, U_f = build_distorting_potentials(
-        prep.grid, prep.V_core, prep.orb_i, prep.orb_f,
-        k_i_au=k_i_au, k_f_au=k_f_au,
-        use_exchange=prep.use_exchange,
-        use_polarization=prep.use_polarization,
-        exchange_method=prep.exchange_method
-    )
-    
-    
     # We delegate back to the main runner which now supports 
     # injected pre-calculated objects.
     # This ensures we use the full robust logic (GPU/Parallel).
@@ -737,6 +727,7 @@ def compute_excitation_cs_precalc(
         n_points=len(prep.grid.r),
         n_theta=n_theta,
         exchange_method=prep.exchange_method,
+        use_polarization_potential=prep.use_polarization,
         _precalc_grid=prep.grid,
         _precalc_V_core=prep.V_core,
         _precalc_orb_i=prep.orb_i,

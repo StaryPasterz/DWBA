@@ -222,7 +222,7 @@ def compute_ionization_cs(
     core_params: CorePotentialParams,
     r_min: float = 1e-4,
     r_max: float = 200.0,
-    n_points: int = 4000,
+    n_points: int = 3000,
     n_energy_steps: int = 10,
     use_exchange: bool = False,
     use_polarization: bool = False,
@@ -257,8 +257,27 @@ def compute_ionization_cs(
     
     # 3. Energy Integration Grid (E_eject integration)
     steps = np.linspace(0.0, E_total_final_eV / 2.0, n_energy_steps + 1)
-    if steps[0] == 0.0:
-        steps[0] = 0.5 * (steps[1] - steps[0]) * 0.1 
+    # Hard clamp to minimal safe energy for continuum solver
+    safe_min_eV = 0.1
+    # Ensure no step is below safe_min
+    steps[steps < safe_min_eV] = safe_min_eV
+    
+    # If checking strict spacing, we might want to ensure they don't collapse,
+    # but the integral is robust enough to handle duplicates or we can unique-ify.
+    # For now, just clamping the start is enough as linspace is monotonic.
+    # Actually, let's just shift the start:
+    if steps[0] < safe_min_eV:
+         steps[0] = safe_min_eV
+         
+    # Ensure monotonicity if step 1 was < 0.1?
+    # If total range is very small (e.g. 0 to 0.5), steps might be [0.0, 0.05, 0.10...]
+    # If we clamp steps[0]=0.1, we might have [0.1, 0.05...] -> invalid.
+    # Better:
+    steps = np.maximum(steps, safe_min_eV)
+    steps = np.unique(steps) # Remove duplicates if multiple clamped to 0.1
+    if len(steps) < 2:
+         # Recover if we collapsed everything
+         steps = np.linspace(safe_min_eV, max(safe_min_eV+0.5, E_total_final_eV/2.0), n_energy_steps+1) 
 
     sdcs_values_au = [] 
     
@@ -319,23 +338,46 @@ def compute_ionization_cs(
         )
         print(f"    [Pre-calc] Done in {time.perf_counter()-t_pre:.3f}s. Cached {len(chi_i_cache)} waves.")
         
-        with multiprocessing.Pool(processes=max_workers) as pool:
-            tasks = []
-            for E_eject_eV in steps:
-                tasks.append((
-                     E_eject_eV, E_incident_eV, E_total_final_eV,
-                     chan, core_params, grid, V_core, orb_i,
-                     U_inc_obj.U_of_r, U_inc_obj.V_hartree_of_r,
-                     False, # use_gpu
-                     chi_i_cache 
-                ))
+        # Prepare Tasks
+        tasks = []
+        for E_eject_eV in steps:
+            tasks.append((
+                 E_eject_eV, E_incident_eV, E_total_final_eV,
+                 chan, core_params, grid, V_core, orb_i,
+                 U_inc_obj.U_of_r, U_inc_obj.V_hartree_of_r,
+                 False, # use_gpu
+                 chi_i_cache 
+            ))
             
-            # Map
-            results = pool.starmap(_compute_sdcs_at_energy, tasks)
-            sdcs_values_au = [r[0] for r in results]
-            
-            for i, val in enumerate(sdcs_values_au):
-                 print(f"    Step {i+1}: E_ej={steps[i]:.2f} eV -> SDCS={val:.2e}")
+        # Use imap for live progress
+        # Wrapper to unpack args because imap takes 1 arg
+        
+        try:
+            with multiprocessing.Pool(processes=max_workers) as pool:
+                # Helper: _wrapper_sdcs_helper takes a SINGLE tuple argument
+                sdcs_values_au = []
+                total_steps = len(tasks)
+                
+                # Use imap
+                # imap returns an iterator. We iterate it.
+                # If KeyboardInterrupt happens during iteration, we must catch it and terminate pool.
+                iterator = pool.imap(_wrapper_sdcs_helper, tasks)
+                
+                for i_step, result in enumerate(iterator):
+                    val = result[0] # result is (val, partials)
+                    sdcs_values_au.append(val)
+                    print(f"    Step {i_step+1}/{total_steps}: E_ej={steps[i_step]:.2f} eV -> SDCS={val:.2e}")
+                    
+        except KeyboardInterrupt:
+            print("\n    [Ionization] Interrupt detected! Terminating workers...")
+            # pool context manager handles terminate on exit if exception occurs? 
+            # Actually no, 'with' calls close/join usually unless exception.
+            # If we are inside 'with', exception triggers __exit__. 
+            # Pool.__exit__ calls terminate(). 
+            # So just re-raising should be enough IF the signal reaches here.
+            raise
+
+
 
     # 6. Integrate SDCS
     steps_au = [ev_to_au(e) for e in steps]
@@ -353,3 +395,7 @@ def compute_ionization_cs(
         sdcs_data_list,
         {} # partials not aggregated fully in result here for brevity
     )
+
+def _wrapper_sdcs_helper(args):
+    """Helper for imap unpacking."""
+    return _compute_sdcs_at_energy(*args)

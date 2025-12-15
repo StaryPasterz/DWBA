@@ -228,6 +228,26 @@ def run_scan_excitation(run_name):
     nf = get_input_int("  n", ni + 1)
     lf = get_input_int("  l", li + 1 if li==0 else li-1)
     
+    # --- VALIDATION ---
+    if li >= ni:
+        print(f"\n[ERROR] Initial state impossible: l({li}) >= n({ni}).")
+        return
+    if lf >= nf:
+        print(f"\n[ERROR] Final state impossible: l({lf}) >= n({nf}).")
+        return
+    if ni == nf and li == lf:
+        print(f"\n[ERROR] Initial and Final states are identical (Elastic Scattering).")
+        print("This module is for Excitation (inelastic). Aborting.")
+        return
+    if nf < ni:
+        print(f"\n[WARNING] n_final ({nf}) < n_initial ({ni}). This is De-excitation.")
+        confirm = input("Are you sure? [y/N]: ").strip().lower()
+        if confirm != 'y': return
+    if abs(lf - li) > 3:
+        print(f"\n[WARNING] Large angular momentum change (Delta L = {abs(lf-li)}).")
+        print("Cross sections might be extremely small.")
+        # Just a warning, proceed.
+    
     print("\n--- Model Selection ---")
     print("1. Static Only (Standard DWBA) - Matches Article (Default)")
     print("2. Static + Exchange (DWSE) - Improved Physics")
@@ -456,6 +476,10 @@ def run_scan_ionization(run_name):
     print("Initial State:")
     ni = get_input_int("  n", atom_entry.default_n)
     li = get_input_int("  l", atom_entry.default_l)
+    
+    if li >= ni:
+        print(f"\n[ERROR] Initial state impossible: l({li}) >= n({ni}).")
+        return
     
     print("\n--- Model Selection ---")
     print("1. Static Only (Standard DWBA) - Matches Article (Default)")
