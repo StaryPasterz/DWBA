@@ -101,7 +101,7 @@ def generate_flexible_energy_grid(start_eV: float, end_eV: float, density_factor
     Generates a grid that is dense at low energies (start) and sparse at high energies (end).
     Logic: Uses geometric progression for 'excess energy' (E - start).
     """
-    epsilon_min = 0.05 # 50 meV above threshold
+    epsilon_min = 0.5 # 500 meV above threshold (Relaxed from 0.05)
     if end_eV <= start_eV + epsilon_min:
         return np.array([start_eV + epsilon_min])
         
@@ -109,11 +109,11 @@ def generate_flexible_energy_grid(start_eV: float, end_eV: float, density_factor
     
     # Estimate decent number of points
     # Log range is np.log10(epsilon_max / epsilon_min)
-    # E.g. 1000/0.05 = 20000 -> 4.3 decades.
-    # Base density = 15 points/decade.
+    # E.g. 1000/0.5 = 2000 -> 3.3 decades.
+    # Base density = 10 points/decade (Relaxed from 15).
     
     decades = np.log10(epsilon_max / epsilon_min)
-    n_points = int(decades * 15.0 * density_factor)
+    n_points = int(decades * 10.0 * density_factor)
     n_points = max(n_points, 10) # Minimum safety
     
     # Generate excess
@@ -305,7 +305,6 @@ def run_scan_excitation(run_name):
         res_pilot = compute_total_excitation_cs(
             pilot_E, spec, core_params, 
             r_max=200.0, n_points=3000, 
-            use_exchange_potential=use_ex, 
             use_polarization_potential=use_pol,
             exchange_method=ex_method
         )
@@ -339,13 +338,33 @@ def run_scan_excitation(run_name):
     
     if res_pilot and res_pilot.sigma_total_cm2 > 0:
         sigma_calc = res_pilot.sigma_total_cm2
-        alpha = tong_model.calibrate(pilot_E, sigma_calc)
+        alpha = tong_model.calibrate_alpha(pilot_E, sigma_calc)
         print(f"[Calibration] Pilot Sigma={sigma_calc:.2e} cm2")
-        print(f"[Calibration] Tong Model Ref={tong_model.get_tong_sigma(pilot_E):.2e} cm2")
+        print(f"[Calibration] Tong Model Ref={tong_model.calculate_sigma_cm2(pilot_E):.2e} cm2")
         print(f"[Calibration] ALPHA = {alpha:.4f}")
     else:
         print("[Calibration] Pilot result invalid. Using Alpha=1.0")
-        
+
+    # --- Smart Grid Adjustment ---
+    # User request: If grid starts below threshold, automatically adjust to start from threshold.
+    print(f"[Smart Grid Debug] Threshold dE_thr = {dE_thr:.3f} eV")
+    if dE_thr > 0:
+        valid_indices = energies > dE_thr
+        # Check if we need to filter
+        if not np.all(valid_indices):
+            print(f"\n[Smart Grid] Some energies in grid (min={np.min(energies):.2f}) are below/at threshold ({dE_thr:.2f} eV). Correcting...")
+            energies = energies[valid_indices]
+            
+            # Ensure we have a starting point near threshold
+            start_epsilon = 0.5 
+            new_start = dE_thr + start_epsilon
+            
+            if len(energies) == 0 or energies[0] > new_start + 0.1:
+                energies = np.insert(energies, 0, new_start)
+                
+            energies = np.unique(np.round(energies, 3))
+            print(f"[Smart Grid] New start: {energies[0]:.2f} eV. Grid size: {len(energies)}")
+            
     # --- Main Loop ---
     
     # Pre-calculate static target properties (Optimization)
@@ -385,8 +404,15 @@ def run_scan_excitation(run_name):
                 
                 print(f"OK. σ={res.sigma_total_cm2:.2e} cm2{pw_info}")
                 
-                tong_sigma = tong_model.get_tong_sigma(E)
-                scaled_sigma = res.sigma_total_cm2 * alpha
+                # Robust Calibration Handling
+                try:
+                    tong_sigma = tong_model.calculate_sigma_cm2(E)
+                    scaled_sigma = res.sigma_total_cm2 * alpha
+                except Exception as cal_err:
+                    # If calibration model fails, default to unscaled
+                    print(f"  [Warn] Calibration calc failed: {cal_err}")
+                    tong_sigma = 0.0
+                    scaled_sigma = res.sigma_total_cm2
                 
                 results.append({
                     "energy_eV": E,
@@ -461,6 +487,21 @@ def run_scan_ionization(run_name):
             ex_method = 'slater'
 
     energies = get_energy_list_interactive()
+
+    # --- Smart Grid Adjustment (Ionization) ---
+    ion_thr = atom_entry.ip_ev
+    if np.any(energies <= ion_thr):
+        print(f"\n[Smart Grid] Some energies are below/at IP ({ion_thr:.2f} eV). Correcting...")
+        energies = energies[energies > ion_thr]
+        
+        start_epsilon = 0.5
+        new_start = ion_thr + start_epsilon
+        
+        if len(energies) == 0 or energies[0] > new_start + 0.1:
+             energies = np.insert(energies, 0, new_start)
+             
+        energies = np.unique(np.round(energies, 3))
+        print(f"[Smart Grid] New start: {energies[0]:.2f} eV")
     
     n_idx_i = ni - li
     if n_idx_i < 1:
@@ -516,9 +557,6 @@ def run_scan_ionization(run_name):
                     E, spec, 
                     core_params=core_params, # Ignored for grid/V_core generation if _precalc used
                     r_max=200.0, n_points=3000,
-                    use_exchange=use_ex, 
-                    use_polarization=use_pol, 
-                    exchange_method=ex_method,
                     use_exchange=use_ex, 
                     use_polarization=use_pol, 
                     exchange_method=ex_method

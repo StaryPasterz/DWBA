@@ -355,11 +355,19 @@ def _fit_asymptotic_phase_neutral(
     # Solve M [A_s, A_c]^T ≈ chi_tail
     M = np.vstack([sin_part, cos_part]).T  # shape (n_tail, 2)
 
+    M = np.vstack([sin_part, cos_part]).T  # shape (n_tail, 2)
+
     # Least squares solve
     coeffs, *_ = np.linalg.lstsq(M, chi_tail, rcond=None)
     A_s, A_c = coeffs
 
-    A = np.sqrt(A_s**2 + A_c**2)
+    # Use hypot for overflow safety
+    A = np.hypot(A_s, A_c)
+    
+    if not np.isfinite(A) or A > 1e100:
+        # Check for numerical explosion
+        return 0.0, 0.0
+
     delta_l = np.arctan2(A_c, A_s)
 
     return float(A), float(delta_l)

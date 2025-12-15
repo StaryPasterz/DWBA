@@ -112,15 +112,19 @@ def main():
         
         # Article Style: Dotted for DWBA (Uncalibrated), Solid for Calibrated
         if style == 'article':
-            # Reverse of standard: Uncalibrated is usually "Born" (Dotted/Dashed), Calibrated is "Theory" (Solid)
-            # Article Fig 3/4/5: 
-            # Dotted = Present DWBA (Uncalibrated)
-            # Solid = Present DWBA + Calibration
             l1, = ax.plot(X, Y, 'k:', linewidth=2, label='DWBA (Uncalibrated)')
-            l2, = ax.plot(X, Y_MT, 'k-', linewidth=2, label='DWBA + Calibration')
+            # Only plots calibrated if notably different (alpha != 1), else it's just the same line
+            if np.max(np.abs(np.array(Y) - np.array(Y_MT))) > 1e-20:
+                 l2, = ax.plot(X, Y_MT, 'k-', linewidth=2, label='DWBA + Calibration')
+            else:
+                 l2 = l1 # Placeholder for legend if needed, or skip
         else:
             l1, = ax.plot(X, Y, 'o--', linewidth=2, color=color1, label='DWBA')
-            l2, = ax.plot(X, Y_MT, 's-', linewidth=2, color=color2, label='DWBA + Calibration')
+            # Only plot calibration if valid and different
+            if np.max(np.abs(np.array(Y) - np.array(Y_MT))) > 1e-20:
+                l2, = ax.plot(X, Y_MT, 's-', linewidth=2, color=color2, label='DWBA + Calibration')
+            else:
+                l2 = None
         
         ax.set_xlabel(xlab, fontsize=11)
         ax.set_ylabel(ylab, fontsize=11)
@@ -138,7 +142,11 @@ def main():
             ax2.set_ylim(0, max(1.1, np.max(Factor)*1.1))
         
         # Legend (Merge handles)
-        lns = [l1, l2, l3]
+        # Legend (Merge handles)
+        lns = [l1, l3]
+        if l2 is not None:
+             lns.insert(1, l2)
+             
         labs = [l.get_label() for l in lns]
         ax.legend(lns, labs, loc='best', fontsize=9)
         

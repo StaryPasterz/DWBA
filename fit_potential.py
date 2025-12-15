@@ -125,7 +125,18 @@ def main():
     print("=== Model Potential Fitter (Self-Consistent) ===")
     print("This tool finds parameters a1..a6 to match NIST energies.")
     
-    # --- KNOWN VALUES (NIST Reference) ---
+    # --- 1. LOAD LOCAL DATABASE (atoms.json) ---
+    atoms_file = os.path.join(os.path.dirname(__file__), "atoms.json")
+    EXISTING_ATOMS = {}
+    if os.path.exists(atoms_file):
+        try:
+            with open(atoms_file, "r") as f:
+                 EXISTING_ATOMS = json.load(f)
+        except:
+            pass
+
+    # --- 2. LOAD INTERNET/REFERENCE DATABASE (nist_data.json) ---
+    # In a real app, this might be a web fetch. Here we treat this file as "The Cloud".
     known_file = os.path.join(os.path.dirname(__file__), "nist_data.json")
     KNOWN_ATOMS = {}
     if os.path.exists(known_file):
@@ -133,31 +144,93 @@ def main():
             with open(known_file, "r") as f:
                 KNOWN_ATOMS = json.load(f)
         except:
-            pass # Fail silently, just no specific presets
+            pass 
 
     name = input("Atom Name (e.g. Na): ").strip()
     
-    # Defaults from dict
-    d = KNOWN_ATOMS.get(name, {})
-    
-    try:
-        def get_in(prompt, default):
-            p = f"{prompt} [{default}]: " if default is not None else f"{prompt}: "
-            val = input(p).strip()
-            if not val and default is not None:
-                return default
-            return val
+    d = {}
+    source = "None"
 
-        Z = float(get_in("Nuclear Charge Z", d.get("Z")))
-        Zc = float(get_in("Core Charge Zc", d.get("Zc")))
-        n = int(get_in("Target State n", d.get("n")))
-        l = int(get_in("Target State l", d.get("l")))
-        E_str = get_in("Experimental Binding Energy in eV", d.get("E"))
-        E_exp_eV = float(E_str)
+    # --- PRIORITY CHECK ---
+    
+    # Priority A: Local File
+    if name in EXISTING_ATOMS:
+        entry = EXISTING_ATOMS[name]
+        d["Z"] = entry["Z"]
+        d["Zc"] = entry["Zc"]
+        d["n"] = entry["default_n"]
+        d["l"] = entry["default_l"]
+        if "ip_ev" in entry:
+            d["E"] = -entry["ip_ev"]
+        source = "Local File (atoms.json)"
+        print(f"\n[SOURCE: {source}] Found data for {name}.")
+
+    # Priority B: Internet/Reference
+    elif name in KNOWN_ATOMS:
+        d = KNOWN_ATOMS[name].copy()
+        source = "Internet/NIST Database"
+        print(f"\n[SOURCE: {source}] Found reference data for {name}.")
+        print("  (Simulated download from NIST repository...)")
+
+    # Priority C: Not Found
+    else:
+        print(f"\n[SOURCE: None] Atom '{name}' not found in any database.")
+        print("  You will need to enter parameters manually.")
+        source = "Manual"
+
+
+    # --- CONFIRMATION / FALLBACK ---
+    if "Z" in d and "E" in d:
+        print(f"  Z={d['Z']}, Zc={d['Zc']}, State={d['n']}{'spdf'[d['l']] if d['l']<4 else 'l='+str(d['l'])}")
+        print(f"  Binding Energy E = {d['E']} eV")
         
-    except ValueError:
-        print("Invalid number format.")
-        return
+        confirm = input("Use these values? [Y(es)/n(o)/c(ustom)]: ").strip().lower()
+        
+        if confirm == 'n':
+            # User wants to check next source? Or just manual?
+            # If we were Local, maybe they want Internet version?
+            # For simplicity, if they reject, we go to Manual.
+            print("  Switching to Manual Input.")
+            d = {} 
+        elif confirm == 'c':
+             print("  Switching to Manual Input.")
+             d = {}
+        else:
+            # Accepted
+            pass
+            
+    # --- MANUAL INPUT FALLBACK ---
+    if 'Z' not in d:
+        try:
+            def get_in(prompt, default):
+                p = f"{prompt} [{default}]: " if default is not None else f"{prompt}: "
+                val = input(p).strip()
+                if not val and default is not None:
+                    return default
+                return val
+
+            Z = float(get_in("Nuclear Charge Z", KNOWN_ATOMS.get(name, {}).get("Z")))
+            Zc = float(get_in("Core Charge Zc", KNOWN_ATOMS.get(name, {}).get("Zc")))
+            n = int(get_in("Target State n", KNOWN_ATOMS.get(name, {}).get("n")))
+            l = int(get_in("Target State l", KNOWN_ATOMS.get(name, {}).get("l")))
+            E_str = get_in("Experimental Binding Energy in eV", KNOWN_ATOMS.get(name, {}).get("E"))
+            E_exp_eV = float(E_str)
+            
+        except ValueError:
+            print("Invalid number format.")
+            return
+            
+    else:
+        # Unpack confirmed 'd'
+        try:
+            Z = float(d["Z"])
+            Zc = float(d["Zc"])
+            n = int(d["n"])
+            l = int(d["l"])
+            E_exp_eV = float(d["E"])
+        except ValueError:
+            print("Error in stored data structure.")
+            return
 
     # Grid setup
     print("\nSetting up physics grid...")
@@ -165,43 +238,65 @@ def main():
     
     target_E_au = ev_to_au(E_exp_eV)
     
-    # Generic Guess
-    # a1=2.0 (screen 1s), a2=Z (decay fast)
-    x0 = [Z-1.0, 1.0, 0.0, 1.0, 0.0, 1.0] 
-    
-    # --- KNOWN PRESETS (Better Initial Guesses) ---
-    # Heuristics for common alkali-like systems
-    if name in ["Li", "Na", "K", "Rb", "Cs"]:
-        # Strong core screening
-        x0 = [Z-Zc, 0.8*Z, 0.0, 1.0, 0.0, 1.0]
+    # --- OPTIMIZATION / PLOTTING LOGIC ---
+    run_optimization = True
+    best_params = None
 
-    print(f"Target E = {target_E_au:.5f} a.u. ({E_exp_eV:.3f} eV)")
-    print("Starting optimization (Nelder-Mead)... please wait.")
+    if source == "Local File (atoms.json)":
+        # Check if we have params
+        if "a_params" in entry:
+            print(f"  Atom already has fitted parameters: {entry['a_params']}")
+            choice = input("  (P)lot/View existing potential or (R)efit? [P/r]: ").strip().lower()
+            if choice not in ['r', 'refit']:
+                print("  Skipping optimization. Using existing parameters.")
+                run_optimization = False
+                best_params = entry["a_params"]
+                # Need to update E_exp_eV from entry if not already set
+                if "ip_ev" in entry: E_exp_eV = float(entry["ip_ev"]) # IP is positive eV
     
-    t0 = time.time()
-    res = scipy.optimize.minimize(
-        cost_function, 
-        x0, 
-        args=(Zc, n, l, target_E_au, grid),
-        method='Nelder-Mead',
-        options={'maxiter': 500, 'xatol': 1e-5}
-    )
-    dt = time.time() - t0
-    
-    print(f"\nOptimization Finished in {dt:.2f}s.")
-    print(f"Success: {res.success}")
-    print(f"Final Cost (Error in a.u.): {res.fun:.2e}")
-    
-    best_params = res.x
+    if run_optimization:
+        print(f"Target E = {target_E_au:.5f} a.u. ({E_exp_eV:.3f} eV)")
+        print("Starting optimization (Nelder-Mead)... please wait.")
+        
+        # Generic Guess
+        # a1=2.0 (screen 1s), a2=Z (decay fast)
+        x0 = [Z-1.0, 1.0, 0.0, 1.0, 0.0, 1.0] 
+        
+        # --- KNOWN PRESETS (Better Initial Guesses) ---
+        # Heuristics for common alkali-like systems
+        if name in ["Li", "Na", "K", "Rb", "Cs"]:
+            # Strong core screening
+            x0 = [Z-Zc, 0.8*Z, 0.0, 1.0, 0.0, 1.0]
+
+        t0 = time.time()
+        res = scipy.optimize.minimize(
+            cost_function, 
+            x0, 
+            args=(Zc, n, l, target_E_au, grid),
+            method='Nelder-Mead',
+            options={'maxiter': 500, 'xatol': 1e-5}
+        )
+        dt = time.time() - t0
+        
+        print(f"\nOptimization Finished in {dt:.2f}s.")
+        print(f"Success: {res.success}")
+        print(f"Final Cost (Error in a.u.): {res.fun:.2e}")
+        
+        best_params = res.x
+        
+        # Auto-save only if we optimized
+        print("\nSaving results...")
+        save_to_json(name, Z, Zc, n, l, abs(E_exp_eV), best_params)
+
+    # --- FINAL CALCULATION ---
     E_final_au = solve_binding_energy(best_params, Zc, n, l, grid)
     E_final_eV = au_to_ev(E_final_au)
     
-    print(f"\nCalculated E = {E_final_eV:.4f} eV")
-    print(f"Error      = {abs(E_final_eV - E_exp_eV):.4f} eV")
-    
-    # Auto-save
-    print("\nSaving results...")
-    save_to_json(name, Z, Zc, n, l, E_exp_eV, best_params)
+    # User might track IP (positive) or Binding (negative)
+    # We display comparing magnitudes usually
+    print(f"\nCalculated Binding E = {E_final_eV:.4f} eV")
+    print(f"Reference Binding E  = {E_exp_eV if E_exp_eV < 0 else -E_exp_eV:.4f} eV")
+    print(f"Diff                 = {abs(abs(E_final_eV) - abs(E_exp_eV)):.4f} eV")
     
     # --- PHYSICALITY CHECK & PLOTTING ---
     try:
