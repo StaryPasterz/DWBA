@@ -66,20 +66,54 @@ def solve_binding_energy(a_params, Zc, n_target, l_target, grid):
     except Exception:
         return 10.0 # Interaction failure penalty
 
-def cost_function(a_params, Zc, n_target, l_target, target_E_au, grid):
+def cost_function(a_params, Zc, n_target, l_target, target_E_au, grid, Z_nuclear=None):
     """
-    Cost = |E_calc - E_target|
+    Cost = |E_calc - E_target| + physics penalties
     """
+    a1, a2, a3, a4, a5, a6 = a_params
+    
     # Enforce constraints via penalty
-    # Decay rates a2, a4, a6 must be positive > 0.1 to be physical
-    a2, a4, a6 = a_params[1], a_params[3], a_params[5]
-    if a2 < 0.1 or a4 < 0.1 or a6 < 0.1:
+    # Decay rates a2, a4, a6 must be positive > 0.01 to be physical
+    if a2 < 0.01 or a4 < 0.01 or a6 < 0.01:
         return 100.0 + abs(a2)+abs(a4)+abs(a6)
+    
+    # Physics constraint: Z_eff(0) = Zc + a1 + a5 should be close to Z_nuclear
+    if Z_nuclear is not None:
+        z_eff_0 = Zc + a1 + a5
+        if abs(z_eff_0 - Z_nuclear) > 1.0:
+            return 50.0 + abs(z_eff_0 - Z_nuclear)
 
     E_calc = solve_binding_energy(a_params, Zc, n_target, l_target, grid)
     
     diff = abs(E_calc - target_E_au)
     return diff
+
+
+def verify_fit(name, Z, Zc, n, l, ip_ev, a_params):
+    """
+    Verify the fitted parameters by computing bound state energy.
+    Returns (success, calculated_E_eV, expected_E_eV, diff_eV)
+    """
+    from grid import make_r_grid, au_to_ev
+    from potential_core import CorePotentialParams, V_core_on_grid
+    from bound_states import solve_bound_states
+    
+    grid = make_r_grid(r_min=1e-4, r_max=200.0, n_points=2000)
+    params = CorePotentialParams(Zc, *a_params)
+    V = V_core_on_grid(grid, params)
+    
+    states = solve_bound_states(grid, V, l=l, n_states_max=n+2)
+    target_n_idx = n - l
+    
+    for s in states:
+        if s.n_index == target_n_idx:
+            calc_E_eV = s.energy_au * 27.211386
+            expected_E_eV = -ip_ev
+            diff = abs(calc_E_eV - expected_E_eV)
+            success = diff < 0.1  # Within 0.1 eV is success
+            return success, calc_E_eV, expected_E_eV, diff
+    
+    return False, None, -ip_ev, None
 
 import json
 import os
@@ -269,13 +303,32 @@ def main():
             x0 = [Z-Zc, 0.8*Z, 0.0, 1.0, 0.0, 1.0]
 
         t0 = time.time()
-        res = scipy.optimize.minimize(
-            cost_function, 
-            x0, 
-            args=(Zc, n, l, target_E_au, grid),
-            method='Nelder-Mead',
-            options={'maxiter': 500, 'xatol': 1e-5}
-        )
+        
+        # Multi-start optimization for robustness
+        best_result = None
+        best_cost = float('inf')
+        
+        # Try multiple initial guesses
+        initial_guesses = [
+            x0,  # Default guess
+            [Z-Zc, Z*0.5, 0.0, 1.0, 0.0, 1.0],  # Alternative 1
+            [Z-Zc, Z, 0.001, 0.5, 0.001, 2.0],  # Alternative 2
+        ]
+        
+        for i, guess in enumerate(initial_guesses):
+            print(f"  Trying initial guess {i+1}/{len(initial_guesses)}...")
+            res = scipy.optimize.minimize(
+                cost_function, 
+                guess, 
+                args=(Zc, n, l, target_E_au, grid, Z),
+                method='Nelder-Mead',
+                options={'maxiter': 2000, 'xatol': 1e-6, 'fatol': 1e-8}
+            )
+            if res.fun < best_cost:
+                best_cost = res.fun
+                best_result = res
+        
+        res = best_result
         dt = time.time() - t0
         
         print(f"\nOptimization Finished in {dt:.2f}s.")
@@ -297,6 +350,33 @@ def main():
     print(f"\nCalculated Binding E = {E_final_eV:.4f} eV")
     print(f"Reference Binding E  = {E_exp_eV if E_exp_eV < 0 else -E_exp_eV:.4f} eV")
     print(f"Diff                 = {abs(abs(E_final_eV) - abs(E_exp_eV)):.4f} eV")
+    
+    # --- AUTOMATIC DIAGNOSTIC VERIFICATION ---
+    print("\n" + "="*50)
+    print("AUTOMATIC VERIFICATION")
+    print("="*50)
+    success, calc_E, exp_E, diff = verify_fit(name, Z, Zc, n, l, abs(E_exp_eV), best_params)
+    
+    if success:
+        print(f"[SUCCESS] Fitted parameters verified!")
+        print(f"  Calculated: {calc_E:.4f} eV")
+        print(f"  Expected:   {exp_E:.4f} eV")
+        print(f"  Difference: {diff:.4f} eV (< 0.1 eV threshold)")
+    else:
+        if diff is not None:
+            print(f"[WARNING] Fitting not fully successful!")
+            print(f"  Calculated: {calc_E:.4f} eV")
+            print(f"  Expected:   {exp_E:.4f} eV")
+            print(f"  Difference: {diff:.4f} eV (> 0.1 eV threshold)")
+            print("\n  Consider:")
+            print("  1. Running with more iterations (modify maxiter)")
+            print("  2. Trying different initial guesses")
+            print("  3. Checking if target state (n,l) is correct")
+        else:
+            print(f"[ERROR] Could not find target bound state!")
+            print(f"  Expected energy: {exp_E:.4f} eV")
+    print("="*50)
+
     
     # --- PHYSICALITY CHECK & PLOTTING ---
     try:

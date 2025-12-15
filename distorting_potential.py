@@ -570,8 +570,6 @@ def build_distorting_potentials(
     V_H_i = hartree_potential_from_orbital(grid, orbital_initial)
     V_H_f = hartree_potential_from_orbital(grid, orbital_final)
 
-    V_H_f = hartree_potential_from_orbital(grid, orbital_final)
-
     # Distorting potentials
     if use_exchange:
         # Static + Exchange
