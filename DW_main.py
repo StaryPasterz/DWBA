@@ -573,6 +573,8 @@ def run_scan_ionization(run_name):
 
     print(f"\nStarting calculation for {key} ({len(energies)} points)...")
     
+    results = []
+    
     try:
         for E in energies:
             print(f"E={E:.2f} eV...", end=" ", flush=True)

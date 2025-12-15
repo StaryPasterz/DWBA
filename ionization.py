@@ -2,11 +2,38 @@
 #
 # DWBA electron-impact ionization calculator.
 #
-# Optimizations (2025-12-15):
-# - Adaptive L_max with convergence detection (stops early when converged)
-# - Parallel energy integration using ProcessPoolExecutor
-# - Ejected wave caching per energy step
-# - Incident wave caching (pre-computed once)
+# THEORY & IMPLEMENTATION
+# -----------------------
+# We treat ionization e + A -> e + A+ + e' as "excitation" to a continuum state.
+# 
+# 1. Kinematics:
+#    E_inc + E_bound = E_scatt + E_eject
+#    IP = -E_bound
+#    We integrate the Single Differential Cross Section (SDCS) dσ/dE_eject
+#    from E_eject = 0 to (E_inc - IP)/2.
+#
+# 2. Amplitudes:
+#    We use the same T-matrix formalism as excitation, but the "final bound state"
+#    φ_f is replaced by a distorted continuum wave χ_{l_eject}(k_e, r).
+#
+# 3. Partial Waves:
+#    We sum over:
+#    - Ejected angular momentum l_eject (0..l_eject_max)
+#    - Projectile partial waves l_i, l_f (just like in driver.py)
+#    - Magnetic sublevels M_i (target) and m_eject (ejected electron)
+#
+# 4. Normalization:
+#    - Bound states are normalized to 1.
+#    - Continuum waves χ(k,r) are normalized to unit asymptotic amplitude.
+#    - To get cross sections per unit energy (dσ/dE), we apply the density
+#      of states factor for the ejected electron:
+#         ρ(E) = 1 / (π * k_eject)   [in a.u.]
+#
+# UNITS:
+#    Input: eV.
+#    Internal: Hartree Atomic Units.
+#    Output: cm^2.
+#
 
 from __future__ import annotations
 import numpy as np

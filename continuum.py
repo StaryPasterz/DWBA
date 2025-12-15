@@ -207,10 +207,20 @@ def _initial_conditions_regular(r0: float, l: int) -> np.ndarray:
             # Safe to compute directly
             chi0 = r0 ** (ell + 1.0)
             dchi0 = (ell + 1.0) * (r0 ** ell)
+
+        # Scaling: For high L, r0^(L+1) without (2L+1)!! factor implies
+        # the solution at large r will be roughly (2L+1)!! times larger (huge).
+        # We rescale the initial condition to a safe small magnitude (e.g. 1e-20)
+        # to prevent overflow of the unnormalized solution at r_max.
+        current_mag = np.hypot(chi0, dchi0)
+        if current_mag > 1e-100:  # Avoid division by zero
+            scale_factor = 1e-20 / current_mag
+            chi0 *= scale_factor
+            dchi0 *= scale_factor
             
     except:
         # Fallback if logs fail (shouldn't happen for r0>0)
-        chi0 = 1e-10
+        chi0 = 1e-20
         dchi0 = chi0 * (ell + 1.0) / r0
 
     return np.array([chi0, dchi0], dtype=float)
@@ -253,7 +263,7 @@ def _initial_conditions_high_L(r0: float, l: int, k_au: float, z_ion: float) -> 
         
         # Scaling to avoid underflow
         # Scale to 1e-3 to be well above solver atol (1e-8)
-        norm_val = np.sqrt(u_val**2 + u_der**2)
+        norm_val = np.hypot(u_val, u_der)
         if norm_val < 1e-3 and norm_val > 0.0:
             scale = 1e-3 / norm_val
             u_val *= scale
@@ -397,7 +407,7 @@ def _fit_asymptotic_phase_coulomb(r_tail: np.ndarray, chi_tail: np.ndarray, l: i
     coeffs, *_ = np.linalg.lstsq(M, chi_tail, rcond=None)
     c1, c2 = coeffs
     
-    A = np.sqrt(c1**2 + c2**2)
+    A = np.hypot(c1, c2)
     delta_l = np.arctan2(c2, c1)
     
     return float(A), float(delta_l)
