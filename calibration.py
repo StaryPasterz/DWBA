@@ -22,6 +22,10 @@ classes:
 import numpy as np
 from typing import Optional, Tuple
 from dataclasses import dataclass
+from logging_config import get_logger
+
+# Initialize module logger
+logger = get_logger(__name__)
 
 # Constants
 PI = np.pi

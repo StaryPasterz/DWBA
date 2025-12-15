@@ -59,6 +59,11 @@ try:
 except ImportError:
     HAS_CUPY = False
 
+from logging_config import get_logger
+
+# Initialize module logger
+logger = get_logger(__name__)
+
 def check_cupy_runtime() -> bool:
     """
     Verifies if CuPy can actually run on this system.
@@ -365,8 +370,6 @@ def radial_ME_all_L_gpu(
             corr_val = cp.dot(rho1_dir, V_diff) * sum_rho2
             I_dir += corr_val
             
-        # Exchange Integral
-        int_r2_ex = cp.dot(kernel_L, rho2_ex)
         # Exchange Integral
         int_r2_ex = cp.dot(kernel_L, rho2_ex)
         I_ex = cp.dot(rho1_ex, int_r2_ex)

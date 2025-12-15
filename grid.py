@@ -24,6 +24,10 @@
 from __future__ import annotations
 import numpy as np
 from dataclasses import dataclass
+from logging_config import get_logger
+
+# Initialize module logger
+logger = get_logger(__name__)
 
 
 # ---- Physical constants ----

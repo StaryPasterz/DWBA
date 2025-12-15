@@ -84,6 +84,10 @@ from sigma_total import (
     sigma_au_to_cm2,
     dcs_dwba
 )
+from logging_config import get_logger
+
+# Initialize module logger
+logger = get_logger(__name__)
 
 # ============================================================================
 # Data Structures
@@ -511,16 +515,16 @@ def compute_ionization_cs(
     # ========================================================================
     # 5. Pre-compute Incident Waves (Once)
     # ========================================================================
-    print(f"  Ionization Scan E_inc={E_incident_eV:.1f} eV: Integrating dSigma/dE...")
+    logger.info("Ionization Scan E_inc=%.1f eV: Integrating dSigma/dE...", E_incident_eV)
     
     z_ion_inc = core_params.Zc - 1.0
-    print(f"    [Pre-calc] Caching incident waves up to L={chan.L_max_projectile}...")
+    logger.debug("Pre-calc: Caching incident waves up to L=%d...", chan.L_max_projectile)
     t_pre = time.perf_counter()
     chi_i_cache = precompute_continuum_waves(
         chan.L_max_projectile, E_incident_eV, 
         z_ion_inc, U_inc_obj, grid
     )
-    print(f"    [Pre-calc] Done in {time.perf_counter() - t_pre:.3f}s. Cached {len(chi_i_cache)} waves.")
+    logger.debug("Pre-calc: Done in %.3fs. Cached %d waves.", time.perf_counter() - t_pre, len(chi_i_cache))
     
     # ========================================================================
     # 6. Parallel Energy Integration
@@ -545,19 +549,18 @@ def compute_ionization_cs(
     
     if USE_GPU:
         # GPU path: Sequential execution (GPU already parallelizes internally)
-        print(f"    [Mode] GPU Acceleration (Sequential Energy Scan)")
+        logger.info("Mode: GPU Acceleration (Sequential Energy Scan)")
         for idx, task in enumerate(tasks):
             E_ej = task[0]
-            print(f"    Step {idx+1}/{total_steps}: E_ej={E_ej:.2f} eV...", end=" ", flush=True)
             val, partials = _compute_sdcs_at_energy(*task)
             sdcs_values_au.append(val)
-            print(f"SDCS={val:.2e}")
+            logger.debug("Step %d/%d: E_ej=%.2f eV -> SDCS=%.2e", idx+1, total_steps, E_ej, val)
     else:
         # CPU path: Parallel execution across energy points
         if n_workers is None:
             n_workers = os.cpu_count() or 1
         
-        print(f"    [Mode] CPU Parallel (Workers={n_workers})")
+        logger.info("Mode: CPU Parallel (Workers=%d)", n_workers)
         
         try:
             with ProcessPoolExecutor(max_workers=n_workers) as executor:
@@ -577,15 +580,15 @@ def compute_ionization_cs(
                         val, partials = future.result()
                         results[idx] = val
                         completed += 1
-                        print(f"    [{completed}/{total_steps}] E_ej={steps[idx]:.2f} eV -> SDCS={val:.2e}")
+                        logger.debug("[%d/%d] E_ej=%.2f eV -> SDCS=%.2e", completed, total_steps, steps[idx], val)
                     except Exception as e:
-                        print(f"    [ERROR] Step {idx} failed: {e}")
+                        logger.error("Step %d failed: %s", idx, e)
                         results[idx] = 0.0
                 
                 sdcs_values_au = results
                 
         except KeyboardInterrupt:
-            print("\n    [Ionization] Interrupt detected! Terminating workers...")
+            logger.warning("Ionization: Interrupt detected! Terminating workers...")
             raise
 
     # ========================================================================
@@ -599,7 +602,7 @@ def compute_ionization_cs(
     total_sigma_cm2 = sigma_au_to_cm2(total_sigma_au)
     
     elapsed = time.perf_counter() - t_start
-    print(f"  Total Ionization Sigma = {total_sigma_cm2:.2e} cm^2 (computed in {elapsed:.1f}s)")
+    logger.info("Total Ionization Sigma = %.2e cm^2 (computed in %.1fs)", total_sigma_cm2, elapsed)
     
     # ========================================================================
     # 8. Prepare Output

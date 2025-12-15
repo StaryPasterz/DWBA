@@ -69,6 +69,10 @@ from dwba_coupling import (
     calculate_amplitude_contribution,
     Amplitudes
 )
+from logging_config import get_logger
+
+# Initialize module logger
+logger = get_logger(__name__)
 
 
 
@@ -373,7 +377,7 @@ def compute_total_excitation_cs(
     # If user explicitly set a very high L in chan, respect it if < 150 (already handled by max)
     # If user set small L (e.g. 5 default), this dynamic logic overrides it properly.
     
-    print(f"  [Auto-L] E={E_incident_eV:.1f} eV (k={k_i_au:.2f}) -> L_max_proj={L_max_proj}") 
+    logger.info("Auto-L: E=%.1f eV (k=%.2f) -> L_max_proj=%d", E_incident_eV, k_i_au, L_max_proj) 
     
     # --- Execution Strategy Selection ---
     USE_GPU = False
@@ -382,22 +386,22 @@ def compute_total_excitation_cs(
         if check_cupy_runtime():
             USE_GPU = True
         else:
-             print("  [GPU Info] CuPy detected but runtime check failed (missing NVRTC?). Fallback to CPU.")
+             logger.warning("CuPy detected but runtime check failed (missing NVRTC?). Fallback to CPU.")
     
     partial_waves_dict = {} # Initialize for both paths
 
     if USE_GPU:
-        print(f"  [GPU Accelerated] Summing Partial Waves l_i=0..{L_max_proj} on GPU (Single Process)...")
+        logger.info("GPU Accelerated: Summing Partial Waves l_i=0..%d on GPU (Single Process)...", L_max_proj)
         
         # --- Pre-calculate Waves (Hybrid Mode) ---
-        print("    [Pre-calc] Solving continuum waves in parallel (CPU)...")
+        logger.debug("Pre-calc: Solving continuum waves in parallel (CPU)...")
         # We need chi_i up to L_max_proj
         # We need chi_f up to L_max_proj + 10 (coupling range)
         
         t_pre = time.perf_counter()
         chi_i_cache = precompute_continuum_waves(L_max_proj, E_incident_eV, z_ion, U_i, grid)
         chi_f_cache = precompute_continuum_waves(L_max_proj + 15, E_final_eV, z_ion, U_f, grid)
-        print(f"    [Pre-calc] Done in {time.perf_counter() - t_pre:.3f} s. (Cached {len(chi_i_cache)} i-waves, {len(chi_f_cache)} f-waves)")
+        logger.debug("Pre-calc: Done in %.3f s. (Cached %d i-waves, %d f-waves)", time.perf_counter() - t_pre, len(chi_i_cache), len(chi_f_cache))
 
         # Sequential Loop, but with fast GPU integrals
         
@@ -504,7 +508,7 @@ def compute_total_excitation_cs(
             
             # Progress log
             if l_i % 5 == 0:
-                 print(f"    l_i={l_i} done. Sigma={snap_sigma:.3e} (dL/L={rel_change:.1e})")
+                 logger.debug("l_i=%d done. Sigma=%.3e (dL/L=%.1e)", l_i, snap_sigma, rel_change)
 
             # Check convergence
             if l_i > 10 and rel_change < convergence_threshold:
@@ -513,13 +517,13 @@ def compute_total_excitation_cs(
                 consecutive_small_changes = 0
             
             if consecutive_small_changes >= 4:
-                print(f"    [Convergence] Auto-stop at l_i={l_i} (Change < {convergence_threshold} for 4 steps).")
+                logger.info("Convergence: Auto-stop at l_i=%d (Change < %.0e for 4 steps)", l_i, convergence_threshold)
                 break
 
     else:
         # Fallback to CPU Parallel
-        print(f"  [CPU Parallel] Summing Partial Waves l_i (Auto-Convergence, Max={L_max_proj})...")
-        print("  Note: Parallel execution makes sequential convergence check harder. Using batching.")
+        logger.info("CPU Parallel: Summing Partial Waves l_i (Auto-Convergence, Max=%d)...", L_max_proj)
+        logger.debug("Note: Parallel execution makes sequential convergence check harder. Using batching.")
         
         # Strategy: Submit batches of 10 l_i. Check after each batch.
         import multiprocessing
@@ -578,26 +582,26 @@ def compute_total_excitation_cs(
                     rel_change = delta_sigma / (snap_sigma + 1e-30)
                     sigma_accumulated = snap_sigma
                     
-                    print(f"    Batch {current_l}-{l_end-1} done. Sigma={snap_sigma:.3e} (rel_change={rel_change:.1e})")
+                    logger.debug("Batch %d-%d done. Sigma=%.3e (rel_change=%.1e)", current_l, l_end-1, snap_sigma, rel_change)
 
                     if snap_sigma > 1e-40 and rel_change < convergence_threshold:
                          # Need to be sure it's not jsut a lucky flat spot.
                          # Since batch is ~10-20 waves, if change over 20 waves is tiny, we are done.
-                         print(f"    [Convergence] Auto-stop at batch end l={l_end-1}.")
+                         logger.info("Convergence: Auto-stop at batch end l=%d", l_end-1)
                          pool_running = False
                          
                     current_l = l_end
 
         except KeyboardInterrupt:
-            print("\n[User Interrupt] Terminating worker processes...")
+            logger.warning("User Interrupt: Terminating worker processes...")
             pool.terminate()
             pool.join()
             raise
         except Exception as e:
-             print(f"Pool Execution Failed: {e}")
+             logger.error("Pool Execution Failed: %s", e)
              raise
 
-    print(f"  Summation complete in {time.perf_counter() - t0:.3f} s")
+    logger.info("Summation complete in %.3f s", time.perf_counter() - t0)
 
 
     # 6. Calc Cross Sections
@@ -676,10 +680,10 @@ def compute_total_excitation_cs(
                             sigma_total_au += tail_au
                             sigma_total_cm2 = sigma_au_to_cm2(sigma_total_au)
                             partial_waves_dict["born_topup"] = tail_au
-                            print(f"    [Top-Up] Added {sigma_au_to_cm2(tail_au):.2e} cm^2 (L>{L_last}, q={q:.3f})")
+                            logger.debug("Top-Up: Added %.2e cm^2 (L>%d, q=%.3f)", sigma_au_to_cm2(tail_au), L_last, q)
         except Exception as e:
             # Non-critical enhancement
-            print(f"    [Top-Up] Skipped: {e}")
+            logger.debug("Top-Up: Skipped: %s", e)
 
     return DWBAResult(
         True, E_incident_eV, dE_target_eV,

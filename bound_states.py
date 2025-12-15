@@ -54,6 +54,10 @@ from scipy.sparse.linalg import eigsh
 
 from grid import RadialGrid, integrate_trapz
 from potential_core import V_core_on_grid
+from logging_config import get_logger
+
+# Initialize module logger
+logger = get_logger(__name__)
 
 
 @dataclass(frozen=True)

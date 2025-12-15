@@ -18,6 +18,10 @@ from functools import lru_cache
 
 # We need Legendre polynomials / Spherical Harmonics
 from scipy.special import sph_harm
+from logging_config import get_logger
+
+# Initialize module logger
+logger = get_logger(__name__)
 
 @lru_cache(maxsize=2000)
 def _log_factorial(n: int) -> float:

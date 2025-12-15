@@ -30,8 +30,67 @@ from ionization import (
 )
 from potential_core import CorePotentialParams
 import atom_library
-import plotter # Import plotter module
+import plotter
 from calibration import TongModel
+from logging_config import get_logger
+
+# Initialize logger for debug messages
+logger = get_logger(__name__)
+
+# =============================================================================
+# UI Formatting Helpers
+# =============================================================================
+
+def print_header(title: str, width: int = 50):
+    """Print a prominent section header."""
+    print()
+    print("╔" + "═" * (width - 2) + "╗")
+    print("║" + title.center(width - 2) + "║")
+    print("╚" + "═" * (width - 2) + "╝")
+
+def print_subheader(title: str, width: int = 50):
+    """Print a subsection header."""
+    print()
+    padding = width - len(title) - 4
+    print("── " + title + " " + "─" * max(padding, 3))
+
+def print_menu(options: list, prompt: str = "Select", default: str = None):
+    """Print a numbered menu and get selection."""
+    for i, opt in enumerate(options, 1):
+        print(f"  {i}. {opt}")
+    
+    if default:
+        raw = input(f"\n{prompt} [default={default}]: ").strip()
+        if not raw:
+            return default
+    else:
+        raw = input(f"\n{prompt}: ").strip()
+    return raw
+
+def print_progress(msg: str, end: str = ""):
+    """Print a progress message."""
+    print(f"  → {msg}", end=end, flush=True)
+
+def print_success(msg: str):
+    """Print a success message."""
+    print(f"  ✓ {msg}")
+
+def print_error(msg: str):
+    """Print an error message."""
+    print(f"  ✗ {msg}")
+
+def print_warning(msg: str):
+    """Print a warning message."""
+    print(f"  ⚠ {msg}")
+
+def print_info(msg: str):
+    """Print an info message."""
+    print(f"  • {msg}")
+
+def print_result(energy: float, sigma: float, extra: str = ""):
+    """Print a calculation result in compact format."""
+    extra_str = f" {extra}" if extra else ""
+    print(f"  {energy:8.2f} eV │ σ = {sigma:.3e} cm²{extra_str}")
 
 
 # --- Input Helpers ---
@@ -61,38 +120,38 @@ def get_input_int(prompt, default=None):
         return get_input_int(prompt, default)
 
 def select_target():
-    print("\n--- Target Selection ---")
+    print_subheader("Target Selection")
     atoms = atom_library.get_atom_list()
     
     # Display available atoms
     for i, name in enumerate(atoms):
         entry = atom_library.get_atom(name)
-        print(f"{i+1}. {entry.name:<5} - {entry.description}")
+        print(f"  {i+1}. {entry.name:<5} │ {entry.description}")
     
-    print(f"{len(atoms)+1}. Custom (Manual Z)")
+    print(f"  {len(atoms)+1}. Custom │ Manual Z input")
     
-    raw = input(f"Select Target [1-{len(atoms)+1}] (default=1): ").strip()
+    raw = input(f"\n  Select [1-{len(atoms)+1}, default=1]: ").strip()
     if not raw: raw = "1"
     
     try:
         idx = int(raw) - 1
     except ValueError:
-        idx = 0 # default
+        idx = 0
         
     if 0 <= idx < len(atoms):
         name = atoms[idx]
-        return atom_library.get_atom(name)
+        entry = atom_library.get_atom(name)
+        print_info(f"Selected: {entry.name} (Z={entry.Z})")
+        return entry
     else:
-        # manual custom
-        z_in = get_input_float("Enter Nuclear Charge Z")
-        # For custom, we assume simple Coulomb for now (Zc=Z)
+        z_in = get_input_float("  Nuclear Charge Z")
         return atom_library.AtomEntry(
             name=f"Z={z_in}",
             Z=z_in,
             core_params=CorePotentialParams(Zc=z_in, a1=0, a2=1, a3=0, a4=1, a5=0, a6=1),
             default_n=1,
             default_l=0,
-            ip_ev=13.6*z_in**2, # approx
+            ip_ev=13.6*z_in**2,
             description="Custom Hydrogen-like"
         )
 
@@ -126,17 +185,18 @@ def generate_flexible_energy_grid(start_eV: float, end_eV: float, density_factor
 
 
 def get_energy_list_interactive():
-    print("\n--- Energy Selection ---")
-    print("1. Single Energy")
-    print("2. Linear Grid (Start, End, Step)")
-    print("3. Custom List (comma separated)")
-    print("4. Flexible/Log Grid (Dense at low, Sparse at high)")
+    print_subheader("Energy Grid")
+    print("  1. Single Energy")
+    print("  2. Linear Grid (Start, End, Step)")
+    print("  3. Custom List (comma separated)")
+    print("  4. Log Grid (Dense at threshold)")
     
-    choice = input("Select mode [2]: ").strip()
+    choice = input("\n  Select [default=2]: ").strip()
     if not choice: choice = '2'
     
     if choice == '1':
-        E = get_input_float("Energy [eV]", 50.0)
+        E = get_input_float("  Energy [eV]", 50.0)
+        print_info(f"Single energy: {E} eV")
         return np.array([E])
         
     elif choice == '2':
@@ -144,24 +204,29 @@ def get_energy_list_interactive():
         end   = get_input_float("  End   [eV]", 200.0)
         step  = get_input_float("  Step  [eV]", 5.0)
         if step <= 0: step = 1.0
-        return np.arange(start, end + 0.0001, step)
+        grid = np.arange(start, end + 0.0001, step)
+        print_info(f"Grid: {len(grid)} points from {start} to {end} eV")
+        return grid
         
     elif choice == '3':
-        raw = input("Enter energies (e.g. 10.0, 15.5, 20): ")
+        raw = input("  Energies (e.g. 10, 15.5, 20): ")
         try:
             vals = [float(x.strip()) for x in raw.split(',')]
+            print_info(f"Custom list: {len(vals)} points")
             return np.array(vals)
         except ValueError:
-            print("Invalid format. Defaulting to 50.0 eV.")
+            print_warning("Invalid format. Using 50.0 eV.")
             return np.array([50.0])
 
     elif choice == '4':
-        start = get_input_float("  Threshold/Start [eV]", 10.0)
+        start = get_input_float("  Start [eV]", 10.0)
         end   = get_input_float("  End [eV]", 1000.0)
-        dens  = get_input_float("  Density Factor (1.0=Normal, 2.0=Dense)", 1.0)
-        return generate_flexible_energy_grid(start, end, dens)
+        dens  = get_input_float("  Density (1.0=normal)", 1.0)
+        grid = generate_flexible_energy_grid(start, end, dens)
+        print_info(f"Log grid: {len(grid)} points")
+        return grid
     
-    print("Invalid choice. Defaulting to Grid 10-200.")
+    print_warning("Invalid choice. Using default grid.")
     return np.arange(10.0, 201.0, 5.0)
 
 # --- Data Management ---
@@ -212,70 +277,69 @@ def run_scan_excitation(run_name):
     filename = f"results_{run_name}_exc.json"
     
     if not check_file_exists_warning(filename):
-        print("Aborting calculation.")
+        print_error("Aborting calculation.")
         return
 
-    print("\n=== EXCITATION CALCULATION ===")
+    print_header("EXCITATION CALCULATION")
     atom_entry = select_target()
     Z = atom_entry.Z
-    print(f"Selected Target: {atom_entry.name} (Z={Z})")
       
-    print("Initial State:")
-    ni = get_input_int("  n", atom_entry.default_n)
-    li = get_input_int("  l", atom_entry.default_l)
+    print_subheader("State Configuration")
+    print("  Initial State:")
+    ni = get_input_int("    n", atom_entry.default_n)
+    li = get_input_int("    l", atom_entry.default_l)
     
-    print("Final State:")
-    nf = get_input_int("  n", ni + 1)
-    lf = get_input_int("  l", li + 1 if li==0 else li-1)
+    print("  Final State:")
+    nf = get_input_int("    n", ni + 1)
+    lf = get_input_int("    l", li + 1 if li==0 else li-1)
     
     # --- VALIDATION ---
     if li >= ni:
-        print(f"\n[ERROR] Initial state impossible: l({li}) >= n({ni}).")
+        print_error(f"Initial state impossible: l({li}) >= n({ni}).")
         return
     if lf >= nf:
-        print(f"\n[ERROR] Final state impossible: l({lf}) >= n({nf}).")
+        print_error(f"Final state impossible: l({lf}) >= n({nf}).")
         return
     if ni == nf and li == lf:
-        print(f"\n[ERROR] Initial and Final states are identical (Elastic Scattering).")
-        print("This module is for Excitation (inelastic). Aborting.")
+        print_error("Initial and Final states are identical (elastic scattering).")
         return
     if nf < ni:
-        print(f"\n[WARNING] n_final ({nf}) < n_initial ({ni}). This is De-excitation.")
-        confirm = input("Are you sure? [y/N]: ").strip().lower()
+        print_warning(f"De-excitation: n_f({nf}) < n_i({ni})")
+        confirm = input("    Continue? [y/N]: ").strip().lower()
         if confirm != 'y': return
     if abs(lf - li) > 3:
-        print(f"\n[WARNING] Large angular momentum change (Delta L = {abs(lf-li)}).")
-        print("Cross sections might be extremely small.")
-        # Just a warning, proceed.
+        print_warning(f"Large ΔL = {abs(lf-li)} - cross sections may be very small.")
     
-    print("\n--- Model Selection ---")
-    print("1. Static Only (Standard DWBA) - Matches Article (Default)")
-    print("2. Static + Exchange (DWSE) - Improved Physics")
-    print("3. Static + Exchange + Polarization (SEP) - Advanced")
-    choice = input("Select Model [1-3] (default=1): ").strip()
+    print_subheader("Physics Model")
+    print("  1. Static (DWBA)")
+    print("  2. Static + Exchange (DWSE)")
+    print("  3. Static + Exchange + Polarization (SEP)")
+    choice = input("\n  Select [default=1]: ").strip()
     
-    use_ex = False # Default 1 is Static Only
+    use_ex = False
     use_pol = False
     
     if choice == '2':
         use_ex = True
+        print_info("Model: DWSE")
     elif choice == '3':
         use_ex = True
         use_pol = True
-    elif choice == '1':
-        pass 
+        print_info("Model: SEP")
     else:
-        pass
+        print_info("Model: Static DWBA")
     
-    # Sub-selection for Exchange
     ex_method = 'fumc'
     if use_ex:
-        print("\n  [Exchange Potential Options]")
-        print("  1. Furness-McCarthy (Article Standard, Default)")
-        print("  2. Slater (Free Electron Gas Approx)")
-        ex_choice = input("  Select Exchange Method [1-2] (default=1): ").strip()
+        print("\n  Exchange Method:")
+        print("    1. Furness-McCarthy")
+        print("    2. Slater")
+        ex_choice = input("    Select [default=1]: ").strip()
         if ex_choice == '2':
             ex_method = 'slater'
+            print_info("Exchange: Slater")
+        else:
+            print_info("Exchange: Furness-McCarthy")
     
     energies = get_energy_list_interactive()
     
@@ -304,13 +368,10 @@ def run_scan_excitation(run_name):
     key = f"Excitation_Z{Z}_{atom_entry.name}_n{ni}l{li}_to_n{nf}l{lf}"
     results = []
     
-    # --- Calibration Pilot Run ---
-    print("\n[Calibration] Running Pilot Calculation at 1000 eV for Alpha Matching...")
+    print_subheader("Calibration")
+    print_progress("Running pilot at 1000 eV...")
     pilot_E = 1000.0
     
-    # Determine n-p vs n-s (approximate check)
-    # Generalized: if final state is S (l=0), use s-s params. Else use s-p params.
-    # Note: Article only explicitly covers starting from 1s. We assume this generalizes.
     t_type = "s-p"
     if lf == 0:
         t_type = "s-s"
@@ -329,28 +390,17 @@ def run_scan_excitation(run_name):
             exchange_method=ex_method
         )
     except Exception as e:
-        print(f"[Calibration] Pilot failed: {e}. Defaulting Alpha=1.0")
+        logger.debug("Pilot calculation failed: %s", e)
+        print(" failed")
         res_pilot = None
 
-    # Init model
-    # If pilot failed, we guess threshold.
-    dE_thr = res_pilot.E_excitation_eV if res_pilot else atom_entry.ip_ev # rough guess
+    dE_thr = res_pilot.E_excitation_eV if res_pilot else atom_entry.ip_ev
     
-    # Calculate final state binding energy (epsilon in Eq 493)
-    # E_final = E_initial + dE_thr
-    # E_initial approx -IP
-    # So epsilon = (-IP + dE_thr) in a.u.
     if res_pilot:
-        # res_pilot doesn't store E_final_bound directly, but we can deduce
-        # We need epsilon_exc_au.
-        # Let's approximate from IP.
         E_init_eV = -atom_entry.ip_ev
         E_final_eV = E_init_eV + dE_thr
-        # Check consistency: if dE_thr > IP, then E_final > 0 (Ionization). 
-        # But we are in Excitation. Usually dE < IP.
         epsilon_exc_au = ev_to_au(E_final_eV)
     else:
-        # Fallback for H-like
         epsilon_exc_au = -0.5 * (Z**2) / (nf**2) 
 
     tong_model = TongModel(dE_thr, epsilon_exc_au, transition_type=t_type)
@@ -359,23 +409,19 @@ def run_scan_excitation(run_name):
     if res_pilot and res_pilot.sigma_total_cm2 > 0:
         sigma_calc = res_pilot.sigma_total_cm2
         alpha = tong_model.calibrate_alpha(pilot_E, sigma_calc)
-        print(f"[Calibration] Pilot Sigma={sigma_calc:.2e} cm2")
-        print(f"[Calibration] Tong Model Ref={tong_model.calculate_sigma_cm2(pilot_E):.2e} cm2")
-        print(f"[Calibration] ALPHA = {alpha:.4f}")
+        print(" done")
+        print_info(f"Threshold: {dE_thr:.2f} eV, α = {alpha:.3f}")
+        logger.debug("Pilot σ=%.2e, Tong ref=%.2e, α=%.4f", sigma_calc, tong_model.calculate_sigma_cm2(pilot_E), alpha)
     else:
-        print("[Calibration] Pilot result invalid. Using Alpha=1.0")
+        print(" skipped")
+        print_info("Using default α = 1.0")
 
     # --- Smart Grid Adjustment ---
-    # User request: If grid starts below threshold, automatically adjust to start from threshold.
-    print(f"[Smart Grid Debug] Threshold dE_thr = {dE_thr:.3f} eV")
+    logger.debug("Threshold dE_thr = %.3f eV", dE_thr)
     if dE_thr > 0:
         valid_indices = energies > dE_thr
-        # Check if we need to filter
         if not np.all(valid_indices):
-            print(f"\n[Smart Grid] Some energies in grid (min={np.min(energies):.2f}) are below/at threshold ({dE_thr:.2f} eV). Correcting...")
             energies = energies[valid_indices]
-            
-            # Ensure we have a starting point near threshold
             start_epsilon = 0.5 
             new_start = dE_thr + start_epsilon
             
@@ -383,7 +429,7 @@ def run_scan_excitation(run_name):
                 energies = np.insert(energies, 0, new_start)
                 
             energies = np.unique(np.round(energies, 3))
-            print(f"[Smart Grid] New start: {energies[0]:.2f} eV. Grid size: {len(energies)}")
+            print_info(f"Grid adjusted: {len(energies)} points from {energies[0]:.1f} eV")
             
     # --- Main Loop ---
     
@@ -400,37 +446,31 @@ def run_scan_excitation(run_name):
         r_max=200.0,
         n_points=3000
     )
-    print("[Optimization] Ready.")
+    print_success("Target prepared")
     
-    print(f"\nStarting calculation for {key} ({len(energies)} points)...")
+    print_subheader(f"Calculation: {len(energies)} points")
+    print("  " + "-" * 45)
+    print(f"  {'Energy':>10}  │  {'Cross Section':>15}")
+    print("  " + "-" * 45)
     
     try:
         for E in energies:
             if E <= 0.01: continue
-            print(f"E={E:.2f} eV...", end=" ", flush=True)
             try:
-                # Optimized call
                 res = compute_excitation_cs_precalc(E, prep)
                 
-                # Print dominant partial waves
-                top_pws = []
+                # Log partial waves to debug
                 if res.partial_waves:
-                    # Sort by contribution
-                    sorted_pws = sorted(res.partial_waves.items(), key=lambda x: x[1], reverse=True)
-                    # Take top 3
-                    top_pws = [f"{k}={v:.1e}" for k,v in sorted_pws[:3]]
+                    sorted_pws = sorted(res.partial_waves.items(), key=lambda x: x[1], reverse=True)[:3]
+                    logger.debug("E=%.1f: %s", E, ", ".join(f"{k}={v:.1e}" for k,v in sorted_pws))
                 
-                pw_info = f" [Top: {', '.join(top_pws)}]" if top_pws else ""
+                print_result(E, res.sigma_total_cm2)
                 
-                print(f"OK. σ={res.sigma_total_cm2:.2e} cm2{pw_info}")
-                
-                # Robust Calibration Handling
                 try:
                     tong_sigma = tong_model.calculate_sigma_cm2(E)
                     scaled_sigma = res.sigma_total_cm2 * alpha
                 except Exception as cal_err:
-                    # If calibration model fails, default to unscaled
-                    print(f"  [Warn] Calibration calc failed: {cal_err}")
+                    logger.debug("Calibration calc failed: %s", cal_err)
                     tong_sigma = 0.0
                     scaled_sigma = res.sigma_total_cm2
                 
@@ -445,17 +485,18 @@ def run_scan_excitation(run_name):
                 })
                 
             except Exception as e:
-                print(f"Failed: {e}")
+                print_error(f"{E:.2f} eV: {e}")
 
     except KeyboardInterrupt:
-        print("\n\n[STOP] Calculation interrupted by user (Ctrl+C).")
-        print(f"[INFO] Saving {len(results)} data points collected so far...")
+        print()
+        print_warning(f"Interrupted - saving {len(results)} points...")
         save_results(filename, {key: results})
-        print("[INFO] Partial results saved successfully.")
+        print_success("Partial results saved")
         return
 
+    print("  " + "-" * 45)
     save_results(filename, {key: results})
-    print("Calculation complete.")
+    print_success(f"Complete: {len(results)} points saved")
 
 
 def run_scan_ionization(run_name):
@@ -677,30 +718,26 @@ def run_visualization():
 # --- Main Loop ---
 
 def main():
-    print("\n===========================================")
-    print("   DWBA CALCULATION SUITE - UNIFIED V2")
-    print("===========================================")
+    print_header("DWBA CALCULATION SUITE v2")
     
-    run_name = input("Enter Simulation Name (e.g. 'run1'): ").strip()
+    run_name = input("\n  Simulation Name [default]: ").strip()
     if not run_name:
         run_name = "default"
-        print("Using name: 'default'")
-        
-    print(f"Active Run Name: {run_name}")
-    print(f"Outputs will be: results_{run_name}_exc.json / results_{run_name}_ion.json")
+    
+    print_info(f"Run: {run_name}")
+    print_info(f"Output: results_{run_name}_exc.json / _ion.json")
 
     while True:
-        print("\n--- Main Menu ---")
-        print(f"Current Run: {run_name}")
-        print("1. Calculate Excitation Cross Sections")
-        print("2. Calculate Ionization Cross Sections")
-        print("3. Generate Plots (Cross Sections)")
-        print("4. Partial Wave Analysis (Detailed Plots)")
-        print("5. Fit Potential (New Atom Tool)")
-        print("6. Change Run Name")
-        print("q. Quit")
+        print_subheader(f"Main Menu  │  Run: {run_name}")
+        print("  1. Excitation Cross Sections")
+        print("  2. Ionization Cross Sections")
+        print("  3. Generate Plots")
+        print("  4. Partial Wave Analysis")
+        print("  5. Fit Potential (New Atom)")
+        print("  6. Change Run Name")
+        print("  q. Quit")
         
-        choice = input("\nSelect Mode: ").strip().lower()
+        choice = input("\n  Select: ").strip().lower()
         
         if choice == '1':
             run_scan_excitation(run_name)

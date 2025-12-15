@@ -76,6 +76,10 @@ from scipy.special import spherical_jn, loggamma
 
 from grid import RadialGrid, k_from_E_eV, ev_to_au
 from distorting_potential import DistortingPotential
+from logging_config import get_logger
+
+# Initialize module logger
+logger = get_logger(__name__)
 
 
 @dataclass(frozen=True)
