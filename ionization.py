@@ -28,13 +28,23 @@ Normalization
 -------------
 - Bound states: normalized to 1
 - Continuum waves: unit asymptotic amplitude
-- Density of states: ρ(E) = 1/(π·k_eject) [a.u.]
+
+Cross Section Formula
+---------------------
+TDCS = (2π)⁵ × (k_scatt × k_ej / k_i) × |T|²
+
+The (2π)⁵ factor accounts for two continuum electrons in the final state.
 
 Units
 -----
 - Input: eV
 - Internal: Hartree atomic units
 - Output: cm²
+
+References
+----------
+- S. Jones, D.H. Madison et al., Phys. Rev. A 48, 2285 (1993)
+- D. Bote, F. Salvat, Phys. Rev. A 77, 042701 (2008)
 
 Logging
 -------
@@ -335,7 +345,13 @@ def _compute_sdcs_at_energy(
                 dcs_shell += chan_dcs
             
             # Apply ionization kinematic factor
-            dcs_shell *= k_eject_au
+            # ----------------------------------------------------------------
+            # TDCS for ionization: (2π)⁵ × (k_scatt × k_ej / k_i) × |T|²
+            # dcs_dwba applies (2π)⁴ × (k_scatt/k_i), so we add k_ej × 2π
+            # Reference: Jones/Madison (1993), Bote/Salvat (2008)
+            # ----------------------------------------------------------------
+            IONIZATION_2PI_FACTOR = 2.0 * np.pi
+            dcs_shell *= k_eject_au * IONIZATION_2PI_FACTOR
             
             sigma_shell_au = integrate_dcs_over_angles(theta_grid, dcs_shell)
             sigma_this_L += sigma_shell_au

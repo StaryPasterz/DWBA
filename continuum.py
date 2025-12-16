@@ -349,8 +349,8 @@ def _fit_asymptotic_phase_neutral(
     # Use hypot for overflow safety
     A = np.hypot(A_s, A_c)
     
+    # Only check for numerical explosion (not small amplitude - that's physical)
     if not np.isfinite(A) or A > 1e100:
-        # Check for numerical explosion
         return 0.0, 0.0
 
     delta_l = np.arctan2(A_c, A_s)
@@ -389,6 +389,11 @@ def _fit_asymptotic_phase_coulomb(r_tail: np.ndarray, chi_tail: np.ndarray, l: i
     c1, c2 = coeffs
     
     A = np.hypot(c1, c2)
+    
+    # Only check for numerical explosion
+    if not np.isfinite(A) or A > 1e100:
+        return 0.0, 0.0
+    
     delta_l = np.arctan2(c2, c1)
     
     return float(A), float(delta_l)
@@ -622,7 +627,9 @@ def solve_continuum_wave(
         A_amp, delta_l = _fit_asymptotic_phase_coulomb(r_tail, chi_tail, l, k_au, z_ion)
 
     if not np.isfinite(A_amp) or not np.isfinite(delta_l) or A_amp == 0.0:
-        raise RuntimeError("solve_continuum_wave: failed to extract asymptotic phase/amplitude.")
+        # Wave is unreliable (small amplitude or poor fit) - return None
+        # Caller should handle this by skipping this partial wave
+        return None
 
     # Renormalize χ so asymptotic amplitude is 1
     chi_norm = chi_raw / A_amp

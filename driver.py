@@ -238,6 +238,7 @@ def precompute_continuum_waves(
     waves = {}
     import os
     import concurrent.futures
+
     max_workers = os.cpu_count()
     if max_workers is None: max_workers = 1
     
@@ -368,7 +369,6 @@ def compute_total_excitation_cs(
     # Cache removed as it is not easily shareable across processes without overhead.
 
     # Loop over projectile l_i
-    # We restore L_max_projectile default to 25 in datastruct (via caller or explicit set)
     # Dynamic L_max estimation to ensure convergence at high energies.
     # Semi-classical argument: L ~ k*R. For effective range R~10-15 a.u. (n=2), 
     # and k_i up to ~6 a.u. (500 eV), we need L ~ 60-90.
@@ -380,16 +380,17 @@ def compute_total_excitation_cs(
     
     # Physical upper bound: L_max ~ k * r_max (classical turning point)
     # Beyond this, centrifugal barrier dominates and contributions should be zero.
-    L_physical_max = int(k_i_au * 40.0)
+    # Using r_eff ~ 30 a.u. as practical integration range
+    L_physical_max = int(k_i_au * 30.0) + 5
     
     # We take the maximum of requested (user spec) and dynamic (convergence safety)
     L_max_proj = max(L_requested, L_dynamic)
     
-    # But we CAP at physical max to avoid numerical instability
+    # Cap at physical max - no hard numerical cap, rely on upturn detection
     L_max_proj = min(L_max_proj, L_physical_max)
     
-    # Reasonable global cap at 60 - will rely on monotonic decay check to stop early
-    L_max_proj = min(L_max_proj, 60)
+    # Reasonable upper limit to prevent runaway in edge cases
+    L_max_proj = min(L_max_proj, 100)
     
     logger.info("Auto-L: E=%.1f eV (k=%.2f) -> L_max_proj=%d", E_incident_eV, k_i_au, L_max_proj) 
     
@@ -502,40 +503,51 @@ def compute_total_excitation_cs(
                 sigma_li_contribution = sigma_au_to_cm2(integrate_dcs_over_angles(theta_grid, dcs_li_sum))
                 partial_waves_dict[f"L{l_i}"] = sigma_li_contribution
             
-            # UPTURN CHECK BEFORE ADDING TO TOTAL:
-            # Check if this partial wave contribution is increasing (sign of numerical instability)
+            # === EARLY STOPPING CHECKS ===
             should_add = True
-            if l_i >= 2:
+            stop_reason = None
+            
+            # CHECK 1: Negligible contribution (optimization)
+            # If this partial wave contributes less than 0.01% of accumulated total, stop
+            if l_i > 5 and sigma_li_contribution > 0 and sigma_accumulated > 0:
+                relative_contrib = sigma_li_contribution / sigma_accumulated
+                if relative_contrib < 1e-6:
+                    stop_reason = f"Negligible contribution: L{l_i} adds only {relative_contrib:.1e} of total"
+                    should_add = True  # Still add this one, but stop after
+            
+            # CHECK 2: Upturn detection (numerical instability)
+            # More sensitive: 1.2x threshold, l_i > 10, single increase triggers stop
+            if l_i >= 2 and stop_reason is None:
                 prev_key = f"L{l_i-1}"
                 curr_key = f"L{l_i}"
                 if prev_key in partial_waves_dict and curr_key in partial_waves_dict:
                     prev_contrib = partial_waves_dict[prev_key]
                     curr_contrib = partial_waves_dict[curr_key]
                     
-                    # Detect increase (using 1.5x threshold to allow small fluctuations)
-                    if curr_contrib > prev_contrib * 1.5 and prev_contrib > 1e-30 and l_i > 15:
+                    # Stricter detection: 1.2x increase after L=10 indicates instability
+                    if curr_contrib > prev_contrib * 1.2 and prev_contrib > 1e-30 and l_i > 10:
                         nonmono_count += 1
-                        if nonmono_count >= 2:
-                            # Confirmed upturn - don't add this or future contributions
-                            logger.warning("Upturn at L=%d: %.2e > %.2e (prev). Excluding from sum.", 
+                        if nonmono_count >= 1:  # Single increase is enough
+                            logger.warning("Upturn at L=%d: %.2e > %.2e (prev). Stopping sum.", 
                                           l_i, curr_contrib, prev_contrib)
                             should_add = False
                             # Mark as excluded
                             partial_waves_dict[f"{curr_key}_excluded"] = partial_waves_dict.pop(curr_key)
+                            stop_reason = "Numerical instability (upturn)"
                     else:
                         nonmono_count = 0  # Reset on good decay
             
+            # === ACCUMULATE OR STOP ===
             if should_add:
                 for k_amp, v_amp in li_amplitudes.items():
                     if k_amp not in total_amplitudes:
                          total_amplitudes[k_amp] = Amplitudes(np.zeros_like(theta_grid, dtype=complex), np.zeros_like(theta_grid, dtype=complex))
                     
-                    # Add to total
                     total_amplitudes[k_amp].f_theta += v_amp.f_theta
                     total_amplitudes[k_amp].g_theta += v_amp.g_theta
-            else:
-                # Skip this partial wave - break out of loop
-                logger.info("Stopping partial wave sum at L=%d due to numerical instability", l_i)
+            
+            if stop_reason:
+                logger.info("Stopping partial wave sum at L=%d: %s", l_i, stop_reason)
                 break
                 
             # Compute Total CS snapshot
@@ -553,8 +565,7 @@ def compute_total_excitation_cs(
             if l_i % 5 == 0:
                  logger.debug("l_i=%d done. Sigma=%.3e (dL/L=%.1e)", l_i, snap_sigma, rel_change)
 
-            # Check convergence (simple relative change check)
-            # Upturn detection is now done earlier before accumulating
+            # CHECK 3: Convergence by relative change
             if l_i > 10:
                 if rel_change < convergence_threshold:
                     consecutive_small_changes += 1
@@ -574,7 +585,8 @@ def compute_total_excitation_cs(
         
         # Strategy: Submit batches of 10 l_i. Check after each batch.
         import multiprocessing
-        max_workers = os.cpu_count()
+        # Limit workers to prevent memory exhaustion
+        max_workers = 4 
         if max_workers is None: max_workers = 1
         
         sigma_accumulated = 0.0
@@ -705,29 +717,39 @@ def compute_total_excitation_cs(
     
     if partial_waves_dict:
         try:
-            # Extract L indices that were computed
-            l_indices = sorted([int(k[1:]) for k in partial_waves_dict.keys() if k.startswith("L")])
+            # Extract L indices that were computed (skip _excluded keys)
+            l_indices = sorted([int(k[1:]) for k in partial_waves_dict.keys() 
+                               if k.startswith("L") and not k.endswith("_excluded") and k[1:].isdigit()])
+            
+            # Search backwards to find a truly monotonically decaying segment
+            born_topup_added = False
             if len(l_indices) >= 3:
-                L_last = l_indices[-1]
-                val_L   = partial_waves_dict[f"L{L_last}"]
-                val_Lm1 = partial_waves_dict[f"L{L_last-1}"]
-                val_Lm2 = partial_waves_dict[f"L{L_last-2}"]
-                
-                # Check for monotonic decay
-                if (val_L > 0 and val_Lm1 > val_L and val_Lm2 > val_Lm1):
-                    q = val_L / val_Lm1
-                    q_prev = val_Lm1 / val_Lm2
+                for i in range(len(l_indices) - 1, 1, -1):  # Start from end, go backwards
+                    L_try = l_indices[i]
+                    L_m1 = l_indices[i-1]
+                    L_m2 = l_indices[i-2]
                     
-                    # Robustness check
-                    if q < 0.95 and abs(q - q_prev) < 0.2:
-                        tail_cm2 = val_L * q / (1.0 - q)
+                    val_L   = partial_waves_dict.get(f"L{L_try}", 0)
+                    val_Lm1 = partial_waves_dict.get(f"L{L_m1}", 0)
+                    val_Lm2 = partial_waves_dict.get(f"L{L_m2}", 0)
+                    
+                    # Check for strict monotonic decay
+                    if val_L > 0 and val_Lm1 > val_L and val_Lm2 > val_Lm1:
+                        q = val_L / val_Lm1
+                        q_prev = val_Lm1 / val_Lm2
                         
-                        if tail_cm2 > 1e-50: # Avoid noise
-                            # Add to totals (maintain both units consistent)
-                            sigma_total_cm2 += tail_cm2
-                            sigma_total_au = sigma_cm2_to_au(sigma_total_cm2)
-                            partial_waves_dict["born_topup"] = tail_cm2
-                            logger.debug("Top-Up: Added %.2e cm^2 (L>%d, q=%.3f)", tail_cm2, L_last, q)
+                        # Robustness check
+                        if q < 0.95 and abs(q - q_prev) < 0.3:
+                            tail_cm2 = val_L * q / (1.0 - q)
+                            
+                            if tail_cm2 > 1e-50:
+                                sigma_total_cm2 += tail_cm2
+                                sigma_total_au = sigma_cm2_to_au(sigma_total_cm2)
+                                partial_waves_dict["born_topup"] = tail_cm2
+                                logger.debug("Top-Up: Added %.2e cm^2 (L>%d, q=%.3f)", tail_cm2, L_try, q)
+                                born_topup_added = True
+                                break  # Found valid segment, stop searching
+                    
         except Exception as e:
             # Non-critical enhancement
             logger.debug("Top-Up: Skipped: %s", e)
