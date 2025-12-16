@@ -750,7 +750,7 @@ def run_visualization():
 # --- Main Loop ---
 
 def main():
-    print_header("DWBA CALCULATION SUITE v2")
+    print_header("DWBA CALCULATION SUITE")
     
     run_name = input("\n  Simulation Name [default]: ").strip()
     if not run_name:

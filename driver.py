@@ -375,20 +375,21 @@ def compute_total_excitation_cs(
     
     L_requested = chan.L_max_projectile
     # Heuristic: L_dynamic = k_i_au * R_eff + buffer.
-    # Using R_eff = 10.0 (generous for low n) + safety 10.
-    L_dynamic = int(k_i_au * 12.0) + 15
+    # Using R_eff = 8.0 + safety 10 for proper convergence
+    L_dynamic = int(k_i_au * 8.0) + 10
+    
+    # Physical upper bound: L_max ~ k * r_max (classical turning point)
+    # Beyond this, centrifugal barrier dominates and contributions should be zero.
+    L_physical_max = int(k_i_au * 40.0)
     
     # We take the maximum of requested (user spec) and dynamic (convergence safety)
-    # But we also clamp it to avoid excessive runtime if E is huge, 
-    # though 1000 eV requires ~80-100.
     L_max_proj = max(L_requested, L_dynamic)
-
     
-    # Cap global max to reasonable value (e.g. 150) to prevent infinite/too long runs
-    L_max_proj = min(L_max_proj, 150)
+    # But we CAP at physical max to avoid numerical instability
+    L_max_proj = min(L_max_proj, L_physical_max)
     
-    # If user explicitly set a very high L in chan, respect it if < 150 (already handled by max)
-    # If user set small L (e.g. 5 default), this dynamic logic overrides it properly.
+    # Reasonable global cap at 60 - will rely on monotonic decay check to stop early
+    L_max_proj = min(L_max_proj, 60)
     
     logger.info("Auto-L: E=%.1f eV (k=%.2f) -> L_max_proj=%d", E_incident_eV, k_i_au, L_max_proj) 
     
@@ -421,6 +422,7 @@ def compute_total_excitation_cs(
         sigma_accumulated = 0.0
         consecutive_small_changes = 0
         convergence_threshold = 1e-5
+        nonmono_count = 0  # Track non-monotonic decay for instability detection
         
         for l_i in range(L_max_proj + 1):
              # Logic similar to worker but sequential and utilizing GPU integrals where possible
@@ -499,14 +501,42 @@ def compute_total_excitation_cs(
                 
                 sigma_li_contribution = sigma_au_to_cm2(integrate_dcs_over_angles(theta_grid, dcs_li_sum))
                 partial_waves_dict[f"L{l_i}"] = sigma_li_contribution
-
-            for k_amp, v_amp in li_amplitudes.items():
-                if k_amp not in total_amplitudes:
-                     total_amplitudes[k_amp] = Amplitudes(np.zeros_like(theta_grid, dtype=complex), np.zeros_like(theta_grid, dtype=complex))
-                
-                # Add to total
-                total_amplitudes[k_amp].f_theta += v_amp.f_theta
-                total_amplitudes[k_amp].g_theta += v_amp.g_theta
+            
+            # UPTURN CHECK BEFORE ADDING TO TOTAL:
+            # Check if this partial wave contribution is increasing (sign of numerical instability)
+            should_add = True
+            if l_i >= 2:
+                prev_key = f"L{l_i-1}"
+                curr_key = f"L{l_i}"
+                if prev_key in partial_waves_dict and curr_key in partial_waves_dict:
+                    prev_contrib = partial_waves_dict[prev_key]
+                    curr_contrib = partial_waves_dict[curr_key]
+                    
+                    # Detect increase (using 1.5x threshold to allow small fluctuations)
+                    if curr_contrib > prev_contrib * 1.5 and prev_contrib > 1e-30 and l_i > 15:
+                        nonmono_count += 1
+                        if nonmono_count >= 2:
+                            # Confirmed upturn - don't add this or future contributions
+                            logger.warning("Upturn at L=%d: %.2e > %.2e (prev). Excluding from sum.", 
+                                          l_i, curr_contrib, prev_contrib)
+                            should_add = False
+                            # Mark as excluded
+                            partial_waves_dict[f"{curr_key}_excluded"] = partial_waves_dict.pop(curr_key)
+                    else:
+                        nonmono_count = 0  # Reset on good decay
+            
+            if should_add:
+                for k_amp, v_amp in li_amplitudes.items():
+                    if k_amp not in total_amplitudes:
+                         total_amplitudes[k_amp] = Amplitudes(np.zeros_like(theta_grid, dtype=complex), np.zeros_like(theta_grid, dtype=complex))
+                    
+                    # Add to total
+                    total_amplitudes[k_amp].f_theta += v_amp.f_theta
+                    total_amplitudes[k_amp].g_theta += v_amp.g_theta
+            else:
+                # Skip this partial wave - break out of loop
+                logger.info("Stopping partial wave sum at L=%d due to numerical instability", l_i)
+                break
                 
             # Compute Total CS snapshot
             snap_dcs = np.zeros_like(theta_grid, dtype=float)
@@ -523,9 +553,13 @@ def compute_total_excitation_cs(
             if l_i % 5 == 0:
                  logger.debug("l_i=%d done. Sigma=%.3e (dL/L=%.1e)", l_i, snap_sigma, rel_change)
 
-            # Check convergence
-            if l_i > 10 and rel_change < convergence_threshold:
-                consecutive_small_changes += 1
+            # Check convergence (simple relative change check)
+            # Upturn detection is now done earlier before accumulating
+            if l_i > 10:
+                if rel_change < convergence_threshold:
+                    consecutive_small_changes += 1
+                else:
+                    consecutive_small_changes = 0
             else:
                 consecutive_small_changes = 0
             

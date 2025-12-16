@@ -211,8 +211,15 @@ def calculate_amplitude_contribution(
     
     # Common factors
     # Eq 412: f = (2/pi) * i^(li+lf) * ...
-    # We use 2.0/np.pi to match Article Eqs. 412 and 448 exactly.
-    pref_common = (2.0/np.pi) * (1.0/(ki*kf))
+    # 
+    # δ(k-k') Continuum Normalization Correction:
+    # Article Eq.150-162 uses δ(k-k') normalized waves: asymptotic amplitude = √(2/π)
+    # Code's continuum.py uses unit-amplitude normalization: asymptotic amplitude = 1
+    # Each wave is √(π/2) too large → two waves in integral: factor (π/2) too large
+    # Correct by multiplying by (2/π) to convert to δ-normalized convention
+    DELTA_NORM_CORRECTION = 2.0 / np.pi
+    
+    pref_common = (2.0/np.pi) * (1.0/(ki*kf)) * DELTA_NORM_CORRECTION
     
     # Evaluate Spherical Harmonics for scattered electron Y_{l_f, -mu_f}(k_f)
     # k_f direction is theta. phi can be 0 (azimuthal symmetry for TCS).
