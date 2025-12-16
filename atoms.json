@@ -1,20 +1,40 @@
 {
+  "_comment": "SAE Model Potential Parameters. Sources: Tong-Lin (2005) Table 1, NIST ASD.",
   "H": {
     "name": "H",
     "Z": 1.0,
     "Zc": 1.0,
     "a_params": [
       0.0,
-      1.0,
       0.0,
-      1.0,
       0.0,
-      1.0
+      0.0,
+      0.0,
+      0.0
     ],
     "default_n": 1,
     "default_l": 0,
-    "ip_ev": 13.6,
-    "description": "Hydrogen Atom (Exact Coulomb)"
+    "ip_ev": 13.598,
+    "source": "Tong-Lin (2005) Table 1",
+    "description": "Hydrogen - Pure Coulomb (all screening terms zero)"
+  },
+  "He": {
+    "name": "He",
+    "Z": 2.0,
+    "Zc": 1.0,
+    "a_params": [
+      1.231,
+      0.662,
+      -1.325,
+      1.236,
+      -0.231,
+      0.48
+    ],
+    "default_n": 1,
+    "default_l": 0,
+    "ip_ev": 24.587,
+    "source": "Tong-Lin (2005) Table 1",
+    "description": "Helium - Tong-Lin verified parameters"
   },
   "He+": {
     "name": "He+",
@@ -22,16 +42,17 @@
     "Zc": 2.0,
     "a_params": [
       0.0,
-      1.0,
       0.0,
-      1.0,
       0.0,
-      1.0
+      0.0,
+      0.0,
+      0.0
     ],
     "default_n": 1,
     "default_l": 0,
-    "ip_ev": 54.42,
-    "description": "Helium Ion (Hydrogenic Z=2)"
+    "ip_ev": 54.418,
+    "source": "Hydrogenic",
+    "description": "Helium Ion - Pure Coulomb with Z=2"
   },
   "Li": {
     "name": "Li",
@@ -47,42 +68,9 @@
     ],
     "default_n": 2,
     "default_l": 0,
-    "ip_ev": 5.3917,
-    "description": "Li (2s matched to NIST)"
-  },
-  "Ne": {
-    "name": "Ne",
-    "Z": 10.0,
-    "Zc": 1.0,
-    "a_params": [
-      9.355884873360463,
-      0.9684557156181774,
-      0.00010816136447152103,
-      0.9902453680605035,
-      0.00014309711936572885,
-      1.0080612918792842
-    ],
-    "default_n": 2,
-    "default_l": 1,
-    "ip_ev": 21.565,
-    "description": "Ne (2p matched to NIST)"
-  },
-  "Ne+": {
-    "name": "Ne+",
-    "Z": 10.0,
-    "Zc": 2.0,
-    "a_params": [
-      8.954204730107165,
-      0.9775082740684123,
-      0.00018688164152683587,
-      1.0316558611312678,
-      -2.967536922620473e-05,
-      1.0054683589130442
-    ],
-    "default_n": 2,
-    "default_l": 1,
-    "ip_ev": 40.963,
-    "description": "Ne+ (2p matched to NIST)"
+    "ip_ev": 5.392,
+    "source": "Fitted",
+    "description": "Li (2s state)"
   },
   "Be": {
     "name": "Be",
@@ -99,7 +87,8 @@
     "default_n": 2,
     "default_l": 0,
     "ip_ev": 9.323,
-    "description": "Be (2s matched to NIST)"
+    "source": "Fitted",
+    "description": "Be (2s state)"
   },
   "C": {
     "name": "C",
@@ -116,23 +105,115 @@
     "default_n": 2,
     "default_l": 1,
     "ip_ev": 11.26,
-    "description": "C (2p matched to NIST)"
+    "source": "Fitted",
+    "description": "C (2p state)"
+  },
+  "Ne": {
+    "name": "Ne",
+    "Z": 10.0,
+    "Zc": 1.0,
+    "a_params": [
+      8.069,
+      2.148,
+      -3.57,
+      1.986,
+      0.931,
+      0.602
+    ],
+    "default_n": 2,
+    "default_l": 1,
+    "ip_ev": 21.565,
+    "source": "Tong-Lin (2005) Table 1",
+    "description": "Neon - Tong-Lin verified parameters"
   },
   "Na": {
     "name": "Na",
     "Z": 11.0,
     "Zc": 1.0,
     "a_params": [
-      10.399166131153619,
-      0.514681150714042,
-      0.0010555696455814435,
-      0.6701621710832162,
-      0.0015422558185255349,
-      2.3608502924673966
+      9.636375431552912,
+      0.39832810835063087,
+      1.3296838727784257,
+      1.5289481665116085,
+      2.9920806360741343,
+      0.4636885958956442
     ],
     "default_n": 3,
     "default_l": 0,
     "ip_ev": 5.139,
-    "description": "Na (3s matched to NIST)"
+    "source": "Fitted",
+    "description": "Na (3s state)"
+  },
+  "Ar": {
+    "name": "Ar",
+    "Z": 18.0,
+    "Zc": 1.0,
+    "a_params": [
+      16.039,
+      2.007,
+      -25.543,
+      4.525,
+      0.961,
+      0.443
+    ],
+    "default_n": 3,
+    "default_l": 1,
+    "ip_ev": 15.76,
+    "source": "Tong-Lin (2005) Table 1",
+    "description": "Argon - Tong-Lin verified parameters"
+  },
+  "Rb": {
+    "name": "Rb",
+    "Z": 37.0,
+    "Zc": 1.0,
+    "a_params": [
+      24.023,
+      11.107,
+      115.2,
+      6.629,
+      11.977,
+      1.245
+    ],
+    "default_n": 5,
+    "default_l": 0,
+    "ip_ev": 4.177,
+    "source": "Tong-Lin (2005) Table 1",
+    "description": "Rubidium - Tong-Lin verified parameters"
+  },
+  "Ne+": {
+    "name": "Ne+",
+    "Z": 10.0,
+    "Zc": 2.0,
+    "a_params": [
+      8.043,
+      2.715,
+      0.506,
+      0.982,
+      -0.043,
+      0.401
+    ],
+    "default_n": 2,
+    "default_l": 1,
+    "ip_ev": 40.963,
+    "source": "Tong-Lin (2005) Table 1",
+    "description": "Ne+ - Tong-Lin verified parameters"
+  },
+  "Ar+": {
+    "name": "Ar+",
+    "Z": 18.0,
+    "Zc": 2.0,
+    "a_params": [
+      14.989,
+      2.217,
+      -23.606,
+      4.585,
+      1.011,
+      0.551
+    ],
+    "default_n": 3,
+    "default_l": 1,
+    "ip_ev": 27.63,
+    "source": "Tong-Lin (2005) Table 1",
+    "description": "Ar+ - Tong-Lin verified parameters"
   }
 }

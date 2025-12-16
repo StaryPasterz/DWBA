@@ -28,6 +28,10 @@ def load_database():
             data = json.load(f)
             
         for key, val in data.items():
+            # Skip metadata entries (like _comment)
+            if not isinstance(val, dict):
+                continue
+            
             # Convert list back to CorePotentialParams
             a = val["a_params"]
             params = CorePotentialParams(

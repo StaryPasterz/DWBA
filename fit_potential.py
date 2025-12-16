@@ -1,142 +1,327 @@
 # fit_potential.py
-#
-# Tool to determine optimal CorePotentialParams (a1..a6) for a new atom/ion
-# by fitting the calculated binding energy to the experimental value (NIST).
-#
-# Usage:
-#   python fit_potential.py
-#
-# It will ask for:
-#   - Atom Name (e.g. "Na")
-#   - Nuclear Charge Z (e.g. 11)
-#   - Core Charge Zc (e.g. 1 for neutral, 2 for +1 ion)
-#   - Target State n, l (e.g. 3, 0 for Na 3s)
-#   - Experimental Binding Energy (e.g. -5.139 eV)
-#
-# Then it runs an optimizer (Nelder-Mead) to minimize |E_calc - E_exp|.
-# Finally, it prints the code snippet to add to atom_library.py.
-#
+"""
+SAE Model Potential Parameter Fitting Tool
+==========================================
 
+Determines optimal CorePotentialParams (a1..a6) for atoms/ions by fitting
+calculated binding energies to experimental values (NIST).
+
+Methodology
+-----------
+Based on Tong-Lin (2005) approach (J. Phys. B 38, 2593):
+- Original: Fit to DFT self-interaction-corrected numerical potential
+- This implementation: Direct energy matching with global+local optimization
+
+Optimization Strategy (Fast Hybrid Approach)
+---------------------------------------------
+1. Coarse search: Basin-hopping with few local iterations on reduced grid
+2. Local refinement: L-BFGS-B on full grid
+This avoids the slow differential_evolution while still finding good solutions.
+
+Potential Form (article Eq. 69)
+-------------------------------
+    V(r) = -[Zc + a1*exp(-a2*r) + a3*r*exp(-a4*r) + a5*exp(-a6*r)] / r
+
+References
+----------
+- X.M. Tong, C.D. Lin, J. Phys. B 38, 2593 (2005)
+- NIST Atomic Spectra Database
+
+Usage
+-----
+    python fit_potential.py
+"""
+
+from __future__ import annotations
 import numpy as np
-import scipy.optimize
+from scipy.optimize import minimize, basinhopping
 import time
+import json
+import os
+from typing import Optional, Dict, Tuple, List
 
-# Import our physics engine
+from logging_config import get_logger
 from grid import make_r_grid, ev_to_au, au_to_ev
 from potential_core import CorePotentialParams, V_core_on_grid
 from bound_states import solve_bound_states
 
-def solve_binding_energy(a_params, Zc, n_target, l_target, grid):
+logger = get_logger(__name__)
+
+
+# =============================================================================
+# DATABASE FUNCTIONS
+# =============================================================================
+
+def load_atoms_database() -> Dict:
+    """Load atoms database from atoms.json."""
+    db_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "atoms.json")
+    if os.path.exists(db_file):
+        try:
+            with open(db_file, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.warning("Failed to load atoms.json: %s", e)
+    return {}
+
+
+def is_reference_source(source: str) -> bool:
+    """Check if parameters come from a verified reference (protected from re-fitting)."""
+    if not source:
+        return False
+    source_lower = source.lower()
+    return any(ref in source_lower for ref in [
+        "tong-lin", "hydrogenic", "exact", "literature", "reference"
+    ])
+
+
+def load_nist_database() -> Dict:
+    """Load NIST reference data if available."""
+    nist_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nist_data.json")
+    if os.path.exists(nist_file):
+        try:
+            with open(nist_file, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.debug("NIST database not loaded: %s", e)
+    return {}
+
+
+# =============================================================================
+# PHYSICS FUNCTIONS (OPTIMIZED)
+# =============================================================================
+
+def solve_binding_energy_fast(
+    a_params: List[float], 
+    Zc: float, 
+    n_target: int, 
+    l_target: int, 
+    grid
+) -> float:
     """
-    Calculates the binding energy of the target state (n, l)
-    given the potential parameters [a1, ..., a6].
+    Fast binding energy calculation with error handling.
+    Returns positive value as penalty if unbound/failed.
     """
-    # Unpack params
-    # We restrict params to be reasonable (mostly positive decay rates)
-    # but the optimizer handles the search.
-    a1, a2, a3, a4, a5, a6 = a_params
-    
-    # Construct parameter object
-    params = CorePotentialParams(Zc, a1, a2, a3, a4, a5, a6)
-    
     try:
-        # Build potential
+        a1, a2, a3, a4, a5, a6 = a_params
+        
+        # Quick physics check - avoid obviously bad params
+        if a2 < 0.01 or a4 < 0.01 or a6 < 0.01:
+            return 10.0
+        
+        params = CorePotentialParams(Zc, a1, a2, a3, a4, a5, a6)
         V = V_core_on_grid(grid, params)
         
-        # Solve bound states for specific l
-        states = solve_bound_states(grid, V, l=l_target, n_states_max=n_target+1)
-        
-        # Find the state with correct n_index
-        # Note: solve_bound_states returns n_index=1, 2, ...
-        # For Lithium 2s: l=0.
-        #   n=1 (1s) -> n_index=1 (Core, usually deeply bound)
-        #   n=2 (2s) -> n_index=2 (Valence)
-        # So we look for state with n_index == (n_target - l_target)
-        # E.g. Na 3s (n=3, l=0): n_idx = 3.
+        # Request fewer states for speed
+        states = solve_bound_states(grid, V, l=l_target, n_states_max=n_target + 1)
         
         target_n_index = n_target - l_target
-        
         for s in states:
             if s.n_index == target_n_index:
                 return s.energy_au
                 
-        # If not found (unbound?), return a penalty
-        return 1.0 # Positive energy (unbound) penalty
+        return 1.0  # Unbound penalty
         
     except Exception:
-        return 10.0 # Interaction failure penalty
+        return 10.0  # Numerical failure penalty
 
-def cost_function(a_params, Zc, n_target, l_target, target_E_au, grid, Z_nuclear=None):
-    """
-    Cost = |E_calc - E_target| + physics penalties
-    """
+
+def cost_function_fast(
+    a_params: np.ndarray, 
+    Zc: float, 
+    n_target: int, 
+    l_target: int, 
+    target_E_au: float, 
+    grid, 
+    Z_nuclear: float
+) -> float:
+    """Fast cost function with physics constraints."""
     a1, a2, a3, a4, a5, a6 = a_params
     
-    # Enforce constraints via penalty
-    # Decay rates a2, a4, a6 must be positive > 0.01 to be physical
-    if a2 < 0.01 or a4 < 0.01 or a6 < 0.01:
-        return 100.0 + abs(a2)+abs(a4)+abs(a6)
+    # Hard constraints
+    if a2 < 0.05 or a4 < 0.05 or a6 < 0.05:
+        return 1000.0
     
-    # Physics constraint: Z_eff(0) = Zc + a1 + a5 should be close to Z_nuclear
-    if Z_nuclear is not None:
-        z_eff_0 = Zc + a1 + a5
-        if abs(z_eff_0 - Z_nuclear) > 1.0:
-            return 50.0 + abs(z_eff_0 - Z_nuclear)
-
-    E_calc = solve_binding_energy(a_params, Zc, n_target, l_target, grid)
+    # Physics: Z_eff(0) = Zc + a1 + a5 ~ Z_nuclear
+    z_eff_0 = Zc + a1 + a5
+    z_penalty = 0.0
+    if abs(z_eff_0 - Z_nuclear) > 3.0:
+        z_penalty = 5.0 * (abs(z_eff_0 - Z_nuclear) - 3.0)
     
-    diff = abs(E_calc - target_E_au)
-    return diff
+    E_calc = solve_binding_energy_fast(list(a_params), Zc, n_target, l_target, grid)
+    
+    # Squared error + penalty
+    energy_error = 100.0 * (E_calc - target_E_au) ** 2
+    
+    return energy_error + z_penalty
 
 
-def verify_fit(name, Z, Zc, n, l, ip_ev, a_params):
+# =============================================================================
+# FAST HYBRID OPTIMIZER
+# =============================================================================
+
+def get_initial_guess(Z: float, Zc: float, name: str = "") -> List[float]:
     """
-    Verify the fitted parameters by computing bound state energy.
-    Returns (success, calculated_E_eV, expected_E_eV, diff_eV)
-    """
-    from grid import make_r_grid, au_to_ev
-    from potential_core import CorePotentialParams, V_core_on_grid
-    from bound_states import solve_bound_states
+    Generate physics-based initial guess.
     
-    grid = make_r_grid(r_min=1e-4, r_max=200.0, n_points=2000)
+    Based on patterns in Tong-Lin Table 1:
+    - a1 ≈ Z - Zc (screening strength)
+    - a2 ≈ 0.5-2.0 for light atoms, larger for heavy
+    - a3 can be large positive (Rb) or negative (Ar)
+    - a5 often small, can be negative
+    """
+    # Default alkali-like estimate
+    a1 = Z - Zc
+    a2 = min(2.0 + 0.1 * Z, 12.0)
+    a3 = 0.0  # Start neutral
+    a4 = 1.0
+    a5 = 0.0
+    a6 = 1.0
+    
+    return [a1, a2, a3, a4, a5, a6]
+
+
+def get_parameter_bounds(Z: float, Zc: float) -> List[Tuple[float, float]]:
+    """Optimized bounds based on Tong-Lin data analysis."""
+    return [
+        (-2.0, Z + 5.0),      # a1
+        (0.1, 12.0),          # a2
+        (-30.0, 120.0),       # a3 (wide for Rb)
+        (0.1, 8.0),           # a4
+        (-5.0, 15.0),         # a5
+        (0.1, 5.0),           # a6
+    ]
+
+
+def optimize_fast(
+    Z: float, 
+    Zc: float, 
+    n_target: int, 
+    l_target: int, 
+    target_E_au: float,
+    progress_callback=None
+) -> Tuple[List[float], float, bool]:
+    """
+    Fast hybrid optimization: basin-hopping + local refinement.
+    
+    Returns
+    -------
+    tuple
+        (best_params, final_cost, success)
+    """
+    # Phase 1: Coarse grid for speed
+    logger.info("Phase 1: Coarse search (500 pts)...")
+    if progress_callback:
+        progress_callback("Phase 1: Coarse search...")
+    
+    grid_coarse = make_r_grid(r_min=1e-4, r_max=150.0, n_points=500)
+    bounds = get_parameter_bounds(Z, Zc)
+    x0 = get_initial_guess(Z, Zc)
+    
+    args = (Zc, n_target, l_target, target_E_au, grid_coarse, Z)
+    
+    # Basin-hopping with few iterations
+    minimizer_kwargs = {
+        "method": "L-BFGS-B",
+        "bounds": bounds,
+        "args": args,
+        "options": {"maxiter": 100}
+    }
+    
+    try:
+        result = basinhopping(
+            cost_function_fast,
+            x0,
+            minimizer_kwargs=minimizer_kwargs,
+            niter=15,  # Few hops for speed
+            T=1.0,
+            stepsize=0.5,
+            seed=42
+        )
+        x_coarse = result.x
+        logger.info("Coarse search done. Cost: %.4f", result.fun)
+    except Exception as e:
+        logger.warning("Basin-hopping failed: %s, using initial guess", e)
+        x_coarse = x0
+    
+    # Phase 2: Fine grid refinement
+    logger.info("Phase 2: Fine refinement (2000 pts)...")
+    if progress_callback:
+        progress_callback("Phase 2: Fine refinement...")
+    
+    grid_fine = make_r_grid(r_min=1e-4, r_max=200.0, n_points=2000)
+    args_fine = (Zc, n_target, l_target, target_E_au, grid_fine, Z)
+    
+    result_fine = minimize(
+        cost_function_fast,
+        x_coarse,
+        args=args_fine,
+        method="L-BFGS-B",
+        bounds=bounds,
+        options={"maxiter": 200, "ftol": 1e-10}
+    )
+    
+    best_params = list(result_fine.x)
+    final_cost = result_fine.fun
+    success = final_cost < 0.01  # Energy error < 0.1 mHa
+    
+    logger.info("Optimization complete. Cost: %.2e, Success: %s", final_cost, success)
+    
+    return best_params, final_cost, success
+
+
+# =============================================================================
+# VERIFICATION
+# =============================================================================
+
+def verify_fit(
+    name: str, 
+    Z: float, 
+    Zc: float, 
+    n: int, 
+    l: int, 
+    ip_ev: float, 
+    a_params: List[float], 
+    grid=None
+) -> Tuple[bool, Optional[float], float, Optional[float]]:
+    """Verify fitted parameters by computing binding energy."""
+    if grid is None:
+        grid = make_r_grid(r_min=1e-4, r_max=200.0, n_points=2000)
+    
     params = CorePotentialParams(Zc, *a_params)
     V = V_core_on_grid(grid, params)
     
-    states = solve_bound_states(grid, V, l=l, n_states_max=n+2)
+    states = solve_bound_states(grid, V, l=l, n_states_max=n + 2)
     target_n_idx = n - l
     
     for s in states:
         if s.n_index == target_n_idx:
-            calc_E_eV = s.energy_au * 27.211386
+            calc_E_eV = au_to_ev(s.energy_au)
             expected_E_eV = -ip_ev
             diff = abs(calc_E_eV - expected_E_eV)
-            success = diff < 0.1  # Within 0.1 eV is success
+            success = diff < 0.1  # 0.1 eV threshold
+            
+            logger.debug("Verify: calc=%.4f eV, exp=%.4f eV, diff=%.4f eV", 
+                        calc_E_eV, expected_E_eV, diff)
             return success, calc_E_eV, expected_E_eV, diff
     
     return False, None, -ip_ev, None
 
-import json
-import os
 
-# ... optimization code ...
+# =============================================================================
+# FILE I/O
+# =============================================================================
 
-def save_to_json(name, Z, Zc, n, l, ip_ev, a_params):
-    """
-    Saves the optimize parameters to atoms.json
-    """
-    # Use absolute path relative to this script
+def save_to_json(
+    name: str, Z: float, Zc: float, n: int, l: int, 
+    ip_ev: float, a_params: List[float], source: str = "Fitted"
+):
+    """Save optimized parameters to atoms.json."""
     base_dir = os.path.dirname(os.path.abspath(__file__))
     db_file = os.path.join(base_dir, "atoms.json")
     
-    data = {}
-    if os.path.exists(db_file):
-        try:
-            with open(db_file, "r") as f:
-                data = json.load(f)
-        except:
-            data = {}
-            
-    # Update/Add entry
+    data = load_atoms_database()
+    
+    l_char = 'spdf'[l] if l < 4 else f'l={l}'
     data[name] = {
         "name": name,
         "Z": float(Z),
@@ -145,296 +330,205 @@ def save_to_json(name, Z, Zc, n, l, ip_ev, a_params):
         "default_n": int(n),
         "default_l": int(l),
         "ip_ev": float(abs(ip_ev)),
-        "description": f"{name} ({n}{'spdf'[l] if l<4 else 'l='+str(l)} matched to NIST)"
+        "source": source,
+        "description": f"{name} ({n}{l_char} state)"
     }
     
     try:
-        with open(db_file, "w") as f:
+        with open(db_file, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
-        print(f"\n[SUCCESS] Automatically saved '{name}' to:\n  {db_file}")
+        logger.info("Saved '%s' to atoms.json", name)
+        print(f"\n[SUCCESS] Saved '{name}' to {db_file}")
     except Exception as e:
-        print(f"\n[ERROR] Failed to save atoms.json: {e}")
+        logger.error("Failed to save: %s", e)
+        print(f"\n[ERROR] Failed to save: {e}")
+
+
+# =============================================================================
+# MAIN INTERACTIVE TOOL
+# =============================================================================
 
 def main():
-    print("=== Model Potential Fitter (Self-Consistent) ===")
-    print("This tool finds parameters a1..a6 to match NIST energies.")
+    print("=" * 60)
+    print("SAE Model Potential Fitter (Fast Hybrid Method)")
+    print("=" * 60)
+    print()
+    print("Method: Basin-Hopping + L-BFGS-B (coarse→fine grid)")
+    print("Reference: X.M. Tong, C.D. Lin, J. Phys. B 38, 2593 (2005)")
+    print()
     
-    # --- 1. LOAD LOCAL DATABASE (atoms.json) ---
-    atoms_file = os.path.join(os.path.dirname(__file__), "atoms.json")
-    EXISTING_ATOMS = {}
-    if os.path.exists(atoms_file):
-        try:
-            with open(atoms_file, "r") as f:
-                 EXISTING_ATOMS = json.load(f)
-        except:
-            pass
-
-    # --- 2. LOAD INTERNET/REFERENCE DATABASE (nist_data.json) ---
-    # In a real app, this might be a web fetch. Here we treat this file as "The Cloud".
-    known_file = os.path.join(os.path.dirname(__file__), "nist_data.json")
-    KNOWN_ATOMS = {}
-    if os.path.exists(known_file):
-        try:
-            with open(known_file, "r") as f:
-                KNOWN_ATOMS = json.load(f)
-        except:
-            pass 
-
+    EXISTING_ATOMS = load_atoms_database()
+    KNOWN_ATOMS = load_nist_database()
+    
     name = input("Atom Name (e.g. Na): ").strip()
     
-    d = {}
-    source = "None"
-
-    # --- PRIORITY CHECK ---
+    d: Dict = {}
+    source = "Manual"
     
-    # Priority A: Local File
+    # Check existing database
     if name in EXISTING_ATOMS:
         entry = EXISTING_ATOMS[name]
+        entry_source = entry.get("source", "")
+        
+        if is_reference_source(entry_source):
+            print(f"\n[REFERENCE] '{name}' has verified parameters from: {entry_source}")
+            logger.warning("Atom '%s' has reference parameters", name)
+            print("\n" + "!" * 60)
+            print("WARNING: Re-fitting reference parameters is NOT recommended!")
+            print("!" * 60)
+            
+            choice = input("\n(V)iew / (R)efit anyway / (C)ancel? [V/r/c]: ").strip().lower()
+            
+            if choice == 'c':
+                return
+            elif choice != 'r':
+                grid = make_r_grid(r_min=1e-4, r_max=200.0, n_points=2000)
+                success, calc_E, exp_E, diff = verify_fit(
+                    name, entry["Z"], entry["Zc"], 
+                    entry["default_n"], entry["default_l"],
+                    entry["ip_ev"], entry["a_params"], grid
+                )
+                print(f"\nVerification for {name}:")
+                print(f"  Source: {entry_source}")
+                print(f"  Params: {[f'{x:.3f}' for x in entry['a_params']]}")
+                if success:
+                    print(f"  [OK] Calc: {calc_E:.4f} eV, Exp: {exp_E:.4f} eV, Diff: {diff:.4f} eV")
+                return
+        
         d["Z"] = entry["Z"]
         d["Zc"] = entry["Zc"]
         d["n"] = entry["default_n"]
         d["l"] = entry["default_l"]
         if "ip_ev" in entry:
             d["E"] = -entry["ip_ev"]
-        source = "Local File (atoms.json)"
-        print(f"\n[SOURCE: {source}] Found data for {name}.")
-
-    # Priority B: Internet/Reference
+        source = "Local"
+        print(f"\n[LOCAL] Found {name} (source: {entry_source})")
+        
+        if "a_params" in entry:
+            print(f"  Params: {[f'{x:.3f}' for x in entry['a_params'][:3]]}...")
+            choice = input("  (V)iew/(R)efit/(S)kip? [V/r/s]: ").strip().lower()
+            if choice == 's':
+                return
+            if choice != 'r':
+                grid = make_r_grid(r_min=1e-4, r_max=200.0, n_points=2000)
+                verify_fit(name, entry["Z"], entry["Zc"], 
+                          d["n"], d["l"], entry["ip_ev"], entry["a_params"], grid)
+                return
+    
     elif name in KNOWN_ATOMS:
         d = KNOWN_ATOMS[name].copy()
-        source = "Internet/NIST Database"
-        print(f"\n[SOURCE: {source}] Found reference data for {name}.")
-        print("  (Simulated download from NIST repository...)")
-
-    # Priority C: Not Found
+        source = "NIST"
+        print(f"\n[NIST] Found {name}")
+    
     else:
-        print(f"\n[SOURCE: None] Atom '{name}' not found in any database.")
-        print("  You will need to enter parameters manually.")
-        source = "Manual"
-
-
-    # --- CONFIRMATION / FALLBACK ---
+        print(f"\n[MANUAL] Atom '{name}' not found. Enter data:")
+    
+    # Confirm data
     if "Z" in d and "E" in d:
-        print(f"  Z={d['Z']}, Zc={d['Zc']}, State={d['n']}{'spdf'[d['l']] if d['l']<4 else 'l='+str(d['l'])}")
-        print(f"  Binding Energy E = {d['E']} eV")
+        l_char = 'spdf'[d['l']] if d['l'] < 4 else f"l={d['l']}"
+        print(f"  Z={d['Z']}, Zc={d['Zc']}, State={d['n']}{l_char}, E={d['E']} eV")
         
-        confirm = input("Use these values? [Y(es)/n(o)/c(ustom)]: ").strip().lower()
-        
-        if confirm == 'n':
-            # User wants to check next source? Or just manual?
-            # If we were Local, maybe they want Internet version?
-            # For simplicity, if they reject, we go to Manual.
-            print("  Switching to Manual Input.")
-            d = {} 
-        elif confirm == 'c':
-             print("  Switching to Manual Input.")
-             d = {}
-        else:
-            # Accepted
-            pass
-            
-    # --- MANUAL INPUT FALLBACK ---
+        if input("Use these? [Y/n]: ").strip().lower() == 'n':
+            d = {}
+    
+    # Manual input
     if 'Z' not in d:
         try:
-            def get_in(prompt, default):
-                p = f"{prompt} [{default}]: " if default is not None else f"{prompt}: "
-                val = input(p).strip()
-                if not val and default is not None:
-                    return default
-                return val
-
-            Z = float(get_in("Nuclear Charge Z", KNOWN_ATOMS.get(name, {}).get("Z")))
-            Zc = float(get_in("Core Charge Zc", KNOWN_ATOMS.get(name, {}).get("Zc")))
-            n = int(get_in("Target State n", KNOWN_ATOMS.get(name, {}).get("n")))
-            l = int(get_in("Target State l", KNOWN_ATOMS.get(name, {}).get("l")))
-            E_str = get_in("Experimental Binding Energy in eV", KNOWN_ATOMS.get(name, {}).get("E"))
-            E_exp_eV = float(E_str)
-            
+            Z = float(input("Nuclear Charge Z: "))
+            Zc = float(input("Core Charge Zc: "))
+            n = int(input("Target State n: "))
+            l = int(input("Target State l: "))
+            E_exp_eV = float(input("Binding Energy (eV, negative): "))
+            d = {"Z": Z, "Zc": Zc, "n": n, "l": l, "E": E_exp_eV}
         except ValueError:
-            print("Invalid number format.")
+            print("Invalid input.")
             return
-            
-    else:
-        # Unpack confirmed 'd'
-        try:
-            Z = float(d["Z"])
-            Zc = float(d["Zc"])
-            n = int(d["n"])
-            l = int(d["l"])
-            E_exp_eV = float(d["E"])
-        except ValueError:
-            print("Error in stored data structure.")
-            return
-
-    # Grid setup
-    print("\nSetting up physics grid...")
-    grid = make_r_grid(r_min=1e-4, r_max=200.0, n_points=2000)
+    
+    Z = float(d["Z"])
+    Zc = float(d["Zc"])
+    n = int(d["n"])
+    l = int(d["l"])
+    E_exp_eV = float(d["E"])
     
     target_E_au = ev_to_au(E_exp_eV)
     
-    # --- OPTIMIZATION / PLOTTING LOGIC ---
-    run_optimization = True
-    best_params = None
-
-    if source == "Local File (atoms.json)":
-        # Check if we have params
-        if "a_params" in entry:
-            print(f"  Atom already has fitted parameters: {entry['a_params']}")
-            choice = input("  (P)lot/View existing potential or (R)efit? [P/r]: ").strip().lower()
-            if choice not in ['r', 'refit']:
-                print("  Skipping optimization. Using existing parameters.")
-                run_optimization = False
-                best_params = entry["a_params"]
-                # Need to update E_exp_eV from entry if not already set
-                if "ip_ev" in entry: E_exp_eV = float(entry["ip_ev"]) # IP is positive eV
+    logger.info("Starting fit: %s (Z=%d, n=%d, l=%d)", name, Z, n, l)
+    print(f"\nTarget E = {target_E_au:.6f} a.u. ({E_exp_eV:.4f} eV)")
+    print("\nOptimizing (typically 5-15 seconds)...\n")
     
-    if run_optimization:
-        print(f"Target E = {target_E_au:.5f} a.u. ({E_exp_eV:.3f} eV)")
-        print("Starting optimization (Nelder-Mead)... please wait.")
-        
-        # Generic Guess
-        # a1=2.0 (screen 1s), a2=Z (decay fast)
-        x0 = [Z-1.0, 1.0, 0.0, 1.0, 0.0, 1.0] 
-        
-        # --- KNOWN PRESETS (Better Initial Guesses) ---
-        # Heuristics for common alkali-like systems
-        if name in ["Li", "Na", "K", "Rb", "Cs"]:
-            # Strong core screening
-            x0 = [Z-Zc, 0.8*Z, 0.0, 1.0, 0.0, 1.0]
-
-        t0 = time.time()
-        
-        # Multi-start optimization for robustness
-        best_result = None
-        best_cost = float('inf')
-        
-        # Try multiple initial guesses
-        initial_guesses = [
-            x0,  # Default guess
-            [Z-Zc, Z*0.5, 0.0, 1.0, 0.0, 1.0],  # Alternative 1
-            [Z-Zc, Z, 0.001, 0.5, 0.001, 2.0],  # Alternative 2
-        ]
-        
-        for i, guess in enumerate(initial_guesses):
-            print(f"  Trying initial guess {i+1}/{len(initial_guesses)}...")
-            res = scipy.optimize.minimize(
-                cost_function, 
-                guess, 
-                args=(Zc, n, l, target_E_au, grid, Z),
-                method='Nelder-Mead',
-                options={'maxiter': 2000, 'xatol': 1e-6, 'fatol': 1e-8}
-            )
-            if res.fun < best_cost:
-                best_cost = res.fun
-                best_result = res
-        
-        res = best_result
-        dt = time.time() - t0
-        
-        print(f"\nOptimization Finished in {dt:.2f}s.")
-        print(f"Success: {res.success}")
-        print(f"Final Cost (Error in a.u.): {res.fun:.2e}")
-        
-        best_params = res.x
-        
-        # Auto-save only if we optimized
-        print("\nSaving results...")
-        save_to_json(name, Z, Zc, n, l, abs(E_exp_eV), best_params)
-
-    # --- FINAL CALCULATION ---
-    E_final_au = solve_binding_energy(best_params, Zc, n, l, grid)
-    E_final_eV = au_to_ev(E_final_au)
+    t0 = time.time()
     
-    # User might track IP (positive) or Binding (negative)
-    # We display comparing magnitudes usually
-    print(f"\nCalculated Binding E = {E_final_eV:.4f} eV")
-    print(f"Reference Binding E  = {E_exp_eV if E_exp_eV < 0 else -E_exp_eV:.4f} eV")
-    print(f"Diff                 = {abs(abs(E_final_eV) - abs(E_exp_eV)):.4f} eV")
+    def progress(msg):
+        print(f"  {msg}")
     
-    # --- AUTOMATIC DIAGNOSTIC VERIFICATION ---
-    print("\n" + "="*50)
-    print("AUTOMATIC VERIFICATION")
-    print("="*50)
-    success, calc_E, exp_E, diff = verify_fit(name, Z, Zc, n, l, abs(E_exp_eV), best_params)
+    best_params, final_cost, success = optimize_fast(
+        Z, Zc, n, l, target_E_au,
+        progress_callback=progress
+    )
     
-    if success:
-        print(f"[SUCCESS] Fitted parameters verified!")
-        print(f"  Calculated: {calc_E:.4f} eV")
-        print(f"  Expected:   {exp_E:.4f} eV")
-        print(f"  Difference: {diff:.4f} eV (< 0.1 eV threshold)")
+    dt = time.time() - t0
+    
+    print(f"\nDone in {dt:.1f}s. Cost: {final_cost:.2e}")
+    
+    # Print parameters
+    print("\n" + "-" * 40)
+    print("Fitted Parameters:")
+    for pname, val in zip(['a1','a2','a3','a4','a5','a6'], best_params):
+        print(f"  {pname} = {val:+.6f}")
+    
+    # Verify
+    print("\n" + "=" * 40)
+    print("VERIFICATION")
+    grid = make_r_grid(r_min=1e-4, r_max=200.0, n_points=2000)
+    success_v, calc_E, exp_E, diff = verify_fit(name, Z, Zc, n, l, abs(E_exp_eV), best_params, grid)
+    
+    if success_v:
+        print(f"[SUCCESS] Calc: {calc_E:.4f} eV, Exp: {exp_E:.4f} eV, Diff: {diff:.4f} eV")
     else:
-        if diff is not None:
-            print(f"[WARNING] Fitting not fully successful!")
-            print(f"  Calculated: {calc_E:.4f} eV")
-            print(f"  Expected:   {exp_E:.4f} eV")
-            print(f"  Difference: {diff:.4f} eV (> 0.1 eV threshold)")
-            print("\n  Consider:")
-            print("  1. Running with more iterations (modify maxiter)")
-            print("  2. Trying different initial guesses")
-            print("  3. Checking if target state (n,l) is correct")
-        else:
-            print(f"[ERROR] Could not find target bound state!")
-            print(f"  Expected energy: {exp_E:.4f} eV")
-    print("="*50)
-
+        print(f"[WARNING] Diff: {diff:.4f} eV (threshold 0.1 eV)")
     
-    # --- PHYSICALITY CHECK & PLOTTING ---
+    z_eff_0 = Zc + best_params[0] + best_params[4]
+    print(f"Z_eff(r→0) = {z_eff_0:.2f} (target: {Z:.0f})")
+    
+    if input("\nSave? [Y/n]: ").strip().lower() != 'n':
+        save_to_json(name, Z, Zc, n, l, abs(E_exp_eV), best_params, "Fitted")
+    
+    # Optional plot
     try:
         import matplotlib.pyplot as plt
         
-        # Calculate final potential and Z_eff
         V = V_core_on_grid(grid, CorePotentialParams(Zc, *best_params))
         r = grid.r
         Z_eff = -r * V
         
-        # Check Z_eff limits
-        z_eff_0 = Z_eff[0] # Should be close to Z
-        z_eff_inf = Z_eff[-1] # Should be close to Zc
+        plt.figure(figsize=(10, 4))
         
-        print("\n--- Physicality Check ---")
-        print(f"Z_eff(r->0) = {z_eff_0:.2f} (Target: {Z})")
-        print(f"Z_eff(r->inf) = {z_eff_inf:.2f} (Target: {Zc})")
-        
-        if abs(z_eff_0 - Z) > 0.5:
-             print("[WARNING] Z_eff at origin deviates significantly from Nuclear Charge Z!")
-             
-        # Plot
-        plt.figure(figsize=(10, 5))
-        
-        # Plot 1: Potential V(r)
         plt.subplot(1, 2, 1)
-        # Compare with pure Coulomb (-Z/r) and asymptotic (-Zc/r)
-        plt.plot(r, V, 'b-', label='Effective V(r)')
-        plt.plot(r, -Zc/r, 'g--', label=f'Asymptotic -{Zc}/r')
+        plt.plot(r, V, 'b-')
+        plt.plot(r, -Zc/r, 'g--', alpha=0.5)
         plt.xlim(0, 5)
-        plt.ylim(-Z*2, 0) # Focus near nucleus
-        plt.title(f"Potential for {name}")
+        plt.ylim(-Z*2, 0)
+        plt.title(f"V(r) for {name}")
         plt.xlabel("r (a.u.)")
-        plt.ylabel("V (a.u.)")
-        plt.legend()
         plt.grid(True)
         
-        # Plot 2: Effective Charge Z_eff(r)
         plt.subplot(1, 2, 2)
-        plt.plot(r, Z_eff, 'r-', label='Z_eff(r)')
-        plt.axhline(Z, color='k', linestyle=':', label='Nuclear Z')
-        plt.axhline(Zc, color='k', linestyle='--', label='Core Zc')
+        plt.plot(r, Z_eff, 'r-')
+        plt.axhline(Z, color='k', linestyle=':')
+        plt.axhline(Zc, color='k', linestyle='--')
         plt.xlim(0, 10)
-        plt.ylim(0, Z+1)
-        plt.title("Effective Charge Profile")
+        plt.ylim(0, Z + 1)
+        plt.title("Z_eff(r)")
         plt.xlabel("r (a.u.)")
-        plt.ylabel("Z_eff")
-        plt.legend()
         plt.grid(True)
         
-        plot_file = f"fit_{name}.png"
-        plt.savefig(plot_file)
-        print(f"[INFO] Fit visualization saved to {plot_file}")
+        plt.tight_layout()
+        plt.savefig(f"fit_{name}.png", dpi=150)
+        print(f"[INFO] Plot saved: fit_{name}.png")
         
-    except ImportError:
-        print("[INFO] Matplotlib not found, skipping plot.")
-    except Exception as e:
-        print(f"[WARNING] Plotting failed: {e}")
+    except Exception:
+        pass
+
 
 if __name__ == "__main__":
     main()
