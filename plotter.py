@@ -89,13 +89,17 @@ def main():
         
         E_raw = np.array([p["energy_eV"] for p in pts])
         Sig_raw = np.array([p["sigma_cm2"] for p in pts])
-        SigMT_raw = np.array([p.get("sigma_mtong_cm2", 0.0) for p in pts])
+        Sig_cal = np.array([p.get("sigma_scaled_cm2", 0.0) for p in pts])
+        Sig_tong = np.array([p.get("sigma_mtong_cm2", 0.0) for p in pts])
+        Factor = np.array([p.get("calibration_factor", 0.0) for p in pts])
         
-        # Calculate Factor (mtong / raw)
-        # Handle zeros safely
-        Factor = np.zeros_like(E_raw)
-        mask = Sig_raw > 1e-50 # Avoid div by zero
-        Factor[mask] = SigMT_raw[mask] / Sig_raw[mask]
+        # Fallbacks if new fields are missing
+        if not np.any(Sig_cal):
+            Sig_cal = Sig_tong
+        if not np.any(Factor):
+            Factor = np.zeros_like(E_raw)
+            mask = Sig_raw > 1e-50
+            Factor[mask] = Sig_cal[mask] / Sig_raw[mask]
         
         # For Ionization or Excitation threshold behavior
         thr = 1.0 
@@ -104,7 +108,8 @@ def main():
         
         X = [conv_E(e, thr) for e in E_raw]
         Y = [conv_S(s) for s in Sig_raw]
-        Y_MT = [conv_S(s) for s in SigMT_raw]
+        Y_cal = [conv_S(s) for s in Sig_cal]
+        Y_tong = [conv_S(s) for s in Sig_tong]
         
         # --- Left Axis (Cross Sections) ---
         color1 = 'tab:blue'
@@ -113,18 +118,20 @@ def main():
         # Article Style: Dotted for DWBA (Uncalibrated), Solid for Calibrated
         if style == 'article':
             l1, = ax.plot(X, Y, 'k:', linewidth=2, label='DWBA (Uncalibrated)')
-            # Only plots calibrated if notably different (alpha != 1), else it's just the same line
-            if np.max(np.abs(np.array(Y) - np.array(Y_MT))) > 1e-20:
-                 l2, = ax.plot(X, Y_MT, 'k-', linewidth=2, label='DWBA + Calibration')
+            if np.max(np.abs(np.array(Y) - np.array(Y_cal))) > 1e-20:
+                 l2, = ax.plot(X, Y_cal, 'k-', linewidth=2, label='DWBA × C(E)')
             else:
-                 l2 = l1 # Placeholder for legend if needed, or skip
+                 l2 = l1
         else:
             l1, = ax.plot(X, Y, 'o--', linewidth=2, color=color1, label='DWBA')
-            # Only plot calibration if valid and different
-            if np.max(np.abs(np.array(Y) - np.array(Y_MT))) > 1e-20:
-                l2, = ax.plot(X, Y_MT, 's-', linewidth=2, color=color2, label='DWBA + Calibration')
-            else:
-                l2 = None
+            l2 = None
+            if np.max(np.abs(np.array(Y) - np.array(Y_cal))) > 1e-20:
+                l2, = ax.plot(X, Y_cal, 's-', linewidth=2, color=color2, label='DWBA × C(E)')
+        
+        # Optional Tong reference if present and distinct from calibrated
+        l_tong = None
+        if np.any(Sig_tong) and np.max(np.abs(np.array(Y_tong) - np.array(Y_cal))) > 1e-20:
+            l_tong, = ax.plot(X, Y_tong, ':', linewidth=1.5, color='tab:red', label='Tong model')
         
         ax.set_xlabel(xlab, fontsize=11)
         ax.set_ylabel(ylab, fontsize=11)
@@ -141,12 +148,13 @@ def main():
         if np.max(Factor) > 0:
             ax2.set_ylim(0, max(1.1, np.max(Factor)*1.1))
         
-        # Legend (Merge handles)
-        # Legend (Merge handles)
-        lns = [l1, l3]
+        # Legend (merge handles)
+        lns = [l1]
         if l2 is not None:
-             lns.insert(1, l2)
-             
+            lns.append(l2)
+        if l_tong is not None:
+            lns.append(l_tong)
+        lns.append(l3)
         labs = [l.get_label() for l in lns]
         ax.legend(lns, labs, loc='best', fontsize=9)
         

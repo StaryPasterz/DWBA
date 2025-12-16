@@ -71,6 +71,7 @@ from dwba_matrix_elements import (
 from sigma_total import (
     integrate_dcs_over_angles,
     sigma_au_to_cm2,
+    sigma_cm2_to_au,
     dcs_dwba
 )
 from dwba_coupling import (
@@ -159,8 +160,9 @@ def _worker_partial_wave(
 
     # Local storage
     local_amplitudes = {}
-    lf_min = max(0, l_i - 10) 
-    lf_max = l_i + 10
+    # Cover full projectile-final range up to configured projectile cap
+    lf_min = 0
+    lf_max = max(chan.L_max_projectile, l_i + chan.L_max_integrals)
     
     for l_f in range(lf_min, lf_max + 1):
         if (l_i + l_f) % 2 != target_parity_change: continue
@@ -197,13 +199,16 @@ def _worker_partial_wave(
                 local_amplitudes[key].f_theta += amps.f_theta
                 local_amplitudes[key].g_theta += amps.g_theta
 
-    # Calculate Sigma Contribution
-    sigma_li_total = 0.0
+    # Calculate Sigma Contribution (integrate local DCS for convergence diagnostics)
+    sigma_li_total_cm2 = 0.0
     if len(local_amplitudes) > 0:
-        val, _ = dcs_dwba(theta_grid, local_amplitudes, Li, chan.N_equiv)
-        sigma_li_total = val
-        
-    return l_i, local_amplitudes, sigma_li_total
+        dcs_local = np.zeros_like(theta_grid, dtype=float)
+        for (Mi, Mf), amps in local_amplitudes.items():
+            dcs_local += dcs_dwba(theta_grid, amps.f_theta, amps.g_theta, k_i_au, k_f_au, Li, chan.N_equiv)
+        sigma_li_total_au = integrate_dcs_over_angles(theta_grid, dcs_local)
+        sigma_li_total_cm2 = sigma_au_to_cm2(sigma_li_total_au)
+    
+    return l_i, local_amplitudes, sigma_li_total_cm2
         
 def _worker_solve_wave(
     l: int,
@@ -434,8 +439,8 @@ def compute_total_excitation_cs(
             
             if chi_i is None: break
             
-            lf_min = max(0, l_i - 10) 
-            lf_max = l_i + 10
+            lf_min = 0
+            lf_max = max(L_max_proj, l_i + chan.L_max_integrals)
             
             # Local amplitude for this l_i
             li_amplitudes = {}
@@ -681,14 +686,14 @@ def compute_total_excitation_cs(
                     
                     # Robustness check
                     if q < 0.95 and abs(q - q_prev) < 0.2:
-                        tail_au = val_L * q / (1.0 - q)
+                        tail_cm2 = val_L * q / (1.0 - q)
                         
-                        if tail_au > 1e-50: # Avoid noise
-                            # Add to totals
-                            sigma_total_au += tail_au
-                            sigma_total_cm2 = sigma_au_to_cm2(sigma_total_au)
-                            partial_waves_dict["born_topup"] = tail_au
-                            logger.debug("Top-Up: Added %.2e cm^2 (L>%d, q=%.3f)", sigma_au_to_cm2(tail_au), L_last, q)
+                        if tail_cm2 > 1e-50: # Avoid noise
+                            # Add to totals (maintain both units consistent)
+                            sigma_total_cm2 += tail_cm2
+                            sigma_total_au = sigma_cm2_to_au(sigma_total_cm2)
+                            partial_waves_dict["born_topup"] = tail_cm2
+                            logger.debug("Top-Up: Added %.2e cm^2 (L>%d, q=%.3f)", tail_cm2, L_last, q)
         except Exception as e:
             # Non-critical enhancement
             logger.debug("Top-Up: Skipped: %s", e)
@@ -757,7 +762,20 @@ def compute_excitation_cs_precalc(
     
     E_final_eV = E_incident_eV - prep.dE_target_eV
     if E_final_eV <= 0.0:
-        return DWBAResult(False, E_incident_eV, prep.dE_target_eV, 0.0, 0.0, 0.0, 0.0, None)
+        theta_grid = np.linspace(0.0, np.pi, n_theta)
+        zero_dcs = np.zeros_like(theta_grid)
+        return DWBAResult(
+            False,
+            E_incident_eV,
+            prep.dE_target_eV,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            theta_grid * 180.0 / np.pi,
+            zero_dcs,
+            {}
+        )
 
     k_i_au = float(k_from_E_eV(E_incident_eV))
     k_f_au = float(k_from_E_eV(E_final_eV))

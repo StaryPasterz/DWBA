@@ -491,15 +491,19 @@ def run_scan_excitation(run_name):
                     sorted_pws = sorted(res.partial_waves.items(), key=lambda x: x[1], reverse=True)[:3]
                     logger.debug("E=%.1f: %s", E, ", ".join(f"{k}={v:.1e}" for k,v in sorted_pws))
                 
-                print_result(E, res.sigma_total_cm2)
-                
                 try:
                     tong_sigma = tong_model.calculate_sigma_cm2(E)
-                    scaled_sigma = res.sigma_total_cm2 * alpha
+                    cal_factor = 1.0
+                    if res.sigma_total_cm2 > 0 and tong_model.is_calibrated:
+                        cal_factor = tong_sigma / res.sigma_total_cm2
+                    scaled_sigma = res.sigma_total_cm2 * cal_factor
                 except Exception as cal_err:
                     logger.debug("Calibration calc failed: %s", cal_err)
                     tong_sigma = 0.0
+                    cal_factor = 1.0
                     scaled_sigma = res.sigma_total_cm2
+                
+                print_result(E, scaled_sigma, extra="[calibrated]" if cal_factor != 1.0 else "")
                 
                 results.append({
                     "energy_eV": E,
@@ -508,6 +512,7 @@ def run_scan_excitation(run_name):
                     "sigma_mtong_cm2": tong_sigma,
                     "sigma_scaled_cm2": scaled_sigma,
                     "calibration_alpha": alpha,
+                    "calibration_factor": cal_factor,
                     "partial_waves": res.partial_waves
                 })
                 

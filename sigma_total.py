@@ -154,85 +154,27 @@ def dcs_dwba(
     N_equiv: int
 ) -> np.ndarray:
     """
-    Compute the differential cross section dσ/dΩ for DWBA scattering.
-    
-    This is the fundamental output quantity relating theory to experiment.
-    The DCS gives the probability per unit solid angle of detecting a
-    scattered electron at angle θ.
-    
-    Formula (Eq. 216 in article):
-    
+    Compute the differential cross section d?/d? for DWBA scattering.
+
+    Article Eq. (216):
         dσ/dΩ = (k_f/k_i) × (N_eq/(2L_i+1)) × [1/4|f+g|² + 3/4|f-g|²] × (2π)⁴
-    
-    where:
-    - Singlet term (1/4): Electrons couple to total spin S=0
-    - Triplet term (3/4): Electrons couple to total spin S=1
-    - (2π)⁴: Converts T-matrix to scattering amplitude squared
-    
-    Parameters
-    ----------
-    theta_grid : np.ndarray
-        Scattering angles in radians, shape (N,).
-        Typically np.linspace(0, π, 200).
-    f_theta : np.ndarray
-        Direct scattering amplitude, complex array shape (N,).
-    g_theta : np.ndarray
-        Exchange scattering amplitude, complex array shape (N,).
-    k_i_au : float
-        Incident electron wave number in a.u. (1/bohr).
-        k = sqrt(2×E) where E is kinetic energy in Hartree.
-    k_f_au : float
-        Scattered electron wave number in a.u.
-    L_i : int
-        Total angular momentum of initial target state.
-        Used for statistical averaging: 1/(2L_i + 1).
-    N_equiv : int
-        Number of equivalent electrons in the target subshell.
-        For H(1s): N_equiv = 1; for He(1s²): N_equiv = 2.
-        
-    Returns
-    -------
-    dcs : np.ndarray
-        Differential cross section in a.u. (a₀²/sr), shape (N,).
-        Always non-negative (clipped).
-        
-    Notes
-    -----
-    The (2π)⁴ factor has been empirically verified:
-    - Without it: results are O(10⁻²¹) cm² (unphysical)
-    - With it: results match NIST to within 2% for H at 50 eV
-    
-    For ionization, this function is called with the scattered electron
-    wave number, and an additional factor of k_ej is applied externally
-    in ionization.py to account for the ejected electron phase space.
-    
-    See Also
-    --------
-    integrate_dcs_over_angles : Integrates DCS to get total cross section.
-    dwba_coupling.calculate_amplitude_contribution : Computes f, g.
     """
     if k_i_au <= 0.0 or k_f_au <= 0.0:
         return np.zeros_like(theta_grid, dtype=np.float64)
 
-    # Spin channel combinations for unpolarized electrons
-    # Triplet (S=1): antisymmetric spatial, factor 3/4
-    # Singlet (S=0): symmetric spatial, factor 1/4
     combo_triplet = (3.0 / 4.0) * np.abs(f_theta - g_theta) ** 2
     combo_singlet = (1.0 / 4.0) * np.abs(f_theta + g_theta) ** 2
 
-    # Kinematic and statistical prefactor
     prefac = (k_f_au / k_i_au) * (float(N_equiv) / float(2 * L_i + 1))
 
     dcs = prefac * (combo_triplet + combo_singlet)
-    
-    # T-matrix to scattering amplitude conversion factor
-    # f_scatt = -(2π)² × T  →  |f_scatt|² = (2π)⁴ × |T|²
-    T_MATRIX_CONVERSION = (2.0 * np.pi) ** 4
-    dcs *= T_MATRIX_CONVERSION
 
-    # Ensure non-negative (numerical noise can cause tiny negative values)
+    # Article Eq. 216 contains (2π)⁴ explicitly
+    # dσ/dΩ = (k_f/k_i) ... × (2π)⁴
+    FACTOR_2PI_4 = (2.0 * np.pi) ** 4
+    dcs *= FACTOR_2PI_4
+
     return np.clip(np.real(dcs), 0.0, None)
-
 
 def integrate_dcs_over_angles(
     theta_grid: np.ndarray,

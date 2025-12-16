@@ -458,7 +458,8 @@ def solve_continuum_wave(
     z_ion : float
         Ionic charge seen by the scattering electron at infinity.
         If z_ion=0 (Neutral target), uses Plane Wave (Bessel) matching.
-        If z_ion>0 (Ionic target), uses Coulomb Wave matching.
+        If z_ion>0 (Ionic target), uses Coulomb Wave matching (required for
+        correct long-range phase for ions as in the article).
     tail_fraction : float
         Fraction (0<tail_fraction<1) of the largest-r interval of the grid
         to use for extracting the asymptotic phase. Default 0.1 → last 10%
@@ -636,4 +637,3 @@ def solve_continuum_wave(
         phase_shift=delta_l
     )
     return cw
-
