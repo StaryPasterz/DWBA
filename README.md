@@ -123,6 +123,8 @@ Menu:
 - Uses (2π)⁵ kinematic factor for proper continuum normalization
 - Results include TICS and SDCS data
 
+Outputs: `results_<run>_exc.json`, `results_<run>_ion.json` in project root. Excitation entries include angular grids (`theta_deg`) and both raw/calibrated DCS (a.u. and cm²) for later plotting.
+
 ### Plotting Results
 ```bash
 python plotter.py [style] [results_file.json]

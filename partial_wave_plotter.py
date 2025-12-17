@@ -1,6 +1,6 @@
 # partial_wave_plotter.py
 #
-# Tool for visualizing Partial Wave Analysis data from QRS DWBA results.
+# Tool for visualizing Partial Wave Analysis data from DWBA results.
 #
 
 import json

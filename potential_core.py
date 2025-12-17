@@ -255,6 +255,4 @@ def inspect_core_potential(
     Zeff_small = float(Zeff[0])
     Zeff_large = float(Zeff[-1])
 
-    # Można byłoby też wypisać kilka pierwszych punktów,
-    # ale zwracamy tylko liczby kluczowe.
     return V_small, Zeff_small, V_large, Zeff_large

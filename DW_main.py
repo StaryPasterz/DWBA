@@ -51,6 +51,7 @@ import atom_library
 import plotter
 from calibration import TongModel
 from logging_config import get_logger
+from sigma_total import sigma_au_to_cm2
 
 # Initialize logger for debug messages
 logger = get_logger(__name__)
@@ -516,6 +517,15 @@ def run_scan_excitation(run_name):
                 
                 print_result(E, scaled_sigma, extra="[calibrated]" if cal_factor != 1.0 else "")
                 
+                # Calibrate DCS (a.u.) if available
+                dcs_raw_au = None
+                dcs_cal_au = None
+                theta_deg = None
+                if res.dcs_au is not None and res.theta_deg is not None:
+                    theta_deg = res.theta_deg.tolist() if hasattr(res.theta_deg, "tolist") else list(res.theta_deg)
+                    dcs_raw_au = res.dcs_au.tolist() if hasattr(res.dcs_au, "tolist") else list(res.dcs_au)
+                    dcs_cal_au = (res.dcs_au * cal_factor).tolist()
+
                 results.append({
                     "energy_eV": E,
                     "sigma_au": res.sigma_total_au,
@@ -524,6 +534,9 @@ def run_scan_excitation(run_name):
                     "sigma_scaled_cm2": scaled_sigma,
                     "calibration_alpha": alpha,
                     "calibration_factor": cal_factor,
+                    "theta_deg": theta_deg,
+                    "dcs_au_raw": dcs_raw_au,
+                    "dcs_au_calibrated": dcs_cal_au,
                     "partial_waves": res.partial_waves
                 })
                 
@@ -758,6 +771,42 @@ def run_visualization():
     finally:
         sys.argv = old_argv
 
+def run_dcs_visualization():
+    print("\n=== ANGULAR DCS PLOT GENERATION ===")
+    
+    files = glob.glob("*.json")
+    if not files:
+        print("No .json result files found in current directory.")
+        return
+        
+    print("Available Result Files:")
+    for idx, f in enumerate(files):
+        print(f"{idx+1}. {f}")
+        
+    print("0. Cancel")
+    
+    try:
+        choice_idx = int(input("Select file number: ")) - 1
+    except ValueError:
+        return
+        
+    if choice_idx < 0 or choice_idx >= len(files):
+        return
+        
+    selected_file = files[choice_idx]
+    print(f"Generating DCS plots from '{selected_file}'...")
+    
+    old_argv = sys.argv
+    sys.argv = ["plotter.py", "dcs", selected_file]
+    try:
+        plotter.main()
+    except SystemExit:
+        pass 
+    except Exception as e:
+        print(f"Plotter Error: {e}")
+    finally:
+        sys.argv = old_argv
+
 # --- Main Loop ---
 
 def main():
@@ -774,10 +823,11 @@ def main():
         print_subheader(f"Main Menu  │  Run: {run_name}")
         print("  1. Excitation Cross Sections")
         print("  2. Ionization Cross Sections")
-        print("  3. Generate Plots")
-        print("  4. Partial Wave Analysis")
-        print("  5. Fit Potential (New Atom)")
-        print("  6. Change Run Name")
+        print("  3. Total Cross Sections Plots")
+        print("  4. Angular DCS Plots")
+        print("  5. Partial Wave Analysis")
+        print("  6. Fit Potential (New Atom)")
+        print("  7. Change Run Name")
         print("  q. Quit")
         
         choice = input("\n  Select: ").strip().lower()
@@ -789,6 +839,8 @@ def main():
         elif choice == '3':
             run_visualization()
         elif choice == '4':
+            run_dcs_visualization()
+        elif choice == '5':
             # Run Partial Wave Analysis
             try:
                 import partial_wave_plotter
@@ -799,14 +851,14 @@ def main():
                 partial_wave_plotter.main()
             except Exception as e:
                 print(f"Error running plotter: {e}")
-        elif choice == '5':
+        elif choice == '6':
             # Run Potential Fitter
             try:
                 import fit_potential
                 fit_potential.main()
             except Exception as e:
                 print(f"Error running fitter: {e}")
-        elif choice == '6':
+        elif choice == '7':
             new_name = input("Enter new Simulation Name: ").strip()
             if new_name:
                 run_name = new_name

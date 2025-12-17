@@ -1,6 +1,6 @@
 # plotter.py
 #
-# Universal DWBA Results Plotter (v2).
+# Universal DWBA Results Plotter.
 # Reads scan_results.json and generates high-quality plots.
 #
 # Features:
@@ -47,6 +47,11 @@ def get_style_config(style_name):
         ev_conv = lambda e, thr: e 
         sig_conv = lambda s: s / A0_SQ_CM2
         return ev_conv, sig_conv, "Incident Energy [eV]", r"Cross Section [a.u.]", "_ev_au"
+    
+    elif style_name == 'dcs':
+        ev_conv = lambda e, thr: e
+        sig_conv = lambda s: s  # DCS often plotted in a.u.; caller can rescale
+        return ev_conv, sig_conv, "Scattering Angle [deg]", r"DCS [$a_0^2$/sr]", "_dcs"
 
     else: # std
         ev_conv = lambda e, thr: e
@@ -78,14 +83,50 @@ def main():
     cols = min(n, 2)
     rows = math.ceil(n / cols)
     
-    fig, axes = plt.subplots(rows, cols, figsize=(8*cols, 6*rows))
-    if n == 1: axes = [axes]
-    else: axes = axes.flatten()
+    # DCS mode uses different layout per energy; handled separately below
+    if style == 'dcs':
+        fig, axes = plt.subplots(rows, cols, figsize=(8*cols, 6*rows))
+        if n == 1:
+            axes = [axes]
+        else:
+            axes = axes.flatten()
+    else:
+        fig, axes = plt.subplots(rows, cols, figsize=(8*cols, 6*rows))
+        if n == 1: axes = [axes]
+        else: axes = axes.flatten()
     
     for idx, key in enumerate(keys):
         ax = axes[idx]
         pts = data[key]
         if not pts: continue
+        
+        # --- DCS Plotting Mode ---
+        if style == 'dcs':
+            # Build subplots per energy inside this key
+            # Filter points that contain angular data
+            dcs_entries = [p for p in pts if p.get("theta_deg") and p.get("dcs_au_raw")]
+            if not dcs_entries:
+                ax.axis('off')
+                continue
+            color_raw = 'tab:blue'
+            color_cal = 'tab:orange'
+            for p in dcs_entries:
+                E = p["energy_eV"]
+                theta = np.array(p["theta_deg"])
+                dcs_raw = np.array(p["dcs_au_raw"]) if p.get("dcs_au_raw") else None
+                dcs_cal = np.array(p["dcs_au_calibrated"]) if p.get("dcs_au_calibrated") else None
+                if dcs_raw is None: continue
+                label_raw = f"{E:.1f} eV DWBA"
+                ax.semilogy(theta, dcs_raw, '--', color=color_raw, alpha=0.6, label=label_raw)
+                if dcs_cal is not None:
+                    label_cal = f"{E:.1f} eV DWBA×C(E)"
+                    ax.semilogy(theta, dcs_cal, '-', color=color_cal, alpha=0.8, label=label_cal)
+            ax.set_xlabel(xlab, fontsize=11)
+            ax.set_ylabel(ylab, fontsize=11)
+            ax.grid(True, linestyle=':', alpha=0.7, which='both')
+            ax.set_title(f"{key} (DCS)", fontsize=12, fontweight='bold')
+            ax.legend(fontsize=9)
+            continue
         
         E_raw = np.array([p["energy_eV"] for p in pts])
         Sig_raw = np.array([p["sigma_cm2"] for p in pts])
