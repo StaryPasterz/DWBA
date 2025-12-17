@@ -1,5 +1,5 @@
 """
-DW_main.py - DWBA Calculation Suite v2
+DW_main.py - DWBA Calculation Suite 
 =======================================
 
 Unified interactive interface for Distorted Wave Born Approximation (DWBA)
@@ -242,7 +242,8 @@ def get_energy_list_interactive():
         dens  = get_input_float("  Density (1.0=normal)", 1.0)
         grid = generate_flexible_energy_grid(start, end, dens)
         print_info(f"Log grid: {len(grid)} points")
-        return grid
+        # Return tuple with params for threshold-based regeneration
+        return (grid, 'log', {'end': end, 'density': dens})
     
     print_warning("Invalid choice. Using default grid.")
     return np.arange(10.0, 201.0, 5.0)
@@ -359,7 +360,13 @@ def run_scan_excitation(run_name):
         else:
             print_info("Exchange: Furness-McCarthy")
     
-    energies = get_energy_list_interactive()
+    # Get energy grid (may return tuple for log grid with regeneration params)
+    energy_result = get_energy_list_interactive()
+    if isinstance(energy_result, tuple):
+        energies, grid_type, grid_params = energy_result
+    else:
+        energies = energy_result
+        grid_type, grid_params = None, None
     
     # Convert quantum number n to sorting index n_index
     # For a given l, the states are n=l+1, l+2, ...
@@ -444,19 +451,28 @@ def run_scan_excitation(run_name):
         print_info("Using default α = 1.0")
 
     # --- Smart Grid Adjustment ---
+    # If user's start is below threshold, regenerate grid with threshold as new start
     logger.debug("Threshold dE_thr = %.3f eV", dE_thr)
     if dE_thr > 0:
-        valid_indices = energies > dE_thr
-        if not np.all(valid_indices):
-            energies = energies[valid_indices]
-            start_epsilon = 0.5 
-            new_start = dE_thr + start_epsilon
-            
-            if len(energies) == 0 or energies[0] > new_start + 0.1:
-                energies = np.insert(energies, 0, new_start)
-                
-            energies = np.unique(np.round(energies, 3))
-            print_info(f"Grid adjusted: {len(energies)} points from {energies[0]:.1f} eV")
+        start_epsilon = 0.5  # Start 0.5 eV above threshold
+        new_start = dE_thr + start_epsilon
+        
+        # Check if any points are below threshold
+        if np.any(energies < dE_thr):
+            # For log grid: regenerate with new start preserving end and density
+            if grid_type == 'log' and grid_params:
+                end_eV = grid_params['end']
+                density = grid_params['density']
+                energies = generate_flexible_energy_grid(new_start, end_eV, density)
+                print_info(f"Threshold: {dE_thr:.2f} eV, α = {alpha:.3f}")
+                print_info(f"Grid adjusted: {len(energies)} points from {new_start:.1f} eV")
+            else:
+                # For other grid types: filter and add start point
+                energies = energies[energies > dE_thr]
+                if len(energies) == 0 or energies[0] > new_start + 0.1:
+                    energies = np.insert(energies, 0, new_start)
+                energies = np.unique(np.round(energies, 3))
+                print_info(f"Grid adjusted: {len(energies)} points from {energies[0]:.1f} eV")
             
     # --- Main Loop ---
     

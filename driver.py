@@ -565,14 +565,14 @@ def compute_total_excitation_cs(
             if l_i % 5 == 0:
                  logger.debug("l_i=%d done. Sigma=%.3e (dL/L=%.1e)", l_i, snap_sigma, rel_change)
 
-            # CHECK 3: Convergence by relative change
-            if l_i > 10:
-                if rel_change < convergence_threshold:
-                    consecutive_small_changes += 1
-                else:
-                    consecutive_small_changes = 0
-            else:
-                consecutive_small_changes = 0
+            # CHECK 3: Convergence by relative change (might be implemented as a fallback)
+            #if l_i > 10:
+            #    if rel_change < convergence_threshold:
+            #        consecutive_small_changes += 1
+            #    else:
+            #        consecutive_small_changes = 0
+            #else:
+            #    consecutive_small_changes = 0
             
             if consecutive_small_changes >= 4:
                 logger.info("Convergence: Auto-stop at l_i=%d (Change < %.0e for 4 steps)", l_i, convergence_threshold)

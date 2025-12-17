@@ -16,7 +16,7 @@
     "default_l": 0,
     "ip_ev": 13.598,
     "source": "Tong-Lin (2005) Table 1",
-    "description": "Hydrogen - Pure Coulomb (all screening terms zero)"
+    "description": "Hydrogen - Pure Coulomb"
   },
   "He": {
     "name": "He",
