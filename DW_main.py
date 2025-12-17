@@ -397,18 +397,13 @@ def run_scan_excitation(run_name):
     print_progress("Running pilot at 1000 eV...")
     pilot_E = 1000.0
     
-    # Transition type detection based on angular momentum change
-    # Article: s-s (Set 1) for l_i=0 → l_f=0, s-p (Set 2) for l_i=0 → l_f≠0
-    # Generalize: s-s if both s-orbitals, s-p otherwise
-    if li == 0 and lf == 0:
-        t_type = "s-s"  # s → s transition
-    elif li == 0 and lf > 0:
-        t_type = "s-p"  # s → p/d/f transition (dipole-like)
+    # Transition class for calibration: dipole (|Dl|=1) vs non-dipole (|Dl|!=1)
+    delta_l = abs(lf - li)
+    if delta_l == 1:
+        t_class = "dipole"
     else:
-        # For non-s initial states (p→s, p→p, etc.), use s-p params as default
-        # Article only calibrated for s-initial but mentions this extends to other atoms
-        t_type = "s-p"
-    logger.debug(f"Transition type: {li}→{lf} mapped to '{t_type}'")
+        t_class = "non_dipole"
+    logger.debug(f"Transition |Dl|={delta_l} mapped to class '{t_class}'")
     
     # We need threshold energy to init model.
     # We can get it from a quick bound state check or run one calc.
@@ -437,7 +432,7 @@ def run_scan_excitation(run_name):
     else:
         epsilon_exc_au = -0.5 * (Z**2) / (nf**2) 
 
-    tong_model = TongModel(dE_thr, epsilon_exc_au, transition_type=t_type)
+    tong_model = TongModel(dE_thr, epsilon_exc_au, transition_class=t_class)
     alpha = 1.0
     
     if res_pilot and res_pilot.sigma_total_cm2 > 0:

@@ -48,7 +48,7 @@ class TongModel:
     
     Formula (Eq. 493 of Article):
         sigma(E) = alpha * (pi / dE^2) * exp( 1.5 * (dE - epsilon) / E_i ) * f(E_i/dE)
-        
+
     where f(x) (Eq. 480) provides the shape.
     """
     
@@ -56,7 +56,8 @@ class TongModel:
         self,
         dE_target_eV: float,
         epsilon_exc_au: float,
-        transition_type: str = "1s-2p"
+        transition_type: str = "1s-2p",
+        transition_class: str | None = None
     ):
         """
         Initialize the model for a specific transition.
@@ -65,23 +66,29 @@ class TongModel:
             dE_target_eV: Excitation energy (Threshold) in eV.
             epsilon_exc_au: Binding energy (eigenenergy) of the excited state in a.u.
                              (Note: for H, E_2s = -0.125 a.u. = -3.4 eV).
-            transition_type: "1s-2s" or "1s-np" (determines fitting parameters).
+            transition_type: legacy hint ("1s-2s" / "1s-np") kept for backwards compatibility.
+            transition_class: "dipole" (|Δl|=1) or "non_dipole" (|Δl|≠1). If provided, overrides transition_type.
         """
         self.dE_target_au = dE_target_eV / 27.211386
         self.epsilon_exc_au = epsilon_exc_au
         
-        # Select parameters
-        # Select parameters
-        # Generalized Logic:
-        # Article specifies Set 1 for 1s->ns (s-s transitions).
-        # Article specifies Set 2 for 1s->np (s-p transitions).
-        # We generalize this: 's-s' uses Set 1, others (like 's-p', 's-d') use Set 2.
-        
-        if "s-s" in transition_type:
-            self.params = PARAMS_1S_2S
+        # Parameter selection:
+        # - dipole-allowed (|Δl|=1): use Set "np" (1.32, -1.08, -0.04)
+        # - dipole-forbidden (|Δl|≠1): use Set "ns" (0.7638, 1.1759, 0.6706)
+        # Fallback: legacy transition_type to preserve old behaviour.
+        if transition_class is not None:
+            cls = transition_class.lower()
+            if cls == "dipole":
+                self.params = PARAMS_1S_NP
+            elif cls == "non_dipole":
+                self.params = PARAMS_1S_2S
+            else:
+                self.params = PARAMS_1S_NP
         else:
-            # Default to 1s-np (dipole allowed-like) behavior for others
-            self.params = PARAMS_1S_NP
+            if "s-s" in transition_type:
+                self.params = PARAMS_1S_2S
+            else:
+                self.params = PARAMS_1S_NP
             
         self.alpha: float = 1.0
         self.is_calibrated: bool = False

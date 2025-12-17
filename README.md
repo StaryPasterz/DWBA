@@ -64,7 +64,7 @@ DW_antigravity_v2/
   ```
   V(r) = -[Zc + a₁e^(-a₂r) + a₃re^(-a₄r) + a₅e^(-a₆r)] / r
   ```
-- Calibration: Tong model (Eq. ~34, 493) provides TCS; normalization factor `C(E)` rescales DWBA.
+- Calibration: Tong model (Eq. ~34, 493) provides TCS; normalization factor `C(E)` rescales DWBA TCS. For DCS, multiply by `calibration_factor` if you need calibrated angular distributions.
 
 ### Cross Section Formulas
 - **Excitation DCS**: `dσ/dΩ = (2π)⁴ × (k_f/k_i) × |T|²` (Eq. 216)
@@ -161,9 +161,12 @@ Contains SAE model potential parameters for various atoms:
 4. Parameters are automatically saved to `atoms.json`
 
 ## Calibration (Tong / DWBA)
-- Tong model parameters: Set 1 (1s→ns), Set 2 (1s→np)
-- α fitted at 1000 eV
-- Per-energy normalization: `C(E) = σ_Tong(E) / σ_DWBA(E)`
+- Tong model parameters:
+  - Dipole-allowed (|Δl|=1): Set “np” (β=1.32, γ=−1.08, δ=−0.04)
+  - Dipole-forbidden (|Δl|≠1): Set “ns” (β=0.7638, γ=1.1759, δ=0.6706)
+- Classification is automatic based on |l_f−l_i|.
+- α fitted per channel at 1000 eV.
+- Per-energy normalization: `C(E) = σ_Tong(E) / σ_DWBA(E)`. TCS are saved as raw and calibrated; to obtain calibrated DCS multiply raw DCS by `calibration_factor`.
 
 ## Debugging and Logging
 
