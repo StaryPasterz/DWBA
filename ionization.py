@@ -471,7 +471,7 @@ def compute_ionization_cs(
     use_polarization : bool
         Include polarization potential.
     exchange_method : str
-        Exchange method ('fumc' or 'slater').
+        Exchange method ('fumc' = Furness-McCarthy).
     n_workers : Optional[int]
         Number of parallel workers (default: CPU count).
         

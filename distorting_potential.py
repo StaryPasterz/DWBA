@@ -314,36 +314,6 @@ def furness_mccarthy_exchange_potential(
     
     return V_ex
 
-
-def slater_exchange_potential(
-    rho_spher: np.ndarray
-) -> np.ndarray:
-    """
-    Compute the Slater local exchange potential approximation.
-    
-    Formula:
-        V_ex(r) = - (3/2) * [ (3/pi) * rho(r) ]^(1/3)
-        
-    Parameters
-    ----------
-    rho_spher : np.ndarray
-        Electron density rho(r).
-        
-    Returns
-    -------
-    V_ex : np.ndarray
-        Exchange potential in Hartree. (Always negative).
-    """
-    # Safe rho for power
-    rho_saf = np.maximum(rho_spher, 1e-30)
-    
-    term = (3.0 / np.pi) * rho_saf
-    V_ex = -1.5 * (term**(1.0/3.0))
-    
-    return V_ex
-
-
-
 def polarization_potential(
     grid: RadialGrid,
     alpha_d: float,
@@ -387,14 +357,13 @@ def U_distorting(
     orbital: Optional[BoundOrbital] = None,
     grid: Optional[RadialGrid] = None,
     E_beam_au: Optional[float] = None,
-    exchange_type: str = 'fumc' # 'fumc' or 'slater'
+    exchange_type: str = 'fumc'
 ) -> np.ndarray:
     """
     Build the distorted potential U_j(r) for a given channel j.
     
-    Supports local exchange models:
-    - 'fumc': Furness-McCarthy (Article Standard)
-    - 'slater': Slater Free-Electron Gas Approx
+    Supports local exchange model:
+    - 'fumc': Furness-McCarthy
 
         U_j(r) = V_{A+}(r) + V_H^{(j)}(r) + V_ex^{(j)}(r)
 
@@ -427,9 +396,8 @@ def U_distorting(
         Required for Exchange calculation (to convert u->rho).
     E_beam_au : float, optional
         Scattering energy E = k^2/2. Required for Furness-McCarthy.
-        Slater only needs density.
     exchange_type : str
-        'fumc' (default) or 'slater'.
+        'fumc' (Furness-McCarthy, default).
 
     Returns
     -------
@@ -458,15 +426,9 @@ def U_distorting(
         
         V_ex = np.zeros_like(r)
         
-        if exchange_type == 'slater':
-             V_ex = slater_exchange_potential(rho)
-        elif exchange_type == 'fumc':
-             # Furness-McCarthy needs Energy and Static Potential
-             if E_beam_au is not None:
-                V_ex = furness_mccarthy_exchange_potential(grid, rho, E_beam_au, V_static)
-        else:
-             # Unknown type or None -> No exchange
-             pass
+        if exchange_type == 'fumc' and E_beam_au is not None:
+            # Furness-McCarthy needs Energy and Static Potential
+            V_ex = furness_mccarthy_exchange_potential(grid, rho, E_beam_au, V_static)
         
         U = V_static + V_ex
     else:
@@ -491,14 +453,12 @@ def build_distorting_potentials(
     k_f_au: float = 0.5,
     use_exchange: bool = False,
     use_polarization: bool = False,
-    exchange_method: str = 'fumc' # 'fumc' or 'slater'
+    exchange_method: str = 'fumc'
 ) -> Tuple[DistortingPotential, DistortingPotential]:
     """
     Construct U_i(r) and U_f(r).
     
-    If use_exchange=True, includes Exchange potential (DWSE).
-      - exchange_method='fumc' -> Furness-McCarthy
-      - exchange_method='slater' -> Slater
+    If use_exchange=True, includes Furness-McCarthy Exchange potential.
       
     If use_polarization=True, includes Polarization potential (DWSEP).
     

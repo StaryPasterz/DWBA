@@ -102,45 +102,67 @@ def main():
         
         # --- DCS Plotting Mode ---
         if style == 'dcs':
-            # Build subplots per energy inside this key
             # Filter points that contain angular data
             dcs_entries = [p for p in pts if p.get("theta_deg") and p.get("dcs_au_raw")]
             if not dcs_entries:
                 ax.axis('off')
                 continue
-            color_raw = 'tab:blue'
-            color_cal = 'tab:orange'
-            for p in dcs_entries:
+            ax.set_yscale("log")
+            
+            # Filter by selected energies if specified
+            selected_e_str = os.environ.get('DCS_ENERGIES', '')
+            if selected_e_str:
+                try:
+                    selected_energies = [float(x.strip()) for x in selected_e_str.split(',')]
+                    # Find closest matches (within 1 eV tolerance)
+                    filtered = []
+                    for entry in dcs_entries:
+                        e = entry["energy_eV"]
+                        if any(abs(e - se) < 1.0 for se in selected_energies):
+                            filtered.append(entry)
+                    if filtered:
+                        dcs_entries = filtered
+                except:
+                    pass  # Use all if parsing fails
+            
+            # Use colormap for different energies
+            import matplotlib.cm as cm
+            n_entries = len(dcs_entries)
+            colors = cm.viridis(np.linspace(0, 0.9, n_entries))
+            
+            for i, p in enumerate(dcs_entries):
                 E = p["energy_eV"]
                 theta = np.array(p["theta_deg"])
                 dcs_raw = np.array(p["dcs_au_raw"]) if p.get("dcs_au_raw") else None
                 dcs_cal = np.array(p["dcs_au_calibrated"]) if p.get("dcs_au_calibrated") else None
                 if dcs_raw is None: continue
-                label_raw = f"{E:.1f} eV DWBA"
-                ax.semilogy(theta, dcs_raw, '--', color=color_raw, alpha=0.6, label=label_raw)
+                
+                # Plot calibrated (solid) with label, raw (dashed) without label
+                color = colors[i]
+                ax.semilogy(theta, dcs_raw, '--', color=color, alpha=0.4, linewidth=1)
                 if dcs_cal is not None:
-                    label_cal = f"{E:.1f} eV DWBA×C(E)"
-                    ax.semilogy(theta, dcs_cal, '-', color=color_cal, alpha=0.8, label=label_cal)
+                    ax.semilogy(theta, dcs_cal, '-', color=color, alpha=0.9, linewidth=1.5, label=f"{E:.0f} eV")
+                else:
+                    ax.semilogy(theta, dcs_raw, '-', color=color, alpha=0.9, linewidth=1.5, label=f"{E:.0f} eV")
+            
             ax.set_xlabel(xlab, fontsize=11)
             ax.set_ylabel(ylab, fontsize=11)
-            ax.grid(True, linestyle=':', alpha=0.7, which='both')
+            ax.set_xticks([0, 30, 60, 90, 120, 150, 180])
+            ax.set_xlim(0, 180)
+            ax.grid(True, linestyle=':', alpha=0.7, which='both', axis='both')
             ax.set_title(f"{key} (DCS)", fontsize=12, fontweight='bold')
-            ax.legend(fontsize=9)
+            ax.legend(fontsize=8, ncol=2, loc='upper right')
             continue
         
         E_raw = np.array([p["energy_eV"] for p in pts])
         Sig_raw = np.array([p["sigma_cm2"] for p in pts])
-        Sig_cal = np.array([p.get("sigma_scaled_cm2", 0.0) for p in pts])
         Sig_tong = np.array([p.get("sigma_mtong_cm2", 0.0) for p in pts])
         Factor = np.array([p.get("calibration_factor", 0.0) for p in pts])
         
-        # Fallbacks if new fields are missing
-        if not np.any(Sig_cal):
-            Sig_cal = Sig_tong
         if not np.any(Factor):
             Factor = np.zeros_like(E_raw)
             mask = Sig_raw > 1e-50
-            Factor[mask] = Sig_cal[mask] / Sig_raw[mask]
+            Factor[mask] = Sig_tong[mask] / Sig_raw[mask]
         
         # For Ionization or Excitation threshold behavior
         thr = 1.0 
@@ -149,7 +171,6 @@ def main():
         
         X = [conv_E(e, thr) for e in E_raw]
         Y = [conv_S(s) for s in Sig_raw]
-        Y_cal = [conv_S(s) for s in Sig_cal]
         Y_tong = [conv_S(s) for s in Sig_tong]
         
         # --- Left Axis (Cross Sections) ---
@@ -159,20 +180,10 @@ def main():
         # Article Style: Dotted for DWBA (Uncalibrated), Solid for Calibrated
         if style == 'article':
             l1, = ax.plot(X, Y, 'k:', linewidth=2, label='DWBA (Uncalibrated)')
-            if np.max(np.abs(np.array(Y) - np.array(Y_cal))) > 1e-20:
-                 l2, = ax.plot(X, Y_cal, 'k-', linewidth=2, label='DWBA × C(E)')
-            else:
-                 l2 = l1
+            l2, = ax.plot(X, Y_tong, 'k-', linewidth=2, label='Tong model')
         else:
             l1, = ax.plot(X, Y, 'o--', linewidth=2, color=color1, label='DWBA')
-            l2 = None
-            if np.max(np.abs(np.array(Y) - np.array(Y_cal))) > 1e-20:
-                l2, = ax.plot(X, Y_cal, 's-', linewidth=2, color=color2, label='DWBA × C(E)')
-        
-        # Optional Tong reference if present and distinct from calibrated
-        l_tong = None
-        if np.any(Sig_tong) and np.max(np.abs(np.array(Y_tong) - np.array(Y_cal))) > 1e-20:
-            l_tong, = ax.plot(X, Y_tong, ':', linewidth=1.5, color='tab:red', label='Tong model')
+            l2, = ax.plot(X, Y_tong, 's-', linewidth=2, color=color2, label='Tong model')
         
         ax.set_xlabel(xlab, fontsize=11)
         ax.set_ylabel(ylab, fontsize=11)
@@ -190,12 +201,7 @@ def main():
             ax2.set_ylim(0, max(1.1, np.max(Factor)*1.1))
         
         # Legend (merge handles)
-        lns = [l1]
-        if l2 is not None:
-            lns.append(l2)
-        if l_tong is not None:
-            lns.append(l_tong)
-        lns.append(l3)
+        lns = [l1, l2, l3]
         labs = [l.get_label() for l in lns]
         ax.legend(lns, labs, loc='best', fontsize=9)
         

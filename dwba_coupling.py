@@ -209,17 +209,13 @@ def calculate_amplitude_contribution(
     
     Y_li_star = np.sqrt((2*l_i+1)/(4*np.pi)) # Real because m=0
     
-    # Common factors
-    # Eq 412: f = (2/pi) * i^(li+lf) * ...
+    # Common factors from Article Eq. 412: f = (2/pi) * i^(li+lf) * ... * (1/ki*kf) * Integral
     # 
-    # δ(k-k') Continuum Normalization Correction:
-    # Article Eq.150-162 uses δ(k-k') normalized waves: asymptotic amplitude = √(2/π)
-    # Code's continuum.py uses unit-amplitude normalization: asymptotic amplitude = 1
-    # Each wave is √(π/2) too large → two waves in integral: factor (π/2) too large
-    # Correct by multiplying by (2/π) to convert to δ-normalized convention
-    DELTA_NORM_CORRECTION = 2.0 / np.pi
-    
-    pref_common = (2.0/np.pi) * (1.0/(ki*kf)) * DELTA_NORM_CORRECTION
+    # The factor (2/pi) in the article arises from the product of two √(2/π) factors
+    # in the partial wave expansions (Eq. 144 and 155). Since our continuum waves
+    # are normalized to unit asymptotic amplitude (not √(2/π)), this (2/pi) factor
+    # must be explicitly included here to match the article's convention.
+    pref_common = (2.0/np.pi) * (1.0/(ki*kf))
     
     # Evaluate Spherical Harmonics for scattered electron Y_{l_f, -mu_f}(k_f)
     # k_f direction is theta. phi can be 0 (azimuthal symmetry for TCS).

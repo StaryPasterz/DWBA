@@ -51,7 +51,6 @@ import atom_library
 import plotter
 from calibration import TongModel
 from logging_config import get_logger
-from sigma_total import sigma_au_to_cm2
 
 # Initialize logger for debug messages
 logger = get_logger(__name__)
@@ -351,15 +350,7 @@ def run_scan_excitation(run_name):
     
     ex_method = 'fumc'
     if use_ex:
-        print("\n  Exchange Method:")
-        print("    1. Furness-McCarthy")
-        print("    2. Slater")
-        ex_choice = input("    Select [default=1]: ").strip()
-        if ex_choice == '2':
-            ex_method = 'slater'
-            print_info("Exchange: Slater")
-        else:
-            print_info("Exchange: Furness-McCarthy")
+        print_info("Exchange: Furness-McCarthy")
     
     # Get energy grid (may return tuple for log grid with regeneration params)
     energy_result = get_energy_list_interactive()
@@ -508,14 +499,12 @@ def run_scan_excitation(run_name):
                     cal_factor = 1.0
                     if res.sigma_total_cm2 > 0 and tong_model.is_calibrated:
                         cal_factor = tong_sigma / res.sigma_total_cm2
-                    scaled_sigma = res.sigma_total_cm2 * cal_factor
                 except Exception as cal_err:
                     logger.debug("Calibration calc failed: %s", cal_err)
                     tong_sigma = 0.0
                     cal_factor = 1.0
-                    scaled_sigma = res.sigma_total_cm2
                 
-                print_result(E, scaled_sigma, extra="[calibrated]" if cal_factor != 1.0 else "")
+                print_result(E, res.sigma_total_cm2, extra=f"[C(E)={cal_factor:.3f}]")
                 
                 # Calibrate DCS (a.u.) if available
                 dcs_raw_au = None
@@ -531,7 +520,6 @@ def run_scan_excitation(run_name):
                     "sigma_au": res.sigma_total_au,
                     "sigma_cm2": res.sigma_total_cm2,
                     "sigma_mtong_cm2": tong_sigma,
-                    "sigma_scaled_cm2": scaled_sigma,
                     "calibration_alpha": alpha,
                     "calibration_factor": cal_factor,
                     "theta_deg": theta_deg,
@@ -597,15 +585,10 @@ def run_scan_ionization(run_name):
     else:
         pass
     
-    # Sub-selection for Exchange
+    # Exchange method (only Furness-McCarthy supported)
     ex_method = 'fumc'
     if use_ex:
-        print("\n  [Exchange Potential Options]")
-        print("  1. Furness-McCarthy (Article Standard, Default)")
-        print("  2. Slater (Free Electron Gas Approx)")
-        ex_choice = input("  Select Exchange Method [1-2] (default=1): ").strip()
-        if ex_choice == '2':
-            ex_method = 'slater'
+        print_info("Exchange: Furness-McCarthy")
 
     energies = get_energy_list_interactive()
 
@@ -794,6 +777,39 @@ def run_dcs_visualization():
         return
         
     selected_file = files[choice_idx]
+    
+    # Load file to show available energies
+    try:
+        with open(selected_file, 'r') as f:
+            data = json.load(f)
+        # Get all energies from first key
+        first_key = list(data.keys())[0]
+        all_energies = [p["energy_eV"] for p in data[first_key] if p.get("theta_deg")]
+    except:
+        all_energies = []
+    
+    if all_energies:
+        print(f"\nAvailable energies: {len(all_energies)}")
+        print("  1. Plot ALL energies")
+        print("  2. Select specific energies")
+        
+        energy_choice = input("\n  Select [1]: ").strip()
+        
+        if energy_choice == '2':
+            print(f"\nAvailable: {', '.join([f'{e:.1f}' for e in all_energies])} eV")
+            user_input = input("Enter energies (comma separated, e.g. 50, 100, 200): ").strip()
+            try:
+                selected_energies = [float(x.strip()) for x in user_input.split(',')]
+                # Pass selected energies to plotter via environment variable
+                os.environ['DCS_ENERGIES'] = ','.join([str(e) for e in selected_energies])
+            except:
+                print("Invalid input. Using all energies.")
+                if 'DCS_ENERGIES' in os.environ:
+                    del os.environ['DCS_ENERGIES']
+        else:
+            if 'DCS_ENERGIES' in os.environ:
+                del os.environ['DCS_ENERGIES']
+    
     print(f"Generating DCS plots from '{selected_file}'...")
     
     old_argv = sys.argv
@@ -806,6 +822,8 @@ def run_dcs_visualization():
         print(f"Plotter Error: {e}")
     finally:
         sys.argv = old_argv
+        if 'DCS_ENERGIES' in os.environ:
+            del os.environ['DCS_ENERGIES']
 
 # --- Main Loop ---
 
