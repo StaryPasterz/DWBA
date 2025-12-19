@@ -196,10 +196,15 @@ def calculate_amplitude_contribution(
         Object containing f_theta and g_theta complex arrays.
     """
     mu_i = 0
-    mu_f = M_target_i + mu_i - M_target_f
     
-    # Check selection rules for projections
-    if abs(mu_f) > l_f:
+    # CRITICAL: Direct and Exchange have DIFFERENT delta constraints on mu_f!
+    # Article Eq. 401 (direct):   delta_{mu_i + M_i, M_f - mu_f}  => mu_f = M_f - M_i (for mu_i=0)
+    # Article Eq. 437 (exchange): delta_{mu_i + M_i, M_f + mu_f}  => mu_f = M_i - M_f (for mu_i=0)
+    mu_f_direct = M_target_f - M_target_i    # For direct amplitude (Eq. 412)
+    mu_f_exchange = M_target_i - M_target_f  # For exchange amplitude (Eq. 448)
+    
+    # Check selection rules for projections - both must be valid
+    if abs(mu_f_direct) > l_f and abs(mu_f_exchange) > l_f:
         return Amplitudes(np.zeros_like(theta_grid), np.zeros_like(theta_grid))
         
     # Precompute geometric factors
@@ -217,10 +222,10 @@ def calculate_amplitude_contribution(
     # must be explicitly included here to match the article's convention.
     pref_common = (2.0/np.pi) * (1.0/(ki*kf))
     
-    # Evaluate Spherical Harmonics for scattered electron Y_{l_f, -mu_f}(k_f)
+    # Evaluate Spherical Harmonics for scattered electron
+    # Note: Direct uses Y_{l_f, -mu_f_direct}(k_f), Exchange uses Y_{l_f, mu_f_exchange}^*(k_f)
     # k_f direction is theta. phi can be 0 (azimuthal symmetry for TCS).
     # dsigma/dOmega depends only on theta if unpolarized.
-    # Note: Eq 412 has Y_{lf, -mu_f}(k_f).
     # scipy sph_harm(m, l, phi, theta).
     # We set phi=0.
     
@@ -228,7 +233,9 @@ def calculate_amplitude_contribution(
     # Article uses standard Ylm.
     
     phi_grid = np.zeros_like(theta_grid)
-    Y_lf_val = sph_harm(-mu_f, l_f, phi_grid, theta_grid) 
+    
+    # For direct (Eq. 412): Y_{lf, -mu_f_direct}(k_f)
+    Y_lf_direct = sph_harm(-mu_f_direct, l_f, phi_grid, theta_grid) if abs(mu_f_direct) <= l_f else np.zeros_like(theta_grid, dtype=complex) 
     
     # DIRECT AMPLITUDE (Eq 412) --
     f_contrib = np.zeros_like(theta_grid, dtype=complex)
@@ -274,10 +281,10 @@ def calculate_amplitude_contribution(
             cg_A = clebsch_gordan(l_i, L_target_i, g, 0, M_target_i, M_target_i)
             
             # C(lf Lf g; muf -Mf muf-Mf) 
-            # Check Eq 412: C(lf Lf g; mu_f, -M_f, mu_f-M_f)
-            # And delta_{mui+Mi, Mf-muf} => Mi = Mf - muf => muf-Mf = -Mi.
+            # Check Eq 412: C(lf Lf g; mu_f_direct, -M_f, mu_f_direct-M_f)
+            # And delta_{mui+Mi, Mf-muf} => mu_f_direct = Mf - Mi => mu_f_direct - Mf = -Mi.
             # So 3rd comp is -Mi.
-            cg_B = clebsch_gordan(l_f, L_target_f, g, mu_f, -M_target_f, -M_target_i)
+            cg_B = clebsch_gordan(l_f, L_target_f, g, mu_f_direct, -M_target_f, -M_target_i)
             
             sum_g += w_racah * cg_A * cg_B
             
@@ -288,9 +295,9 @@ def calculate_amplitude_contribution(
     # i^(li + lf)
     phase_i = 1j**(l_i + l_f)
     
-    # f = (2/pi) * i^(...) * Y_lf_val * Y_li_star * sum(...)
+    # f = (2/pi) * i^(...) * Y_lf_direct * Y_li_star * sum(...)
     # Note: Eq 412 result is scalar (for fixed angles).
-    f_total = pref_common * phase_i * Y_lf_val * Y_li_star * f_contrib
+    f_total = pref_common * phase_i * Y_lf_direct * Y_li_star * f_contrib
     
 
 
@@ -326,9 +333,9 @@ def calculate_amplitude_contribution(
              # C(li Li g; mui Mi mui+Mi) -> C(li Li g; 0 Mi Mi)
              cg_A = clebsch_gordan(l_i, L_target_i, g, 0, M_target_i, M_target_i)
              
-             # C(Lf lf g; -Mf -muf -Mf-muf)
-             # Delta implies mui+Mi = Mf+muf => Mi = Mf+muf => -Mf-muf = -Mi.
-             cg_B = clebsch_gordan(L_target_f, l_f, g, -M_target_f, -mu_f, -M_target_i)
+             # C(Lf lf g; -Mf -mu_f_exchange -Mf-mu_f_exchange)
+             # Delta implies mui+Mi = Mf+muf => mu_f_exchange = Mi - Mf => -Mf-mu_f_exchange = -Mi.
+             cg_B = clebsch_gordan(L_target_f, l_f, g, -M_target_f, -mu_f_exchange, -M_target_i)
              
              sum_g += w_racah * cg_A * cg_B
              
@@ -341,19 +348,14 @@ def calculate_amplitude_contribution(
     phase_parity = (-1.0)**(L_target_f + M_target_f)
     
     # g = ... Y_lf^* ...
-    # Y_lf_val computed above is Y(theta, 0). Conjugate is same (real).
-    # But strictly Y_{l, m}^* = (-1)^m Y_{l, -m}.
-    # Here we used sph_harm(-mu_f). Its conjugate is sph_harm(-mu_f)* ? 
-    # Actually Y^* terms in eq 448: Y_{lf, muf}^*(k_f).
-    # We Computed Y_{lf, -mu_f}. 
+    # Eq 448 has Y_{lf, mu_f_exchange}^*(k_f).
     # Relation: Y_{l, m}^* = (-1)^m Y_{l, -m}.
-    # So Y_{lf, muf}^* = (-1)^muf Y_{lf, -muf}.
-    # Since we computed Y_val = Y_{lf, -muf}, we just Mult by (-1)^muf.
+    # So Y_{lf, mu_f_exchange}^* = (-1)^mu_f_exchange * Y_{lf, -mu_f_exchange}.
+    # We compute Y_{lf, -mu_f_exchange} first:
+    Y_lf_exchange_base = sph_harm(-mu_f_exchange, l_f, phi_grid, theta_grid) if abs(mu_f_exchange) <= l_f else np.zeros_like(theta_grid, dtype=complex)
+    Y_lf_exchange = ((-1.0)**mu_f_exchange) * Y_lf_exchange_base
     
-    # Check consistency with Y_li^*. mu_i=0 -> Y_{li,0} is real.
-    
-    Y_lf_conj = ((-1.0)**mu_f) * Y_lf_val
-    
-    g_total = pref_common * phase_i_g * phase_parity * Y_lf_conj * Y_li_star * g_contrib
+    g_total = pref_common * phase_i_g * phase_parity * Y_lf_exchange * Y_li_star * g_contrib
 
     return Amplitudes(f_total, g_total)
+
