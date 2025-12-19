@@ -127,6 +127,7 @@ def main():
             
             # Use colormap for different energies
             import matplotlib.cm as cm
+            from matplotlib.lines import Line2D
             n_entries = len(dcs_entries)
             colors = cm.viridis(np.linspace(0, 0.9, n_entries))
             
@@ -137,7 +138,7 @@ def main():
                 dcs_cal = np.array(p["dcs_au_calibrated"]) if p.get("dcs_au_calibrated") else None
                 if dcs_raw is None: continue
                 
-                # Plot calibrated (solid) with label, raw (dashed) without label
+                # Plot raw (dashed) and calibrated (solid)
                 color = colors[i]
                 ax.semilogy(theta, dcs_raw, '--', color=color, alpha=0.4, linewidth=1)
                 if dcs_cal is not None:
@@ -149,10 +150,28 @@ def main():
             ax.set_ylabel(ylab, fontsize=11)
             ax.set_xticks([0, 30, 60, 90, 120, 150, 180])
             ax.set_xlim(0, 180)
-            ax.grid(True, linestyle=':', alpha=0.7, which='both', axis='both')
+            
+            # Explicitly enable minor ticks for log scale (required for minor grid)
+            from matplotlib.ticker import LogLocator
+            ax.yaxis.set_minor_locator(LogLocator(subs='auto', numticks=12))
+            
+            # Draw gridlines
+            ax.grid(True, which='major', axis='y', linestyle='-', alpha=0.5, zorder=0)
+            ax.grid(True, which='minor', axis='y', linestyle=':', alpha=0.3, zorder=0)
+            ax.grid(True, which='major', axis='x', linestyle=':', alpha=0.5, zorder=0)
+            
             ax.set_title(f"{key} (DCS)", fontsize=12, fontweight='bold')
-            ax.legend(fontsize=8, ncol=2, loc='upper right')
+            
+            # Create custom legend with style info
+            handles, labels = ax.get_legend_handles_labels()
+            # Add style explanation entries
+            style_handles = [
+                Line2D([0], [0], color='gray', linestyle='-', linewidth=1.5, label='Calibrated'),
+                Line2D([0], [0], color='gray', linestyle='--', linewidth=1, alpha=0.5, label='Raw DWBA')
+            ]
+            ax.legend(handles=style_handles + handles, fontsize=7, ncol=3, loc='upper right')
             continue
+
         
         E_raw = np.array([p["energy_eV"] for p in pts])
         Sig_raw = np.array([p["sigma_cm2"] for p in pts])

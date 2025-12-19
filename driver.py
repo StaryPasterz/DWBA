@@ -759,7 +759,8 @@ def compute_total_excitation_cs(
         sigma_total_au, sigma_total_cm2,
         k_i_au, k_f_au,
         theta_grid * 180.0 / np.pi,
-        total_dcs, # dcs_vals variable name was likely wrong in previous view, check context. But wait, local var was 'total_dcs'?
+        total_dcs,
+
         partial_waves_dict
     )
 
