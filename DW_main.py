@@ -330,27 +330,17 @@ def run_scan_excitation(run_name):
         print_warning(f"Large ΔL = {abs(lf-li)} - cross sections may be very small.")
     
     print_subheader("Physics Model")
-    print("  1. Static (DWBA)")
-    print("  2. Static + Exchange (DWSE)")
-    print("  3. Static + Exchange + Polarization (SEP)")
+    print("  1. Static DWBA")
+    print("  2. Static DWBA + Polarization")
     choice = input("\n  Select [default=1]: ").strip()
     
-    use_ex = False
     use_pol = False
     
     if choice == '2':
-        use_ex = True
-        print_info("Model: DWSE")
-    elif choice == '3':
-        use_ex = True
         use_pol = True
-        print_info("Model: SEP")
+        print_info("Model: Static DWBA + Polarization")
     else:
         print_info("Model: Static DWBA")
-    
-    ex_method = 'fumc'
-    if use_ex:
-        print_info("Exchange: Furness-McCarthy")
     
     # Get energy grid (may return tuple for log grid with regeneration params)
     energy_result = get_energy_list_interactive()
@@ -408,7 +398,6 @@ def run_scan_excitation(run_name):
             pilot_E, spec, core_params, 
             r_max=200.0, n_points=3000, 
             use_polarization_potential=use_pol,
-            exchange_method=ex_method
         )
     except Exception as e:
         logger.debug("Pilot calculation failed: %s", e)
@@ -470,9 +459,7 @@ def run_scan_excitation(run_name):
     prep = prepare_target(
         chan=spec,
         core_params=core_params,
-        use_exchange=use_ex,
         use_polarization=use_pol,
-        exchange_method=ex_method,
         r_max=200.0,
         n_points=3000
     )
@@ -567,45 +554,42 @@ def run_scan_ionization(run_name):
         return
     
     print("\n--- Model Selection ---")
-    print("1. Static Only (Standard DWBA) - Matches Article (Default)")
-    print("2. Static + Exchange (DWSE) - Improved Incident Physics")
-    print("3. Static + Exchange + Polarization (SEP) - Advanced")
-    choice = input("Select Model [1-3] (default=1): ").strip()
+    print("1. Static Only (Standard DWBA)")
+    print("2. Static + Polarization (SEP)")
+    choice = input("Select Model [1-2] (default=1): ").strip()
 
-    use_ex = False 
     use_pol = False
-    
-    if choice == '2':
-        use_ex = True
-    elif choice == '3':
-        use_ex = True
-        use_pol = True
-    elif choice == '1':
-        pass 
-    else:
-        pass
-    
-    # Exchange method (only Furness-McCarthy supported)
-    ex_method = 'fumc'
-    if use_ex:
-        print_info("Exchange: Furness-McCarthy")
 
-    energies = get_energy_list_interactive()
+    if choice == '2':
+        use_pol = True
+        print_info("Model: Static DWBA + Polarization")
+    else:
+        print_info("Model: Static DWBA")
+
+    energy_result = get_energy_list_interactive()
+    if isinstance(energy_result, tuple):
+        energies, grid_type, grid_params = energy_result
+    else:
+        energies = energy_result
+        grid_type, grid_params = None, None
 
     # --- Smart Grid Adjustment (Ionization) ---
     ion_thr = atom_entry.ip_ev
     if np.any(energies <= ion_thr):
         print(f"\n[Smart Grid] Some energies are below/at IP ({ion_thr:.2f} eV). Correcting...")
-        energies = energies[energies > ion_thr]
-        
         start_epsilon = 0.5
         new_start = ion_thr + start_epsilon
-        
-        if len(energies) == 0 or energies[0] > new_start + 0.1:
-             energies = np.insert(energies, 0, new_start)
-             
-        energies = np.unique(np.round(energies, 3))
-        print(f"[Smart Grid] New start: {energies[0]:.2f} eV")
+        if grid_type == 'log' and grid_params:
+            end_eV = grid_params['end']
+            density = grid_params['density']
+            energies = generate_flexible_energy_grid(new_start, end_eV, density)
+            print(f"[Smart Grid] New log grid: {len(energies)} points from {new_start:.2f} eV")
+        else:
+            energies = energies[energies > ion_thr]
+            if len(energies) == 0 or energies[0] > new_start + 0.1:
+                energies = np.insert(energies, 0, new_start)
+            energies = np.unique(np.round(energies, 3))
+            print(f"[Smart Grid] New start: {energies[0]:.2f} eV")
     
     n_idx_i = ni - li
     if n_idx_i < 1:
@@ -643,9 +627,7 @@ def run_scan_ionization(run_name):
     prep = prepare_target(
         chan=tmp_chan,
         core_params=core_params,
-        use_exchange=use_ex, 
         use_polarization=use_pol,
-        exchange_method=ex_method,
         r_max=200.0,
         n_points=3000
     )
@@ -663,9 +645,7 @@ def run_scan_ionization(run_name):
                     E, spec, 
                     core_params=core_params, # Ignored for grid/V_core generation if _precalc used
                     r_max=200.0, n_points=3000,
-                    use_exchange=use_ex, 
                     use_polarization=use_pol, 
-                    exchange_method=ex_method
                 )
                 
                 if res.sigma_total_cm2 > 0:

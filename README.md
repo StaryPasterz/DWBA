@@ -23,9 +23,9 @@ Comprehensive Python suite for computing electron–atom excitation and ionizati
 - [References](#references)
 
 ## Features
-- DWBA excitation cross sections (total and differential) with static, exchange, and polarization options.
+- DWBA excitation cross sections (total and differential) with static + optional polarization potentials; exchange via T-matrix.
 - DWBA ionization cross sections (total and SDCS) using (2π)⁵ kinematic factor.
-- Empirical calibration (Tong model) with per-energy normalization factors.
+- Empirical calibration (Tong model) for excitation, with per-energy normalization factors.
 - Plotting in multiple unit conventions (cm², a.u., article E/E\_thr, mixed).
 - Partial-wave convergence diagnostics and Born top-up.
 - Potential fitting utility with Tong-Lin (2005) methodology.
@@ -59,7 +59,7 @@ DW_antigravity_v2/
 
 ## Theory Snapshot
 - DWBA amplitudes follow Eq. (216), (412), (448) of the article: direct `f` and exchange `g` from multipole expansion of `1/r₁₂`, with distorted continuum waves.
-- Distorting potentials: `U_j(r) = V_core(r) + V_H(r) (+ V_ex + V_pol)`.
+- Distorting potentials: `U_j(r) = V_core(r) + V_H(r)` (static), with optional `V_pol`.
 - SAE core potential (Eq. 69):
   ```
   V(r) = -[Zc + a₁e^(-a₂r) + a₃re^(-a₄r) + a₅e^(-a₆r)] / r
@@ -115,15 +115,17 @@ Menu:
 ### Excitation Scan
 - Select target from `atoms.json` or enter custom parameters
 - Configure initial/final states (n, l)
-- Choose model: DWBA (static), DWSE (exchange), SEP (exchange + polarization)
+- Choose model: DWBA (static) or DWBA + polarization
 - Results saved to `results_<run>_exc.json`
 
 ### Ionization Scan
 - Similar setup to excitation
 - Uses (2π)⁵ kinematic factor for proper continuum normalization
 - Results include TICS and SDCS data
+- SDCS is integrated over both outgoing electron angles using Y_lm orthonormality (no fixed-angle TDCS grid).
+- Tong calibration applies to excitation only; ionization plots show DWBA only.
 
-Outputs: `results_<run>_exc.json`, `results_<run>_ion.json` in project root. Excitation entries include angular grids (`theta_deg`) and both raw/calibrated DCS (a.u. and cm²) for later plotting.
+Outputs: `results_<run>_exc.json`, `results_<run>_ion.json` in project root. Excitation entries include angular grids (`theta_deg`) and both raw/calibrated DCS in a.u. for later plotting.
 
 ### Plotting Results
 ```bash
@@ -163,6 +165,7 @@ Contains SAE model potential parameters for various atoms:
 4. Parameters are automatically saved to `atoms.json`
 
 ## Calibration (Tong / DWBA)
+- Calibration applies to excitation only; ionization uses raw DWBA results.
 - Tong model parameters:
   - Dipole-allowed (|Δl|=1): Set “np” (β=1.32, γ=−1.08, δ=−0.04)
   - Dipole-forbidden (|Δl|≠1): Set “ns” (β=0.7638, γ=1.1759, δ=0.6706)

@@ -9,7 +9,7 @@ using the Distorted Wave Born Approximation (DWBA) method.
 Pipeline
 --------
 1. Calculate bound states (initial & final) using SAE model potential
-2. Construct distorting potentials (static/exchange/polarization)
+2. Construct distorting potentials (static + optional polarization)
 3. Partial wave loop with adaptive L_max convergence
 4. T-matrix radial integrals via multipole expansion
 5. Angular coupling (direct & exchange amplitudes)
@@ -283,7 +283,6 @@ def compute_total_excitation_cs(
     n_points: int = 3000,
     match_high_energy_eV: float = 1000.0,
     n_theta: int = 200,
-    exchange_method: str = 'fumc',
     use_polarization_potential: bool = False,
     # Optimization Injection
     _precalc_grid: Optional[RadialGrid] = None,
@@ -293,11 +292,13 @@ def compute_total_excitation_cs(
 ) -> DWBAResult:
     """
     Main high-level function to compute Total Excitation Cross Section (TECS).
-    Now supports pre-calculated static properties for optimization.
-    """
     
-    # Derive flags
-    use_exchange = (exchange_method is not None and exchange_method.lower() != 'none')
+    Uses STATIC DWBA formulation as described in the article:
+    - Distorting potentials: U_j = V_core + V_Hartree (no exchange in potentials)
+    - Exchange treated perturbatively via T-matrix amplitude g
+    
+    Optionally adds polarization potential for enhanced accuracy.
+    """
 
     t0 = time.perf_counter()
     
@@ -334,13 +335,13 @@ def compute_total_excitation_cs(
     z_ion = core_params.Zc - 1.0
 
     # 4. Distorting Potentials
+    # Article Eq. 456-463: Static potentials U_j = V_core + V_Hartree
     U_i, U_f = build_distorting_potentials(
         grid, V_core, orb_i, orb_f, 
         k_i_au=k_i_au, 
         k_f_au=k_f_au,
-        use_exchange=use_exchange,
-        use_polarization=use_polarization_potential,
-        exchange_method=exchange_method
+        use_exchange=False,  # Article uses static potentials only
+        use_polarization=use_polarization_potential
     )
     
     # 5. Partial Wave Loop
@@ -776,9 +777,7 @@ class PreparedTarget:
     chan: ExcitationChannelSpec
     dE_target_eV: float
     # Static Configuration
-    use_exchange: bool
     use_polarization: bool
-    exchange_method: str
 
 def prepare_target(
     chan: ExcitationChannelSpec,
@@ -786,11 +785,14 @@ def prepare_target(
     r_min: float = 1e-5,
     r_max: float = 200.0,
     n_points: int = 3000,
-    use_exchange: bool = False,
-    use_polarization: bool = False,
-    exchange_method: str = 'fumc'
+    use_polarization: bool = False
 ) -> PreparedTarget:
-    """Pre-computes static properties for a given transition."""
+    """
+    Pre-computes static properties for a given transition.
+
+    The resulting target always uses static distorting potentials
+    (exchange is handled in the T-matrix, not in U_j).
+    """
     
     grid = make_r_grid(r_min=r_min, r_max=r_max, n_points=n_points)
     V_core = V_core_on_grid(grid, core_params)
@@ -803,11 +805,11 @@ def prepare_target(
     
     dE = (orb_f.energy_au - orb_i.energy_au) / ev_to_au(1.0)
     
-    # We do NOT compute U_i, U_f here because Exchange depends on E.
+    # We do NOT compute U_i, U_f here to keep prepare_target lightweight.
     
     return PreparedTarget(
         grid, V_core, orb_i, orb_f, core_params, chan, dE,
-        use_exchange, use_polarization, exchange_method
+        use_polarization
     )
 
 def compute_excitation_cs_precalc(
@@ -845,7 +847,6 @@ def compute_excitation_cs_precalc(
         E_incident_eV, prep.chan, prep.core_params,
         n_points=len(prep.grid.r),
         n_theta=n_theta,
-        exchange_method=prep.exchange_method,
         use_polarization_potential=prep.use_polarization,
         _precalc_grid=prep.grid,
         _precalc_V_core=prep.V_core,

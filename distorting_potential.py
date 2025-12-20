@@ -451,21 +451,21 @@ def build_distorting_potentials(
     orbital_final: BoundOrbital,
     k_i_au: float = 0.5,
     k_f_au: float = 0.5,
-    use_exchange: bool = False,
-    use_polarization: bool = False,
-    exchange_method: str = 'fumc'
+    use_exchange: bool = False,  # Deprecated - always False per article
+    use_polarization: bool = False
 ) -> Tuple[DistortingPotential, DistortingPotential]:
     """
-    Construct U_i(r) and U_f(r).
+    Construct U_i(r) and U_f(r) following Article Eq. 456-463.
     
-    If use_exchange=True, includes Furness-McCarthy Exchange potential.
+    Uses STATIC potentials: U_j = V_core + V_Hartree
+    
+    Exchange is NOT included in potentials - it's treated perturbatively 
+    in the T-matrix via amplitude g (Article standard approach).
       
-    If use_polarization=True, includes Polarization potential (DWSEP).
+    If use_polarization=True, adds polarization potential.
     
-    If use_exchange=False, uses only Static potential (V_core + V_H) (Standard DWBA).
-    
-    The article strictly uses Standard DWBA (Static potentials) and treats
-    exchange perturbatively in the T-matrix.
+    Note: use_exchange parameter is deprecated and ignored. Exchange in
+    potentials was removed as it caused double-counting with T-matrix exchange.
     
     Convenience helper:
     Given the core potential V_{A+}(r) and two bound orbitals
@@ -530,17 +530,11 @@ def build_distorting_potentials(
     V_H_i = hartree_potential_from_orbital(grid, orbital_initial)
     V_H_f = hartree_potential_from_orbital(grid, orbital_final)
 
-    # Distorting potentials
-    if use_exchange:
-        # Static + Exchange
-        # Pass method explicitly
-        U_i_arr = U_distorting(V_core_array, V_H_i, orbital=orbital_initial, grid=grid, E_beam_au=E_i, exchange_type=exchange_method)
-        U_f_arr = U_distorting(V_core_array, V_H_f, orbital=orbital_final, grid=grid, E_beam_au=E_f, exchange_type=exchange_method)
-    else:
-        # Static Only (Standard DWBA per article Eq. 456-463)
-        # U_j = V_core + V_H_j
-        U_i_arr = U_distorting(V_core_array, V_H_i)
-        U_f_arr = U_distorting(V_core_array, V_H_f)
+    # Distorting potentials - ALWAYS use Static (Article Eq. 456-463)
+    # U_j = V_core + V_H_j
+    # Note: use_exchange parameter is deprecated and ignored
+    U_i_arr = U_distorting(V_core_array, V_H_i)
+    U_f_arr = U_distorting(V_core_array, V_H_f)
         
     if use_polarization:
         # Add Polarization Potential V_pol

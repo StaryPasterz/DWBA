@@ -132,6 +132,23 @@ class Amplitudes:
     g_theta: np.ndarray # Complex array (theta)
 
 @dataclass(frozen=True)
+class IonizationAmplitudeCoeffs:
+    """
+    Scalar coefficients for ionization amplitudes.
+
+    These coefficients multiply spherical harmonics for the scattered
+    and ejected electrons:
+
+        f(Ω_scatt, Ω_ej) = f_coeff * Y_{l_f,-mu_f}(Ω_scatt) * Y_{l_ej,Mf}^*(Ω_ej)
+        g(Ω_scatt, Ω_ej) = g_coeff * Y_{l_f,-mu_f}(Ω_scatt) * Y_{l_ej,Mf}^*(Ω_ej)
+
+    The angular integration over full solid angles then reduces to
+    sums of |f_coeff|^2 and |g_coeff|^2 by orthonormality of Y_lm.
+    """
+    f_coeff: complex
+    g_coeff: complex
+
+@dataclass(frozen=True)
 class ChannelAngularInfo:
     """
     Quantum numbers describing the excitation channel.
@@ -358,4 +375,134 @@ def calculate_amplitude_contribution(
     g_total = pref_common * phase_i_g * phase_parity * Y_lf_exchange * Y_li_star * g_contrib
 
     return Amplitudes(f_total, g_total)
+
+
+def calculate_ionization_coefficients(
+    I_L_dir: Dict[int, float],
+    I_L_exc: Dict[int, float],
+    l_i: int,
+    l_f: int,
+    l_eject: int,
+    ki: float,
+    kf: float,
+    k_eject: float,
+    L_target_i: int,
+    M_target_i: int,
+    M_target_f: int,
+    include_eject_norm: bool = True
+) -> IonizationAmplitudeCoeffs:
+    """
+    Compute scalar amplitude coefficients for (e,2e) ionization.
+
+    This mirrors the excitation algebra of Eq. (f-final)/(g-final), but
+    includes the angular dependence of the *ejected* electron through the
+    spherical harmonic Y_{l_ej,Mf}^*(k_ej). The returned coefficients do
+    NOT include Y_lm factors for either outgoing electron.
+
+    Notes
+    -----
+    - Incident momentum is taken along z (mu_i = 0).
+    - For ionization, the final target state is a continuum partial wave
+      with L_f = l_eject and M_f = m_eject.
+    - include_eject_norm applies the additional sqrt(2/pi)/k_ej factor
+      from the continuum expansion of the ejected electron.
+    """
+    if ki <= 0.0 or kf <= 0.0 or k_eject <= 0.0:
+        return IonizationAmplitudeCoeffs(0.0 + 0.0j, 0.0 + 0.0j)
+
+    mu_i = 0
+
+    # Common prefactors (same as excitation) and ejected normalization
+    Y_li_star = np.sqrt((2 * l_i + 1) / (4 * np.pi))
+    pref_common = (2.0 / np.pi) * (1.0 / (ki * kf))
+    if include_eject_norm:
+        pref_common *= np.sqrt(2.0 / np.pi) * (1.0 / k_eject)
+
+    # Phase for ejected electron partial wave (from chi^{(-)} expansion)
+    phase_eject = 1j ** (-l_eject)
+
+    # --- DIRECT COEFFICIENT ---
+    # Delta: mu_i + M_i = M_f - mu_f -> mu_f = M_f - M_i (mu_i=0)
+    mu_f_dir = M_target_f - M_target_i
+    f_coeff = 0.0 + 0.0j
+    if abs(mu_f_dir) <= l_f:
+        f_scalar = 0.0 + 0.0j
+        for l_T, R_dir in I_L_dir.items():
+            if abs(R_dir) < 1e-20:
+                continue
+
+            e_lf = np.sqrt(2 * l_f + 1)
+            e_li = np.sqrt(2 * l_i + 1)
+            e_Li = np.sqrt(2 * L_target_i + 1)
+            e_lT = np.sqrt(2 * l_T + 1)
+
+            pre_R = (e_lf * e_li * e_Li) / e_lT
+
+            cg1 = clebsch_gordan(l_f, l_i, l_T, 0, 0, 0)
+            if abs(cg1) < 1e-9:
+                continue
+            cg2 = clebsch_gordan(l_T, L_target_i, l_eject, 0, 0, 0)
+            if abs(cg2) < 1e-9:
+                continue
+
+            g_min = max(abs(l_i - L_target_i), abs(l_f - l_eject))
+            g_max = min(l_i + L_target_i, l_f + l_eject)
+
+            sum_g = 0.0
+            for g in range(g_min, g_max + 1):
+                w_racah = racah_W(l_f, l_i, l_eject, L_target_i, l_T, g)
+                if abs(w_racah) < 1e-9:
+                    continue
+
+                cg_A = clebsch_gordan(l_i, L_target_i, g, 0, M_target_i, M_target_i)
+                cg_B = clebsch_gordan(l_f, l_eject, g, mu_f_dir, -M_target_f, -M_target_i)
+                sum_g += w_racah * cg_A * cg_B
+
+            f_scalar += pre_R * cg1 * cg2 * sum_g * R_dir
+
+        phase_i = 1j ** (l_i + l_f)
+        f_coeff = pref_common * phase_i * phase_eject * Y_li_star * f_scalar
+
+    # --- EXCHANGE COEFFICIENT ---
+    # Delta: mu_i + M_i = M_f + mu_f -> mu_f = M_i - M_f (mu_i=0)
+    mu_f_exc = M_target_i - M_target_f
+    g_coeff = 0.0 + 0.0j
+    if abs(mu_f_exc) <= l_f:
+        g_scalar = 0.0 + 0.0j
+        for l_T, R_exc in I_L_exc.items():
+            if abs(R_exc) < 1e-20:
+                continue
+
+            e_Lf = np.sqrt(2 * l_eject + 1)
+            e_li = np.sqrt(2 * l_i + 1)
+            e_Li = np.sqrt(2 * L_target_i + 1)
+            e_lT = np.sqrt(2 * l_T + 1)
+
+            pre_R = (e_Lf * e_li * e_Li) / e_lT
+
+            cg1 = clebsch_gordan(l_eject, l_i, l_T, 0, 0, 0)
+            cg2 = clebsch_gordan(l_T, L_target_i, l_f, 0, 0, 0)
+            if abs(cg1 * cg2) < 1e-9:
+                continue
+
+            g_min = max(abs(l_i - L_target_i), abs(l_eject - l_f))
+            g_max = min(l_i + L_target_i, l_eject + l_f)
+
+            sum_g = 0.0
+            for g in range(g_min, g_max + 1):
+                w_racah = racah_W(l_eject, l_i, l_f, L_target_i, l_T, g)
+                if abs(w_racah) < 1e-9:
+                    continue
+
+                cg_A = clebsch_gordan(l_i, L_target_i, g, 0, M_target_i, M_target_i)
+                cg_B = clebsch_gordan(l_eject, l_f, g, -M_target_f, -mu_f_exc, -M_target_i)
+                sum_g += w_racah * cg_A * cg_B
+
+            g_scalar += pre_R * cg1 * cg2 * sum_g * R_exc
+
+        phase_i_g = 1j ** (l_i - l_f)
+        phase_parity = (-1.0) ** (l_eject + M_target_f)
+        g_coeff = pref_common * phase_i_g * phase_parity * phase_eject * Y_li_star * g_scalar
+
+    return IonizationAmplitudeCoeffs(f_coeff=f_coeff, g_coeff=g_coeff)
 

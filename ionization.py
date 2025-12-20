@@ -82,24 +82,19 @@ from continuum import (
 )
 from distorting_potential import (
     build_distorting_potentials,
-    DistortingPotential,
-    U_distorting 
+    DistortingPotential
 )
 from dwba_matrix_elements import (
     radial_ME_all_L,
     radial_ME_all_L_gpu,
     HAS_CUPY,
-    check_cupy_runtime,
-    RadialDWBAIntegrals,
+    check_cupy_runtime
 )
 from dwba_coupling import (
-    calculate_amplitude_contribution,
-    Amplitudes
+    calculate_ionization_coefficients
 )
 from sigma_total import (
-    integrate_dcs_over_angles,
-    sigma_au_to_cm2,
-    dcs_dwba
+    sigma_au_to_cm2
 )
 from logging_config import get_logger
 
@@ -161,7 +156,8 @@ def _compute_sdcs_at_energy(
 ) -> Tuple[float, Dict[str, float]]:
     """
     Compute the Single Differential Cross Section (SDCS) at a specific ejected 
-    electron energy using Partial Wave DWBA.
+    electron energy using Partial Wave DWBA. The SDCS is angle-integrated over
+    both outgoing electrons using spherical-harmonic orthonormality.
     
     This function implements three key optimizations:
     1. Ejected wave caching - chi_eject computed once per l_ej
@@ -216,7 +212,6 @@ def _compute_sdcs_at_energy(
     
     sigma_energy_au = 0.0
     partial_L_contribs = {}
-    theta_grid = np.linspace(0, np.pi, 200)
     
     Li = chan.l_i
     L_max_proj = chan.L_max_projectile
@@ -267,22 +262,15 @@ def _compute_sdcs_at_energy(
             Lf = l_ej
             
             # Compatible final projectile l_f range
-            lf_min = max(0, l_i_proj - 10)
-            lf_max = l_i_proj + 10
+            # Use a wider range to avoid truncating higher partial waves.
+            lf_min = 0
+            lf_max = max(L_max_proj, l_i_proj + chan.L_max)
             target_parity_change = (Li + Lf) % 2
-            
-            # Initialize amplitude accumulators for magnetic substates
-            amps_shell = {}
-            for Mi in range(-Li, Li+1):
-                for Mf in range(-Lf, Lf+1):
-                    amps_shell[(Mi, Mf)] = Amplitudes(
-                        np.zeros_like(theta_grid, dtype=complex),
-                        np.zeros_like(theta_grid, dtype=complex)
-                    )
             
             # Cache scattered waves for this energy/L combination
             chi_scatt_cache: Dict[int, Optional[ContinuumWave]] = {}
 
+            combo_sum = 0.0
             for l_f_proj in range(lf_min, lf_max + 1):
                 if (l_i_proj + l_f_proj) % 2 != target_parity_change:
                     continue
@@ -318,42 +306,39 @@ def _compute_sdcs_at_energy(
                         L_max=chan.L_max
                     )
 
-                # Accumulate amplitudes over magnetic substates
-                for Mi in range(-Li, Li+1):
-                    for Mf in range(-Lf, Lf+1):
-                        partial_amp = calculate_amplitude_contribution(
-                            theta_grid, 
-                            integrals.I_L_direct, integrals.I_L_exchange,
-                            l_i_proj, l_f_proj, k_i_au, k_scatt_au,
-                            Li, Lf, Mi, Mf
+                # Accumulate angle-integrated coefficients over magnetic substates
+                for Mi in range(-Li, Li + 1):
+                    for Mf in range(-Lf, Lf + 1):
+                        coeffs = calculate_ionization_coefficients(
+                            integrals.I_L_direct,
+                            integrals.I_L_exchange,
+                            l_i_proj,
+                            l_f_proj,
+                            l_ej,
+                            k_i_au,
+                            k_scatt_au,
+                            k_eject_au,
+                            Li,
+                            Mi,
+                            Mf,
+                            include_eject_norm=False  # Keep consistent with excitation
                         )
-                        amps_shell[(Mi, Mf)].f_theta += partial_amp.f_theta
-                        amps_shell[(Mi, Mf)].g_theta += partial_amp.g_theta
+                        if coeffs.f_coeff == 0.0 and coeffs.g_coeff == 0.0:
+                            continue
+                        amp_plus = coeffs.f_coeff + coeffs.g_coeff
+                        amp_minus = coeffs.f_coeff - coeffs.g_coeff
+                        combo_sum += 0.25 * (abs(amp_plus) ** 2) + 0.75 * (abs(amp_minus) ** 2)
 
-            # Compute DCS for this l_i_proj and l_eject combination
-            # ----------------------------------------------------------------
-            # IONIZATION KINEMATICS:
-            # TDCS = (k_f * k_ej / k_i) * |T|²
-            # dcs_dwba computes (k_f/k_i) * |T|², so we multiply by k_ej.
-            # ----------------------------------------------------------------
-            dcs_shell = np.zeros_like(theta_grid, dtype=float)
-            for (Mi, Mf), amp in amps_shell.items():
-                chan_dcs = dcs_dwba(
-                    theta_grid, amp.f_theta, amp.g_theta, 
-                    k_i_au, k_scatt_au, Li, chan.N_equiv
-                )
-                dcs_shell += chan_dcs
-            
             # Apply ionization kinematic factor
             # ----------------------------------------------------------------
-            # TDCS for ionization: (2π)⁵ × (k_scatt × k_ej / k_i) × |T|²
-            # dcs_dwba applies (2π)⁴ × (k_scatt/k_i), so we add k_ej × 2π
+            # TDCS = (k_scatt × k_ej / k_i) × |T|²
+            # Using (2π)^4 convention consistent with excitation, plus k_ej
+            # for the additional continuum electron in ionization.
             # Reference: Jones/Madison (1993), Bote/Salvat (2008)
             # ----------------------------------------------------------------
-            IONIZATION_2PI_FACTOR = 2.0 * np.pi
-            dcs_shell *= k_eject_au * IONIZATION_2PI_FACTOR
-            
-            sigma_shell_au = integrate_dcs_over_angles(theta_grid, dcs_shell)
+            FACTOR_2PI_4 = (2.0 * np.pi) ** 4
+            prefac = (k_scatt_au * k_eject_au / k_i_au) * (float(chan.N_equiv) / float(2 * Li + 1))
+            sigma_shell_au = prefac * FACTOR_2PI_4 * combo_sum
             sigma_this_L += sigma_shell_au
             
         # End loop over l_ej
@@ -434,7 +419,7 @@ def compute_ionization_cs(
     n_energy_steps: int = 10,
     use_exchange: bool = False,
     use_polarization: bool = False,
-    exchange_method: str = 'fumc',
+    exchange_method: str = "fumc",
     n_workers: Optional[int] = None
 ) -> IonizationResult:
     """
@@ -467,11 +452,11 @@ def compute_ionization_cs(
     n_energy_steps : int
         Number of energy integration steps.
     use_exchange : bool
-        Include exchange potential.
+        Deprecated. Exchange potential is not used for ionization (ignored).
     use_polarization : bool
         Include polarization potential.
     exchange_method : str
-        Exchange method ('fumc' = Furness-McCarthy).
+        Deprecated. Retained for API compatibility (ignored).
     n_workers : Optional[int]
         Number of parallel workers (default: CPU count).
         
@@ -481,6 +466,12 @@ def compute_ionization_cs(
         Contains total cross section, SDCS data, and partial wave info.
     """
     t_start = time.perf_counter()
+    if use_exchange or exchange_method != "fumc":
+        logger.debug(
+            "Ionization: use_exchange/exchange_method ignored (static U_j only). "
+            "use_exchange=%s, exchange_method=%s",
+            use_exchange, exchange_method
+        )
 
     # ========================================================================
     # 1. Setup Grid & Potential
@@ -527,12 +518,12 @@ def compute_ionization_cs(
     # 4. Build Distorting Potentials
     # ========================================================================
     k_i_au_in = float(k_from_E_eV(E_incident_eV))
+    # Article Eq. 456-463: Static potentials U_j = V_core + V_Hartree
     U_inc_obj, _ = build_distorting_potentials(
         grid, V_core, orb_i, orb_i, 
         k_i_au=k_i_au_in, 
-        use_exchange=use_exchange,
-        use_polarization=use_polarization,
-        exchange_method=exchange_method
+        use_exchange=False,  # Article uses static potentials only
+        use_polarization=use_polarization
     )
     
     # ========================================================================

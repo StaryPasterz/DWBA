@@ -175,6 +175,25 @@ def main():
         
         E_raw = np.array([p["energy_eV"] for p in pts])
         Sig_raw = np.array([p["sigma_cm2"] for p in pts])
+        is_ionization = ("IP_eV" in pts[0]) and ("sigma_mtong_cm2" not in pts[0])
+
+        if is_ionization:
+            thr = pts[0].get("IP_eV", 1.0)
+            X = [conv_E(e, thr) for e in E_raw]
+            Y = [conv_S(s) for s in Sig_raw]
+
+            if style == 'article':
+                ax.plot(X, Y, 'k:', linewidth=2, label='DWBA (Ionization)')
+            else:
+                ax.plot(X, Y, 'o--', linewidth=2, color='tab:blue', label='DWBA (Ionization)')
+
+            ax.set_xlabel(xlab, fontsize=11)
+            ax.set_ylabel(ylab, fontsize=11)
+            ax.grid(True, linestyle=':', alpha=0.7)
+            ax.set_title(key.replace("_", " "), fontsize=12, fontweight='bold')
+            ax.legend(loc='best', fontsize=9)
+            continue
+
         Sig_tong = np.array([p.get("sigma_mtong_cm2", 0.0) for p in pts])
         Factor = np.array([p.get("calibration_factor", 0.0) for p in pts])
         
