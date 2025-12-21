@@ -177,8 +177,9 @@ def radial_ME_all_L(
     rho1_ex = w * u_f * chi_i
     rho2_ex = w * chi_f * u_i
     
-    # Correction term for Direct L=0: [V_core(r1) - U_i(r1)]
+    # Correction term for L=0: [V_core(r1) - U_i(r1)] from A_0 in the article.
     V_diff = V_core_array - U_i_array
+    overlap_tol = 1e-12
 
     I_L_dir: Dict[int, float] = {}
     I_L_exc: Dict[int, float] = {}
@@ -224,44 +225,13 @@ def radial_ME_all_L(
         int_r2 = np.dot(kernel_L, rho2_dir)
         I_dir = np.dot(rho1_dir, int_r2)
 
-        # Monopole Correction (L=0 only)
+        # L=0 correction from (V_core - U_i) term in A_0.
+        # For orthogonal bound states, the overlap integral is ~0.
         if L == 0:
-            # Add correction term: Int rho1 * V_diff * Int rho2
-            # because the correction to Kernel is constant V_diff(r1) along r2 ??
-            # NO. The correction in formula is: 
-            # I_corr = Int dr1 dr2 rho1(r1) * [V_diff(r1) * delta_L0] * rho2(r2) 
-            # Note 1/r12 term is 1/r_>. The correction is purely 1-body operator.
-            # But where does it enter?
-            # T = < ... | V - U | ... >.
-            # V - U = (V_core + 1/r12) - (V_core + V_H + V_ex).
-            #       = 1/r12 - V_H - V_ex.
-            # Wait, V_diff in my code was V_core - U_i. 
-            # U_i = V_core + V_H. So V_diff = -V_H.
-            # So we represent (1/r12 - V_H).
-            # 1/r12 = sum_L (pow... P_L).
-            # V_H = integral...
-            # The monopolar part of 1/r12 is V_H(r).
-            # So for L=0, the term is (1/r_> - V_H(r1)).
-            # My code calculates 1/r_> part via kernel.
-            # I need to SUBTRACT V_H part.
-            # So Correction adds Integral[ rho1(r1) * (-V_H(r1)) * rho2(r2) ] ?
-            # Wait, rho2 = u_f u_i. Integral rho2 ~ delta_fi (orthonormality).
-            # If f != i, integral rho2 is 0. So V_H term vanishes?
-            # Yes, for inelastic transition i!=f, the static potential term terms vanish by orthogonality
-            # IF the states are orthogonal.
-            # So strictly speaking, for excitation, V_diff correction is 0.
-            # BUT, we might want to keep it general.
-            # original code added V_diff.
-            # V_diff = V_core - U_i = -V_H_i.
-            # So we add < rho1 | -V_H_i | rho2 >.
-            # If orthogonality holds, <rho2> = 0, so term is 0.
-            # If not (e.g. non-orthogonal basis?), it matters.
-            # I will implement it efficiently.
-            
-            # Correction = Integral[ rho1(r1) * V_diff(r1) ] * Integral[ rho2(r2) ]
-            sum_rho2 = np.sum(rho2_dir) 
-            corr_val = np.dot(rho1_dir, V_diff) * sum_rho2
-            I_dir += corr_val
+            sum_rho2 = np.sum(rho2_dir)
+            if abs(sum_rho2) > overlap_tol:
+                corr_val = np.dot(rho1_dir, V_diff) * sum_rho2
+                I_dir += corr_val
 
         I_L_dir[L] = float(I_dir)
         
@@ -270,16 +240,11 @@ def radial_ME_all_L(
         I_ex = np.dot(rho1_ex, int_r2_ex)
         
         if L == 0:
-            # Exchange Correction Term:
-            # Corresponds to (V_core - U_i) delta_{L,0} in the interaction expansion.
-            # Term = Integral[ rho1_ex(r1) * V_diff(r1) ] * Integral[ rho2_ex(r2) ]
-            # where rho1_ex = u_f(r1) * chi_i(r1)
-            #       rho2_ex = chi_f(r2) * u_i(r2)
-            # Unlike Direct case, sum_rho2_ex is overlap <chi_f|u_i>, which is non-zero
-            # unless explicitly orthogonalized.
+            # Exchange correction term for (V_core - U_i) delta_{L,0}.
             sum_rho2_ex = np.sum(rho2_ex)
-            corr_val_ex = np.dot(rho1_ex, V_diff) * sum_rho2_ex
-            I_ex += corr_val_ex
+            if abs(sum_rho2_ex) > overlap_tol:
+                corr_val_ex = np.dot(rho1_ex, V_diff) * sum_rho2_ex
+                I_ex += corr_val_ex
         
         I_L_exc[L] = float(I_ex)
 
@@ -324,6 +289,7 @@ def radial_ME_all_L_gpu(
     rho2_ex = w_gpu * chi_f_gpu * u_i_gpu
     
     V_diff = V_core_gpu - U_i_gpu
+    overlap_tol = 1e-12
 
     # 3. Kernel Construction on GPU
     # Broadcasting to create N x N matrices
@@ -355,21 +321,23 @@ def radial_ME_all_L_gpu(
         int_r2 = cp.dot(kernel_L, rho2_dir)
         I_dir = cp.dot(rho1_dir, int_r2)
         
-        # L=0 Correction
+        # L=0 correction from (V_core - U_i) term in A_0.
         if L == 0:
             sum_rho2 = cp.sum(rho2_dir)
-            corr_val = cp.dot(rho1_dir, V_diff) * sum_rho2
-            I_dir += corr_val
+            if float(cp.abs(sum_rho2)) > overlap_tol:
+                corr_val = cp.dot(rho1_dir, V_diff) * sum_rho2
+                I_dir += corr_val
             
         # Exchange Integral
         int_r2_ex = cp.dot(kernel_L, rho2_ex)
         I_ex = cp.dot(rho1_ex, int_r2_ex)
         
         if L == 0:
-            # Exchange Correction Term (GPU)
+            # Exchange correction term for (V_core - U_i) delta_{L,0}.
             sum_rho2_ex = cp.sum(rho2_ex)
-            corr_val_ex = cp.dot(rho1_ex, V_diff) * sum_rho2_ex
-            I_ex += corr_val_ex
+            if float(cp.abs(sum_rho2_ex)) > overlap_tol:
+                corr_val_ex = cp.dot(rho1_ex, V_diff) * sum_rho2_ex
+                I_ex += corr_val_ex
         
         # Sync Scalar Results to CPU
         I_L_dir[L] = float(I_dir) # Explicit cast triggers sync

@@ -199,8 +199,7 @@ def _simpson_weights_nonuniform(r: np.ndarray) -> np.ndarray:
         h2 = diffs[i+1]
         
         # Coefficients for parabola over r[i], r[i+1], r[i+2]
-        # derived from Lagrange polynomials integration
-        alpha = (2*h1**3 - h2**3 + 3*h1*h2*(h1+h2)) / (6*h1*(h1+h2)) # Wait, simple?
+        # derived from Lagrange polynomials integration.
         # Standard Simpson nonuniform:
         # Integral = (h1+h2)/6 * [ (2 - h2/h1) f0 + (h1+h2)^2/(h1h2) f1 + (2 - h1/h2) f2 ]
         

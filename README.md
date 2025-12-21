@@ -24,10 +24,10 @@ Comprehensive Python suite for computing electron–atom excitation and ionizati
 
 ## Features
 - DWBA excitation cross sections (total and differential) with static + optional polarization potentials; exchange via T-matrix.
-- DWBA ionization cross sections (total and SDCS) using (2π)⁵ kinematic factor.
+- DWBA ionization cross sections (TICS, SDCS, optional TDCS) using (2π)⁴ kinematic factor (Jones & Madison 2003), with auto-scaled L_max and cached scattered waves.
 - Empirical calibration (Tong model) for excitation, with per-energy normalization factors.
 - Plotting in multiple unit conventions (cm², a.u., article E/E\_thr, mixed).
-- Partial-wave convergence diagnostics and Born top-up.
+- Partial-wave convergence diagnostics and Born top-up (DCS scaled to match top-up TCS).
 - Potential fitting utility with Tong-Lin (2005) methodology.
 - GPU acceleration via CuPy (optional).
 
@@ -68,7 +68,7 @@ DW_antigravity_v2/
 
 ### Cross Section Formulas
 - **Excitation DCS**: `dσ/dΩ = (2π)⁴ × (k_f/k_i) × |T|²` (Eq. 216)
-- **Ionization TDCS**: `d³σ/(dΩ₁dΩ₂dE) = (2π)⁵ × (k_f×k_ej/k_i) × |T|²` (Jones/Madison 1993)
+- **Ionization TDCS**: `d³σ/(dΩ₁dΩ₂dE) = (2π)⁴ × (k_f×k_ej/k_i) × |T|²` (Jones/Madison 2003)
 
 ## Units and Normalization
 | Quantity | Internal Unit | Output Unit |
@@ -116,16 +116,22 @@ Menu:
 - Select target from `atoms.json` or enter custom parameters
 - Configure initial/final states (n, l)
 - Choose model: DWBA (static) or DWBA + polarization
+- Numerics: L_max (multipole), L_max_projectile (base, auto-scaled), n_theta (DCS grid)
 - Results saved to `results_<run>_exc.json`
 
 ### Ionization Scan
 - Similar setup to excitation
-- Uses (2π)⁵ kinematic factor for proper continuum normalization
-- Results include TICS and SDCS data
-- SDCS is integrated over both outgoing electron angles using Y_lm orthonormality (no fixed-angle TDCS grid).
+- Uses (2π)⁴ kinematic factor for proper continuum normalization (TDWBA convention)
+- Results include TICS and SDCS data; optional TDCS for specified angle triplets
+- SDCS is integrated over both outgoing electron angles using Y_lm orthonormality
 - Tong calibration applies to excitation only; ionization plots show DWBA only.
+- Partial-wave diagnostics are stored (integrated over ejected energy).
+- TDCS uses angles (theta_scatt, theta_eject, phi_eject) with phi_scatt = 0 (scattering plane).
+- Exchange term uses swapped detection angles for indistinguishable electrons (Jones/Madison).
+- Numerics: l_eject_max, L_max (multipole), L_max_projectile (base, auto-scaled from k_i), n_energy_steps.
+- Polarization option is heuristic and not part of the article DWBA.
 
-Outputs: `results_<run>_exc.json`, `results_<run>_ion.json` in project root. Excitation entries include angular grids (`theta_deg`) and both raw/calibrated DCS in a.u. for later plotting.
+Outputs: `results_<run>_exc.json`, `results_<run>_ion.json` in project root. Excitation entries include angular grids (`theta_deg`) and both raw/calibrated DCS in a.u. for later plotting. Ionization entries include SDCS data and optional TDCS entries (`angles_deg`, `values`).
 
 ### Plotting Results
 ```bash
@@ -192,6 +198,7 @@ Verifies bound-state norms, continuum waves, and partial-wave convergence.
 ## Performance Tips
 - **Near-threshold**: Increase `n_points` and `r_max`
 - **keV energies**: Ensure sufficient `L_max_projectile`
+- **Auto-L cap**: If logs show L_max_proj hit cap=100, raise `L_max_projectile`
 - **GPU**: Install CuPy for 5-10× speedup on radial integrals
 - **Parallel**: Code auto-detects CPU cores for multiprocessing
 
@@ -199,7 +206,7 @@ Verifies bound-state norms, continuum waves, and partial-wave convergence.
 
 | Issue | Solution |
 |-------|----------|
-| Cross sections too small | Check (2π)⁴ factor in excitation, (2π)⁵ in ionization |
+| Cross sections too small | Check (2π)⁴ factor in excitation and ionization |
 | Near-threshold zeros | Use log grid, ensure energy > threshold + 0.5 eV |
 | Slow runs | Reduce `n_points`, enable GPU |
 | Fit gives different results | Reference params are protected; fitted params may vary |

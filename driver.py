@@ -301,6 +301,10 @@ def compute_total_excitation_cs(
     """
 
     t0 = time.perf_counter()
+    if use_polarization_potential:
+        logger.warning(
+            "Excitation: polarization potential is heuristic and not part of the article DWBA."
+        )
     
     # 1. Grid & Core
     if _precalc_grid is not None and _precalc_V_core is not None:
@@ -393,7 +397,9 @@ def compute_total_excitation_cs(
     # Reasonable upper limit to prevent runaway in edge cases
     L_max_proj = min(L_max_proj, 100)
     
-    logger.info("Auto-L: E=%.1f eV (k=%.2f) -> L_max_proj=%d", E_incident_eV, k_i_au, L_max_proj) 
+    logger.info("Auto-L: E=%.1f eV (k=%.2f) -> L_max_proj=%d", E_incident_eV, k_i_au, L_max_proj)
+    if L_max_proj >= 100:
+        logger.warning("Auto-L: L_max_proj hit cap=100; consider raising L_max_projectile.")
     
     # --- Execution Strategy Selection ---
     USE_GPU = False
@@ -670,20 +676,10 @@ def compute_total_excitation_cs(
     
     total_dcs = np.zeros_like(theta_grid, dtype=float)
     
-    prefac_kinematics = (k_f_au / k_i_au)
-    # N_equiv factor? Eq 216 says: N * (k_f/k_i) * 1/(2Li+1) ...
-    # Our amplitudes already include geometric factors?
-    # Eq 412 has "2/pi".
-    # Cross section formula dsigma/dOmega = ... |f|^2 ...
-    # Wait, Eq 216 puts factors EXPLICITLY.
-    # But our calculate_amplitude_contribution includes (2/pi) * 1/(ki kf).
-    # Check normalization. 
-    # Standard: dSigma/dOmega = (kf/ki) |f_scattering|^2.
-    # Our f is T-matrix-like.
-    # Usually f_scattering = -(2pi)^2 ... T.
-    # Let's trust Eq 412 produces f_scattering directly (it has asymptotic form).
-    # Yes, Eq 403-410 shows f = ... integral.
-    # So dcs = (k_f / k_i) * Sum |f|^2.
+    # The normalization follows Eq. 216 via dcs_dwba, which applies:
+    # (2pi)^4, k_f/k_i, and N_equiv/(2L_i+1).
+    # calculate_amplitude_contribution already includes the (2/pi)*(1/ki*kf)
+    # factors from the continuum normalization.
     
     spin_singlet_weight = 1.0/4.0
     spin_triplet_weight = 3.0/4.0
@@ -709,6 +705,8 @@ def compute_total_excitation_cs(
     # Integrate for TCS
     sigma_total_au = integrate_dcs_over_angles(theta_grid, total_dcs)
     sigma_total_cm2 = sigma_au_to_cm2(sigma_total_au)
+    sigma_total_au_base = sigma_total_au
+    sigma_total_cm2_base = sigma_total_cm2
     
         # 7. Calibration
     # Moved to calibration.py and driver integration in main
@@ -716,6 +714,7 @@ def compute_total_excitation_cs(
     # --- Born Top-Up (Excitation) ---
     # Extrapolate higher partial waves using geometric series if applicable
     
+    born_topup_added = False
     if partial_waves_dict:
         try:
             # Extract L indices that were computed (skip _excluded keys)
@@ -723,7 +722,6 @@ def compute_total_excitation_cs(
                                if k.startswith("L") and not k.endswith("_excluded") and k[1:].isdigit()])
             
             # Search backwards to find a truly monotonically decaying segment
-            born_topup_added = False
             if len(l_indices) >= 3:
                 for i in range(len(l_indices) - 1, 1, -1):  # Start from end, go backwards
                     L_try = l_indices[i]
@@ -754,6 +752,14 @@ def compute_total_excitation_cs(
         except Exception as e:
             # Non-critical enhancement
             logger.debug("Top-Up: Skipped: %s", e)
+
+    if born_topup_added and sigma_total_cm2_base > 0.0:
+        # Scale DCS so that its integral matches the top-up-corrected TCS.
+        # This assumes the missing high-L tail preserves the angular shape.
+        scale = sigma_total_cm2 / sigma_total_cm2_base
+        if np.isfinite(scale) and scale > 0.0:
+            total_dcs *= scale
+            sigma_total_au = sigma_total_au_base * scale
 
     return DWBAResult(
         True, E_incident_eV, dE_target_eV,

@@ -462,7 +462,8 @@ def build_distorting_potentials(
     Exchange is NOT included in potentials - it's treated perturbatively 
     in the T-matrix via amplitude g (Article standard approach).
       
-    If use_polarization=True, adds polarization potential.
+    If use_polarization=True, adds a heuristic polarization potential
+    (SEP-style; not part of the article DWBA).
     
     Note: use_exchange parameter is deprecated and ignored. Exchange in
     potentials was removed as it caused double-counting with T-matrix exchange.
@@ -537,22 +538,9 @@ def build_distorting_potentials(
     U_f_arr = U_distorting(V_core_array, V_H_f)
         
     if use_polarization:
-        # Add Polarization Potential V_pol
-        # Need to estimate alpha_d and rc for initial and final states.
-        # Heuristic:
-        # alpha_d approx (9/2) * (n^6 / Z^4) ?? Wait, simplistic.
-        # Ground state H (n=1, Z=1): 4.5.
-        # Ground state He+ (n=1, Z=2): 4.5/16 = 0.28.
-        # n-scaling is strong (n^6 or n^4).
-        # rc approx 1.5 * <r>.
-        # <r> = (3n^2 - l(l+1))/(2Z).
-        
-        # Helper to estimate
-        def estimate_pol_params(orb: BoundOrbital, Z_eff: float):
-            # We don't have n,l inside orbital directly? We do: orb.n_index is n-l.
-            # But the caller knows n,l.
-            # Actually, let's approximate <r> from the orbital itself!
-            # <r> = Integrate r * |u|^2 dr.
+        # Heuristic SEP polarization potential (not part of article DWBA).
+        # Estimate alpha_d and rc from orbital expectation values.
+        def estimate_pol_params(orb: BoundOrbital):
             r_vec = grid.r
             u2 = np.abs(orb.u_of_r)**2
             expectation_r = np.trapz(r_vec * u2, r_vec)
@@ -561,30 +549,12 @@ def build_distorting_potentials(
             rc_val = 1.3 * expectation_r # Slightly tighter than 1.5
             
             # alpha_d
-            # Use Closure approx scaling: alpha ~ (4/9) * <r^2>^2 ? No.
-            # alpha ~ 2 * <r^2>.
-            # Let's compute <r^2>.
-            expectation_r2 = np.trapz(r_vec**2 * u2, r_vec)
-            # Unsold uses alpha approx 4.5 a0^3 for H.
-            # Approx relation: alpha_d approx (2/3?) * <r^2 / deltaE>.
-            # Empirical for H-like: alpha = 4.5 * (a0/Z)^3 * n^k ?
-            # Let's use simple scaling from H 1s: alpha = 4.5 * (expectation_r / 1.5)**3 ?
-            # Or better: alpha = 4.5 * (expectation_r2 / 3.0)**2 ?
-            # Let's use <r^2>^2 scaling. <r^2>_H1s = 3.
-            # alpha_d_H1s = 4.5.
-            # So alpha_d = 0.5 * (<r^2>)^? 
-            # Actually a known strong bound is alpha >= 16/9 <r^2>^2 / N.
-            # Let's take alpha_d = 0.5 * (expectation_r2)**(1.5)? 
-            # Robust fallback: alpha_d = 4.5 * expectation_r**3.
-            # (1.5**3 = 3.375. 4.5).
             alpha_val = 1.3 * (expectation_r**3) 
             
             return alpha_val, rc_val
             
-        Z_eff_est = 1.0 # Effective charge? Hard to guess. Use geometrical estimation.
-        
-        a_i, rc_i = estimate_pol_params(orbital_initial, 1.0)
-        a_f, rc_f = estimate_pol_params(orbital_final, 1.0)
+        a_i, rc_i = estimate_pol_params(orbital_initial)
+        a_f, rc_f = estimate_pol_params(orbital_final)
         
         V_pol_i = polarization_potential(grid, a_i, rc_i)
         V_pol_f = polarization_potential(grid, a_f, rc_f)

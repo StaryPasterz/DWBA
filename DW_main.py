@@ -339,6 +339,8 @@ def run_scan_excitation(run_name):
     if choice == '2':
         use_pol = True
         print_info("Model: Static DWBA + Polarization")
+        print_warning("Polarization potential is heuristic (not in the article DWBA).")
+        logger.warning("Excitation: polarization potential is heuristic (not in the article DWBA).")
     else:
         print_info("Model: Static DWBA")
     
@@ -360,13 +362,19 @@ def run_scan_excitation(run_name):
         print("Error: Invalid n, l combination (n must be > l).")
         return
 
+    print_subheader("Excitation Numerics")
+    L_max_integrals = get_input_int("  L_max (multipole)", 15)
+    L_max_proj = get_input_int("  L_max_projectile (base, auto-scaled)", 5)
+    n_theta = get_input_int("  n_theta (DCS angular grid)", 200)
+
     spec = ExcitationChannelSpec(
         l_i=li, l_f=lf,
         n_index_i=n_idx_i, n_index_f=n_idx_f,
         N_equiv=1, # SAE approximation
-        L_max_integrals=15, 
+        L_max_integrals=L_max_integrals, 
         L_target_i=li,
-        L_target_f=lf
+        L_target_f=lf,
+        L_max_projectile=L_max_proj
     )
     
     # Use parameters from library
@@ -398,6 +406,7 @@ def run_scan_excitation(run_name):
             pilot_E, spec, core_params, 
             r_max=200.0, n_points=3000, 
             use_polarization_potential=use_pol,
+            n_theta=n_theta,
         )
     except Exception as e:
         logger.debug("Pilot calculation failed: %s", e)
@@ -464,6 +473,27 @@ def run_scan_excitation(run_name):
         n_points=3000
     )
     print_success("Target prepared")
+
+    run_meta = {
+        "model": "static+polarization" if use_pol else "static",
+        "use_polarization": use_pol,
+        "grid": {
+            "r_min": float(prep.grid.r[0]),
+            "r_max": float(prep.grid.r[-1]),
+            "n_points": len(prep.grid.r),
+        },
+        "numerics": {
+            "L_max_integrals": spec.L_max_integrals,
+            "L_max_projectile_base": spec.L_max_projectile,
+            "n_theta": n_theta,
+        },
+        "calibration": {
+            "alpha": alpha,
+            "transition_class": t_class,
+            "pilot_energy_eV": pilot_E,
+            "threshold_eV": dE_thr,
+        },
+    }
     
     print_subheader(f"Calculation: {len(energies)} points")
     print("  " + "-" * 45)
@@ -474,7 +504,7 @@ def run_scan_excitation(run_name):
         for E in energies:
             if E <= 0.01: continue
             try:
-                res = compute_excitation_cs_precalc(E, prep)
+                res = compute_excitation_cs_precalc(E, prep, n_theta=n_theta)
                 
                 # Log partial waves to debug
                 if res.partial_waves:
@@ -512,7 +542,8 @@ def run_scan_excitation(run_name):
                     "theta_deg": theta_deg,
                     "dcs_au_raw": dcs_raw_au,
                     "dcs_au_calibrated": dcs_cal_au,
-                    "partial_waves": res.partial_waves
+                    "partial_waves": res.partial_waves,
+                    "meta": run_meta
                 })
                 
             except Exception as e:
@@ -563,6 +594,8 @@ def run_scan_ionization(run_name):
     if choice == '2':
         use_pol = True
         print_info("Model: Static DWBA + Polarization")
+        print_warning("Polarization potential is heuristic (not in the article DWBA).")
+        logger.warning("Ionization: polarization potential is heuristic (not in the article DWBA).")
     else:
         print_info("Model: Static DWBA")
 
@@ -596,13 +629,20 @@ def run_scan_ionization(run_name):
         print("Error: Invalid n, l combination (n must be > l).")
         return
         
+    print("\n--- Ionization Numerics ---")
+    l_eject_max = get_input_int("  l_eject_max", 3)
+    L_max = get_input_int("  L_max (multipole)", 15)
+    L_max_proj = get_input_int("  L_max_projectile (base, auto-scaled)", 50)
+    n_energy_steps = get_input_int("  n_energy_steps (SDCS integration)", 10)
+
     spec = IonizationChannelSpec(
         l_i=li,
         n_index_i=n_idx_i,
         N_equiv=1,
-        l_eject_max=3,  # Sum up to F waves? 
-        L_max=15, 
-        L_i_total=li
+        l_eject_max=l_eject_max,
+        L_max=L_max,
+        L_i_total=li,
+        L_max_projectile=L_max_proj
     )
     
     # Use parameters from library
@@ -610,6 +650,30 @@ def run_scan_ionization(run_name):
     
     key = f"Ionization_Z{Z}_{atom_entry.name}_n{ni}l{li}"
     # --- Main Loop ---
+
+    # Optional TDCS angles (angle-resolved)
+    tdcs_angles = None
+    tdcs_choice = input("\nCompute TDCS (angle-resolved)? [y/N]: ").strip().lower()
+    if tdcs_choice == 'y':
+        print("Enter angle triplets (theta_scatt, theta_eject, phi_eject) in degrees.")
+        print("Example: 30,30,180; 45,60,180  (use ';' to separate triplets)")
+        raw = input("Angles: ").strip()
+        if raw:
+            tdcs_angles = []
+            for group in [g.strip() for g in raw.split(';') if g.strip()]:
+                parts = [p for p in group.replace(',', ' ').split() if p]
+                if len(parts) not in (2, 3):
+                    print_warning(f"Skipping invalid angle entry: '{group}'")
+                    continue
+                try:
+                    th_scatt = float(parts[0])
+                    th_eject = float(parts[1])
+                    ph_eject = float(parts[2]) if len(parts) == 3 else 0.0
+                    tdcs_angles.append((th_scatt, th_eject, ph_eject))
+                except ValueError:
+                    print_warning(f"Skipping invalid angle entry: '{group}'")
+            if not tdcs_angles:
+                tdcs_angles = None
     
     # Pre-calculate (Optimization)
     print("\n[Optimization] Pre-calculating static target properties...")
@@ -645,8 +709,17 @@ def run_scan_ionization(run_name):
                     E, spec, 
                     core_params=core_params, # Ignored for grid/V_core generation if _precalc used
                     r_max=200.0, n_points=3000,
-                    use_polarization=use_pol, 
+                    use_polarization=use_pol,
+                    tdcs_angles_deg=tdcs_angles,
+                    n_energy_steps=n_energy_steps,
+                    _precalc_grid=prep.grid,
+                    _precalc_V_core=prep.V_core,
+                    _precalc_orb_i=prep.orb_i
                 )
+                
+                if res.partial_waves:
+                    sorted_pws = sorted(res.partial_waves.items(), key=lambda x: x[1], reverse=True)[:3]
+                    logger.debug("Ionization E=%.1f: %s", E, ", ".join(f"{k}={v:.1e}" for k, v in sorted_pws))
                 
                 if res.sigma_total_cm2 > 0:
                     print(f"OK. σ={res.sigma_total_cm2:.2e} cm2")
@@ -659,7 +732,12 @@ def run_scan_ionization(run_name):
                     "sigma_cm2": res.sigma_total_cm2,
                     "IP_eV": res.IP_eV,
                     "sdcs": res.sdcs_data,
-                    "partial_waves": res.partial_waves
+                    "tdcs": res.tdcs_data,
+                    "partial_waves": res.partial_waves,
+                    "meta": {
+                        **(res.metadata or {}),
+                        "tdcs_angles_deg": tdcs_angles,
+                    }
                 })
             except Exception as e:
                 import traceback

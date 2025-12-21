@@ -31,9 +31,10 @@ Normalization
 
 Cross Section Formula
 ---------------------
-TDCS = (2π)⁵ × (k_scatt × k_ej / k_i) × |T|²
+TDCS = (2*pi)^4 * (k_scatt * k_ej / k_i) * |T|^2
 
-The (2π)⁵ factor accounts for two continuum electrons in the final state.
+This follows the TDWBA convention with continuum waves normalized to delta(k-k').
+Exchange uses swapped detection angles for indistinguishable electrons.
 
 Units
 -----
@@ -43,8 +44,9 @@ Units
 
 References
 ----------
-- S. Jones, D.H. Madison et al., Phys. Rev. A 48, 2285 (1993)
+- S. Jones, D.H. Madison, Phys. Rev. A 67, 052701 (2003)
 - D. Bote, F. Salvat, Phys. Rev. A 77, 042701 (2008)
+- Llovet, Powell, Salvat, Jablonski, J. Phys. Chem. Ref. Data 43, 013102 (2014)
 
 Logging
 -------
@@ -57,7 +59,7 @@ import numpy as np
 import time
 import os
 from dataclasses import dataclass
-from typing import Optional, Dict, Tuple, List
+from typing import Optional, Dict, Tuple, List, Any
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from grid import (
@@ -96,6 +98,7 @@ from dwba_coupling import (
 from sigma_total import (
     sigma_au_to_cm2
 )
+from scipy.special import sph_harm
 from logging_config import get_logger
 
 # Initialize module logger
@@ -119,7 +122,7 @@ class IonizationChannelSpec:
     L_max: int        # Multipole max for matrix elements
     L_i_total: int    # Total L of initial target (usually l_i for H/He+)
     
-    # Projectile partial wave limit (can be set high; adaptive convergence will truncate)
+    # Projectile partial wave base limit (auto-scaled from k_i as needed)
     L_max_projectile: int = 50
     
     # Convergence threshold for adaptive L_max (relative change in sigma)
@@ -133,8 +136,30 @@ class IonizationResult:
     sigma_total_cm2: float
     # Detailed SDCS dSigma/dE
     sdcs_data: Optional[List[Tuple[float, float]]] = None # (E_eject_eV, dcs_cm2/eV)
-    # Partial Waves contributions (L_projectile -> Sigma)
+    # Optional TDCS d^3Sigma/(dOmega_scatt dOmega_eject dE)
+    # Stored as list of dicts:
+    # [{"angles_deg": (theta_scatt, theta_eject, phi_eject), "values": [(E_eject_eV, tdcs_cm2_per_ev_sr2), ...]}, ...]
+    tdcs_data: Optional[List[Dict[str, Any]]] = None
+    # Partial waves (L_projectile -> Sigma), integrated over E_eject
     partial_waves: Optional[Dict[str, float]] = None
+    # Run metadata for diagnostics/reproducibility
+    metadata: Optional[Dict[str, Any]] = None
+
+
+def _auto_L_max(k_i_au: float, L_requested: int, L_cap: int = 100) -> int:
+    """
+    Auto-scale projectile L_max based on semi-classical estimates.
+
+    Matches the heuristic used in the excitation driver:
+      L_dynamic ~ k_i * 8 + 10
+      L_physical_max ~ k_i * 30 + 5
+    """
+    L_dynamic = int(k_i_au * 8.0) + 10
+    L_physical_max = int(k_i_au * 30.0) + 5
+    L_max_proj = max(L_requested, L_dynamic)
+    L_max_proj = min(L_max_proj, L_physical_max)
+    L_max_proj = min(L_max_proj, L_cap)
+    return max(L_max_proj, 0)
 
 # ============================================================================
 # Worker Function for Single Energy Point
@@ -152,8 +177,9 @@ def _compute_sdcs_at_energy(
     U_inc_vals: np.ndarray, 
     V_hartree_inc: np.ndarray,
     use_gpu: bool,
-    chi_i_cache: Optional[Dict[int, ContinuumWave]] = None
-) -> Tuple[float, Dict[str, float]]:
+    chi_i_cache: Optional[Dict[int, ContinuumWave]] = None,
+    tdcs_angles: Optional[List[Tuple[float, float, float]]] = None
+) -> Tuple[float, Dict[str, float], Optional[List[float]]]:
     """
     Compute the Single Differential Cross Section (SDCS) at a specific ejected 
     electron energy using Partial Wave DWBA. The SDCS is angle-integrated over
@@ -161,8 +187,8 @@ def _compute_sdcs_at_energy(
     
     This function implements three key optimizations:
     1. Ejected wave caching - chi_eject computed once per l_ej
-    2. Scattered wave caching - chi_scatt cached within the partial wave loop
-    3. Adaptive L_max - convergence detection to stop early
+    2. Scattered wave caching - chi_scatt cached once per energy point
+    3. Adaptive L_max - convergence detection using coherent SDCS
     
     Parameters
     ----------
@@ -190,11 +216,15 @@ def _compute_sdcs_at_energy(
         Whether to use GPU acceleration for integrals.
     chi_i_cache : Optional[Dict[int, ContinuumWave]]
         Pre-computed incident waves (keyed by l).
+    tdcs_angles : Optional[List[Tuple[float, float, float]]]
+        Optional list of (theta_scatt, theta_eject, phi_eject) in radians.
+        If provided, TDCS is computed for each angle triplet.
+        Exchange term uses swapped detection angles (indistinguishable electrons).
         
     Returns
     -------
-    Tuple[float, Dict[str, float]]
-        (SDCS value in a.u., partial wave contributions dict)
+    Tuple[float, Dict[str, float], Optional[List[float]]]
+        (SDCS value in a.u., partial wave contributions dict, optional TDCS list)
     """
     E_scatt_eV = E_total_final_eV - E_eject_eV
     
@@ -212,9 +242,31 @@ def _compute_sdcs_at_energy(
     
     sigma_energy_au = 0.0
     partial_L_contribs = {}
+
+    # Coherent SDCS sums per (l_ej, l_f, Mi, Mf). Needed to preserve
+    # interference between different projectile partial waves l_i.
+    sdcs_amp: List[Dict[Tuple[int, int, int], List[complex]]] = []
+    for _ in range(chan.l_eject_max + 1):
+        sdcs_amp.append({})
+
+    tdcs_amp = None
+    if tdcs_angles:
+        tdcs_amp = []
+        for _ in tdcs_angles:
+            tdcs_amp.append({})
     
     Li = chan.l_i
-    L_max_proj = chan.L_max_projectile
+    L_max_proj = _auto_L_max(k_i_au, chan.L_max_projectile)
+
+    FACTOR_2PI_4 = (2.0 * np.pi) ** 4
+    prefac_common = (k_scatt_au * k_eject_au / k_i_au) * (float(chan.N_equiv) / float(2 * Li + 1))
+    prefac_sigma = prefac_common * FACTOR_2PI_4
+
+    def _spin_combo(f_val: complex, g_val: complex) -> float:
+        """Spin-averaged |f+g|^2 and |f-g|^2 combination."""
+        amp_plus = f_val + g_val
+        amp_minus = f_val - g_val
+        return 0.25 * (abs(amp_plus) ** 2) + 0.75 * (abs(amp_minus) ** 2)
     
     # ========================================================================
     # OPTIMIZATION 1: Ejected Wave Cache
@@ -229,12 +281,30 @@ def _compute_sdcs_at_energy(
             )
         except Exception:
             chi_eject_cache[l_ej] = None
+
+    # Cache scattered waves once per energy (reused across all l_i and l_ej).
+    chi_scatt_cache: Dict[int, Optional[ContinuumWave]] = {}
+    l_f_max_scatt = L_max_proj + chan.L_max
+    for l_f in range(l_f_max_scatt + 1):
+        try:
+            chi_scatt_cache[l_f] = solve_continuum_wave(
+                grid, U_ion_obj, l_f, E_scatt_eV, z_ion=z_ion_final
+            )
+        except Exception:
+            chi_scatt_cache[l_f] = None
+    n_scatt_fail = sum(1 for v in chi_scatt_cache.values() if v is None)
+    if n_scatt_fail:
+        logger.debug(
+            "Ionization E_ej=%.2f eV: scattered waves failed for %d/%d l_f values",
+            E_eject_eV, n_scatt_fail, len(chi_scatt_cache)
+        )
     
     # ========================================================================
     # OPTIMIZATION 2: Adaptive L_max with Convergence Detection
     # Track cumulative sigma and stop when relative change is small.
     # ========================================================================
-    sigma_accumulated = 0.0
+    combo_sum_total = 0.0
+    sigma_coherent_prev = 0.0
     consecutive_small_changes = 0
     CONVERGENCE_WINDOW = 3  # Stop after 3 consecutive small contributions
     
@@ -267,25 +337,13 @@ def _compute_sdcs_at_energy(
             lf_max = max(L_max_proj, l_i_proj + chan.L_max)
             target_parity_change = (Li + Lf) % 2
             
-            # Cache scattered waves for this energy/L combination
-            chi_scatt_cache: Dict[int, Optional[ContinuumWave]] = {}
-
             combo_sum = 0.0
             for l_f_proj in range(lf_min, lf_max + 1):
                 if (l_i_proj + l_f_proj) % 2 != target_parity_change:
                     continue
                 
                 # Get or compute scattered wave
-                if l_f_proj in chi_scatt_cache:
-                    chi_scatt_wave = chi_scatt_cache[l_f_proj]
-                else:
-                    try:
-                        chi_scatt_wave = solve_continuum_wave(
-                            grid, U_ion_obj, l_f_proj, E_scatt_eV, z_ion=z_ion_final
-                        )
-                    except Exception:
-                        chi_scatt_wave = None
-                    chi_scatt_cache[l_f_proj] = chi_scatt_wave
+                chi_scatt_wave = chi_scatt_cache.get(l_f_proj)
                 
                 if chi_scatt_wave is None:
                     continue
@@ -321,30 +379,68 @@ def _compute_sdcs_at_energy(
                             Li,
                             Mi,
                             Mf,
-                            include_eject_norm=False  # Keep consistent with excitation
+                            include_eject_norm=True  # Include ejected-wave normalization (DWBA)
                         )
                         if coeffs.f_coeff == 0.0 and coeffs.g_coeff == 0.0:
                             continue
-                        amp_plus = coeffs.f_coeff + coeffs.g_coeff
-                        amp_minus = coeffs.f_coeff - coeffs.g_coeff
-                        combo_sum += 0.25 * (abs(amp_plus) ** 2) + 0.75 * (abs(amp_minus) ** 2)
+                        # Incoherent per-l_i contribution (for diagnostics).
+                        combo_sum += _spin_combo(coeffs.f_coeff, coeffs.g_coeff)
+
+                        # Coherent SDCS sum over l_i for fixed (l_f, Mi, Mf).
+                        key = (l_f_proj, Mi, Mf)
+                        if key not in sdcs_amp[l_ej]:
+                            sdcs_amp[l_ej][key] = [coeffs.f_coeff, coeffs.g_coeff]
+                            combo_sum_total += _spin_combo(coeffs.f_coeff, coeffs.g_coeff)
+                        else:
+                            old_f, old_g = sdcs_amp[l_ej][key]
+                            old_val = _spin_combo(old_f, old_g)
+                            new_f = old_f + coeffs.f_coeff
+                            new_g = old_g + coeffs.g_coeff
+                            sdcs_amp[l_ej][key] = [new_f, new_g]
+                            combo_sum_total += _spin_combo(new_f, new_g) - old_val
+
+                        if tdcs_amp is not None:
+                            # Angular factors for TDCS
+                            mu_f_dir = Mf - Mi
+                            mu_f_exc = Mi - Mf
+                            for idx, (theta_scatt, theta_eject, phi_eject) in enumerate(tdcs_angles):
+                                Y_eject = np.conj(sph_harm(Mf, l_ej, phi_eject, theta_eject))
+                                Y_eject_swap = np.conj(sph_harm(Mf, l_ej, 0.0, theta_scatt))
+
+                                if abs(mu_f_dir) <= l_f_proj:
+                                    Y_scatt_dir = sph_harm(-mu_f_dir, l_f_proj, 0.0, theta_scatt)
+                                else:
+                                    Y_scatt_dir = 0.0
+
+                                if abs(mu_f_exc) <= l_f_proj:
+                                    Y_scatt_exc_swap_base = sph_harm(-mu_f_exc, l_f_proj, phi_eject, theta_eject)
+                                    Y_scatt_exc_swap = ((-1.0) ** mu_f_exc) * Y_scatt_exc_swap_base
+                                else:
+                                    Y_scatt_exc_swap = 0.0
+
+                                f_amp = coeffs.f_coeff * Y_scatt_dir * Y_eject
+                                # Exchange uses swapped detection angles (indistinguishable electrons).
+                                g_amp = coeffs.g_coeff * Y_scatt_exc_swap * Y_eject_swap
+
+                                key = (Mi, Mf)
+                                if key not in tdcs_amp[idx]:
+                                    tdcs_amp[idx][key] = [0.0 + 0.0j, 0.0 + 0.0j]
+                                tdcs_amp[idx][key][0] += f_amp
+                                tdcs_amp[idx][key][1] += g_amp
 
             # Apply ionization kinematic factor
             # ----------------------------------------------------------------
-            # TDCS = (k_scatt × k_ej / k_i) × |T|²
-            # Using (2π)^4 convention consistent with excitation, plus k_ej
-            # for the additional continuum electron in ionization.
-            # Reference: Jones/Madison (1993), Bote/Salvat (2008)
+            # TDCS/SDCS normalization (Jones & Madison 2003; Bote & Salvat 2008):
+            # d^3σ/(dΩ_scatt dΩ_eject dE) = (2π)^4 (k_scatt k_ej / k_i) |T|^2
+            # Here we use the angle-integrated form for SDCS.
+            # Reference: Jones & Madison (2003), Bote & Salvat (2008)
             # ----------------------------------------------------------------
-            FACTOR_2PI_4 = (2.0 * np.pi) ** 4
-            prefac = (k_scatt_au * k_eject_au / k_i_au) * (float(chan.N_equiv) / float(2 * Li + 1))
-            sigma_shell_au = prefac * FACTOR_2PI_4 * combo_sum
+            sigma_shell_au = prefac_sigma * combo_sum
             sigma_this_L += sigma_shell_au
             
         # End loop over l_ej
         
         # Record contribution from this projectile L
-        sigma_energy_au += sigma_this_L
         key = f"L{l_i_proj}"
         partial_L_contribs[key] = sigma_this_L
         
@@ -352,8 +448,9 @@ def _compute_sdcs_at_energy(
         # ADAPTIVE CONVERGENCE CHECK
         # If relative change < threshold for several consecutive L, stop.
         # ====================================================================
-        if l_i_proj > 3 and sigma_accumulated > 1e-40:
-            rel_change = abs(sigma_this_L) / sigma_accumulated
+        sigma_coherent = prefac_sigma * combo_sum_total
+        if l_i_proj > 3 and sigma_coherent_prev > 1e-40:
+            rel_change = abs(sigma_coherent - sigma_coherent_prev) / sigma_coherent_prev
             if rel_change < chan.convergence_threshold:
                 consecutive_small_changes += 1
                 if consecutive_small_changes >= CONVERGENCE_WINDOW:
@@ -361,9 +458,14 @@ def _compute_sdcs_at_energy(
                     break
             else:
                 consecutive_small_changes = 0
-        
-        sigma_accumulated = sigma_energy_au
+
+        sigma_coherent_prev = sigma_coherent
             
+    # ========================================================================
+    # Coherent SDCS sum over l_i, then apply kinematic factor.
+    # ========================================================================
+    sigma_energy_au = prefac_sigma * combo_sum_total
+
     # ========================================================================
     # BORN TOP-UP (Geometric Series Extrapolation)
     # Accounts for higher partial waves (L > L_computed) assuming geometric decay.
@@ -387,17 +489,31 @@ def _compute_sdcs_at_energy(
                     if tail_correction > 0:
                         sigma_energy_au += tail_correction
                         partial_L_contribs["born_topup"] = tail_correction
+                        logger.debug(
+                            "Ionization SDCS top-up: added %.2e (L>%d, q=%.3f)",
+                            tail_correction, L_last, q
+                        )
         except Exception:
             pass  # Safety fallback
             
-    return sigma_energy_au, partial_L_contribs
+    tdcs_values = None
+    if tdcs_amp is not None:
+        tdcs_values = []
+        for amp_dict in tdcs_amp:
+            tdcs_sum = 0.0
+            for amp_pair in amp_dict.values():
+                f_val, g_val = amp_pair
+                tdcs_sum += _spin_combo(f_val, g_val)
+            tdcs_values.append(prefac_common * FACTOR_2PI_4 * tdcs_sum)
+
+    return sigma_energy_au, partial_L_contribs, tdcs_values
 
 
 # ============================================================================
 # Helper for Parallel Execution
 # ============================================================================
 
-def _wrapper_sdcs_helper(args: tuple) -> Tuple[float, Dict[str, float]]:
+def _wrapper_sdcs_helper(args: tuple) -> Tuple[float, Dict[str, float], Optional[List[float]]]:
     """
     Wrapper function for ProcessPoolExecutor/imap.
     Unpacks the argument tuple and calls _compute_sdcs_at_energy.
@@ -420,7 +536,12 @@ def compute_ionization_cs(
     use_exchange: bool = False,
     use_polarization: bool = False,
     exchange_method: str = "fumc",
-    n_workers: Optional[int] = None
+    n_workers: Optional[int] = None,
+    tdcs_angles_deg: Optional[List[Tuple[float, float, float]]] = None,
+    # Optimization Injection
+    _precalc_grid: Optional[RadialGrid] = None,
+    _precalc_V_core: Optional[np.ndarray] = None,
+    _precalc_orb_i: Optional[BoundOrbital] = None
 ) -> IonizationResult:
     """
     Calculate Total Ionization Cross Section (TICS) via Partial Wave DWBA.
@@ -432,7 +553,7 @@ def compute_ionization_cs(
     - Parallel energy integration (CPU workers)
     - Pre-computed incident continuum waves
     - Ejected wave caching within each energy worker
-    - Adaptive L_max convergence detection
+    - Auto-scaled L_max with coherent convergence detection
     - Born Top-Up for high-L extrapolation
     
     Parameters
@@ -459,11 +580,20 @@ def compute_ionization_cs(
         Deprecated. Retained for API compatibility (ignored).
     n_workers : Optional[int]
         Number of parallel workers (default: CPU count).
+    tdcs_angles_deg : Optional[List[Tuple[float, float, float]]]
+        Optional list of (theta_scatt, theta_eject, phi_eject) in degrees.
+        If provided, computes TDCS for each E_eject on these angles.
+    _precalc_grid : Optional[RadialGrid]
+        Precomputed grid for reuse across energies.
+    _precalc_V_core : Optional[np.ndarray]
+        Precomputed core potential on the same grid.
+    _precalc_orb_i : Optional[BoundOrbital]
+        Precomputed initial bound orbital.
         
     Returns
     -------
     IonizationResult
-        Contains total cross section, SDCS data, and partial wave info.
+        Contains total cross section, SDCS/TDCS data, partial waves, and metadata.
     """
     t_start = time.perf_counter()
     if use_exchange or exchange_method != "fumc":
@@ -472,31 +602,63 @@ def compute_ionization_cs(
             "use_exchange=%s, exchange_method=%s",
             use_exchange, exchange_method
         )
+    if use_polarization:
+        logger.warning(
+            "Ionization: polarization potential is heuristic and not part of the article DWBA."
+        )
 
     # ========================================================================
     # 1. Setup Grid & Potential
     # ========================================================================
-    grid = make_r_grid(r_min, r_max, n_points)
-    V_core = V_core_on_grid(grid, core_params)
+    if _precalc_grid is not None and _precalc_V_core is not None:
+        grid = _precalc_grid
+        V_core = _precalc_V_core
+    else:
+        grid = make_r_grid(r_min, r_max, n_points)
+        V_core = V_core_on_grid(grid, core_params)
 
     # ========================================================================
     # 2. Initial Bound State
     # ========================================================================
-    states_i = solve_bound_states(grid, V_core, l=chan.l_i, n_states_max=chan.n_index_i+2)
-    orb_i: Optional[BoundOrbital] = None
-    for s in states_i:
-        if s.n_index == chan.n_index_i:
-            orb_i = s
-            break
-    if orb_i is None:
-        raise ValueError(f"Initial bound state n={chan.n_index_i} l={chan.l_i} not found.")
+    if _precalc_orb_i is not None:
+        orb_i = _precalc_orb_i
+    else:
+        states_i = solve_bound_states(grid, V_core, l=chan.l_i, n_states_max=chan.n_index_i+2)
+        orb_i: Optional[BoundOrbital] = None
+        for s in states_i:
+            if s.n_index == chan.n_index_i:
+                orb_i = s
+                break
+        if orb_i is None:
+            raise ValueError(f"Initial bound state n={chan.n_index_i} l={chan.l_i} not found.")
 
     E_bound_au = orb_i.energy_au
     IP_au = -E_bound_au
     IP_eV = IP_au / ev_to_au(1.0)
     
     if E_incident_eV <= IP_eV:
-        return IonizationResult(E_incident_eV, IP_eV, 0.0, 0.0, [], {})
+        k_i_au_in = float(k_from_E_eV(E_incident_eV))
+        L_max_proj = _auto_L_max(k_i_au_in, chan.L_max_projectile)
+        metadata = {
+            "model": "static+polarization" if use_polarization else "static",
+            "use_polarization": use_polarization,
+            "grid": {
+                "r_min": float(grid.r[0]),
+                "r_max": float(grid.r[-1]),
+                "n_points": len(grid.r),
+            },
+            "numerics": {
+                "n_energy_steps": n_energy_steps,
+                "L_max_projectile_base": chan.L_max_projectile,
+                "L_max_projectile_used": L_max_proj,
+                "L_max_projectile_cap": 100,
+                "L_max": chan.L_max,
+                "l_eject_max": chan.l_eject_max,
+                "convergence_threshold": chan.convergence_threshold,
+            },
+            "use_gpu": False,
+        }
+        return IonizationResult(E_incident_eV, IP_eV, 0.0, 0.0, [], None, None, metadata)
 
     E_total_final_eV = E_incident_eV - IP_eV
     
@@ -532,10 +694,14 @@ def compute_ionization_cs(
     logger.info("Ionization Scan E_inc=%.1f eV: Integrating dSigma/dE...", E_incident_eV)
     
     z_ion_inc = core_params.Zc - 1.0
-    logger.debug("Pre-calc: Caching incident waves up to L=%d...", chan.L_max_projectile)
+    L_max_proj = _auto_L_max(k_i_au_in, chan.L_max_projectile)
+    logger.info("Auto-L: E=%.1f eV (k=%.2f) -> L_max_proj=%d", E_incident_eV, k_i_au_in, L_max_proj)
+    if L_max_proj >= 100:
+        logger.warning("Auto-L: L_max_proj hit cap=100; consider raising base L_max_projectile.")
+    logger.debug("Pre-calc: Caching incident waves up to L=%d...", L_max_proj)
     t_pre = time.perf_counter()
     chi_i_cache = precompute_continuum_waves(
-        chan.L_max_projectile, E_incident_eV, 
+        L_max_proj, E_incident_eV, 
         z_ion_inc, U_inc_obj, grid
     )
     logger.debug("Pre-calc: Done in %.3fs. Cached %d waves.", time.perf_counter() - t_pre, len(chi_i_cache))
@@ -547,6 +713,13 @@ def compute_ionization_cs(
     # Determine GPU availability
     USE_GPU = HAS_CUPY and check_cupy_runtime()
     
+    tdcs_angles_rad = None
+    if tdcs_angles_deg:
+        tdcs_angles_rad = [
+            (np.deg2rad(th_s), np.deg2rad(th_e), np.deg2rad(ph_e))
+            for (th_s, th_e, ph_e) in tdcs_angles_deg
+        ]
+
     # Prepare task arguments
     tasks = []
     for E_eject_eV in steps:
@@ -555,10 +728,13 @@ def compute_ionization_cs(
             chan, core_params, grid, V_core, orb_i,
             U_inc_obj.U_of_r, U_inc_obj.V_hartree_of_r,
             USE_GPU,
-            chi_i_cache
+            chi_i_cache,
+            tdcs_angles_rad
         ))
     
     sdcs_values_au = []
+    tdcs_values_au = [] if tdcs_angles_rad else None
+    partials_per_step: List[Dict[str, float]] = []
     total_steps = len(tasks)
     
     if USE_GPU:
@@ -566,8 +742,11 @@ def compute_ionization_cs(
         logger.info("Mode: GPU Acceleration (Sequential Energy Scan)")
         for idx, task in enumerate(tasks):
             E_ej = task[0]
-            val, partials = _compute_sdcs_at_energy(*task)
+            val, partials, tdcs_vals = _compute_sdcs_at_energy(*task)
             sdcs_values_au.append(val)
+            partials_per_step.append(partials)
+            if tdcs_values_au is not None:
+                tdcs_values_au.append(tdcs_vals)
             logger.debug("Step %d/%d: E_ej=%.2f eV -> SDCS=%.2e", idx+1, total_steps, E_ej, val)
     else:
         # CPU path: Parallel execution across energy points
@@ -591,15 +770,21 @@ def compute_ionization_cs(
                 for future in as_completed(future_to_idx):
                     idx = future_to_idx[future]
                     try:
-                        val, partials = future.result()
-                        results[idx] = val
+                        val, partials, tdcs_vals = future.result()
+                        results[idx] = (val, tdcs_vals, partials)
                         completed += 1
                         logger.debug("[%d/%d] E_ej=%.2f eV -> SDCS=%.2e", completed, total_steps, steps[idx], val)
                     except Exception as e:
                         logger.error("Step %d failed: %s", idx, e)
-                        results[idx] = 0.0
+                        results[idx] = (0.0, None, {})
                 
-                sdcs_values_au = results
+                sdcs_values_au = [r[0] for r in results]
+                partials_per_step = [r[2] for r in results]
+                if tdcs_values_au is not None:
+                    tdcs_values_au = [r[1] for r in results]
+                    for idx, vals in enumerate(tdcs_values_au):
+                        if vals is None:
+                            tdcs_values_au[idx] = [0.0] * len(tdcs_angles_rad)
                 
         except KeyboardInterrupt:
             logger.warning("Ionization: Interrupt detected! Terminating workers...")
@@ -614,6 +799,19 @@ def compute_ionization_cs(
     steps_au = np.array([ev_to_au(e) for e in steps])
     total_sigma_au = np.trapz(sdcs_values_au, steps_au)
     total_sigma_cm2 = sigma_au_to_cm2(total_sigma_au)
+
+    partial_waves_out: Optional[Dict[str, float]] = None
+    if partials_per_step:
+        partial_waves_out = {}
+        keys = set()
+        for partials in partials_per_step:
+            keys.update(partials.keys())
+        for key in sorted(keys):
+            vals = np.array([p.get(key, 0.0) for p in partials_per_step])
+            partial_waves_out[key] = sigma_au_to_cm2(np.trapz(vals, steps_au))
+        if partial_waves_out:
+            top = sorted(partial_waves_out.items(), key=lambda x: x[1], reverse=True)[:3]
+            logger.debug("Ionization partial waves: %s", ", ".join(f"{k}={v:.1e}" for k, v in top))
     
     elapsed = time.perf_counter() - t_start
     logger.info("Total Ionization Sigma = %.2e cm^2 (computed in %.1fs)", total_sigma_cm2, elapsed)
@@ -626,10 +824,46 @@ def compute_ionization_cs(
         [sigma_au_to_cm2(s * ev_to_au(1.0)) for s in sdcs_values_au]
     ))
 
+    tdcs_data = None
+    if tdcs_angles_deg and tdcs_values_au is not None:
+        tdcs_data = []
+        for angle_idx, angles_deg in enumerate(tdcs_angles_deg):
+            values = []
+            for e_idx, E_eject_eV in enumerate(steps):
+                tdcs_val_au = tdcs_values_au[e_idx][angle_idx]
+                tdcs_val_cm2 = sigma_au_to_cm2(tdcs_val_au * ev_to_au(1.0))
+                values.append((E_eject_eV, tdcs_val_cm2))
+            tdcs_data.append({
+                "angles_deg": tuple(float(x) for x in angles_deg),
+                "values": values
+            })
+
+    metadata = {
+        "model": "static+polarization" if use_polarization else "static",
+        "use_polarization": use_polarization,
+        "grid": {
+            "r_min": float(grid.r[0]),
+            "r_max": float(grid.r[-1]),
+            "n_points": len(grid.r),
+        },
+        "numerics": {
+            "n_energy_steps": n_energy_steps,
+            "L_max_projectile_base": chan.L_max_projectile,
+            "L_max_projectile_used": L_max_proj,
+            "L_max_projectile_cap": 100,
+            "L_max": chan.L_max,
+            "l_eject_max": chan.l_eject_max,
+            "convergence_threshold": chan.convergence_threshold,
+        },
+        "use_gpu": USE_GPU,
+    }
+
     return IonizationResult(
         E_incident_eV, IP_eV,
         total_sigma_au,
         total_sigma_cm2,
         sdcs_data_list,
-        {}  # Full partial wave data could be aggregated if needed
+        tdcs_data,
+        partial_waves_out,
+        metadata
     )

@@ -340,8 +340,6 @@ def _fit_asymptotic_phase_neutral(
     # Solve M [A_s, A_c]^T ≈ chi_tail
     M = np.vstack([sin_part, cos_part]).T  # shape (n_tail, 2)
 
-    M = np.vstack([sin_part, cos_part]).T  # shape (n_tail, 2)
-
     # Least squares solve
     coeffs, *_ = np.linalg.lstsq(M, chi_tail, rcond=None)
     A_s, A_c = coeffs
@@ -375,7 +373,9 @@ def _fit_asymptotic_phase_coulomb(r_tail: np.ndarray, chi_tail: np.ndarray, l: i
     rho = k_au * r_tail
     
     # Asymptotic argument theta
-    theta = rho - eta * np.log(2.0 * rho) - (l * np.pi / 2.0) + coulomb_phase
+    # Standard Coulomb phase: theta = rho + eta ln(2 rho) - l*pi/2 + sigma_l
+    # (eta = -Z/k), so the sign here matters for ionic targets.
+    theta = rho + eta * np.log(2.0 * rho) - (l * np.pi / 2.0) + coulomb_phase
     
     F_arr = np.sin(theta)
     G_arr = np.cos(theta)

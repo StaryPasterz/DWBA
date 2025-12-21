@@ -26,7 +26,8 @@ logger = get_logger(__name__)
 @lru_cache(maxsize=2000)
 def _log_factorial(n: int) -> float:
     """Compute natural logarithm of n! safely."""
-    if n < 0: return -1.0 
+    if n < 0:
+        return float("-inf")
     if n <= 1: return 0.0
     return float(np.sum(np.log(np.arange(2, n + 1, dtype=float))))
 
@@ -226,7 +227,7 @@ def calculate_amplitude_contribution(
         
     # Precompute geometric factors
     # Eq 412: f = (2/pi) * i^(li+lf) * ...
-    # Wait, Eq 412 has Y_{li, mui}^*(k_i). 
+    # Eq 412 has Y_{li, mu_i}^*(k_i).
     # If k_i || z, Y_{li, 0}(0) = sqrt((2li+1)/4pi).
     
     Y_li_star = np.sqrt((2*l_i+1)/(4*np.pi)) # Real because m=0
