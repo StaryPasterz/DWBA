@@ -23,7 +23,7 @@ For ionization: ∫χ_eject·u_i ≠ 0 → correction contributes
 
 Implementation
 --------------
-- Uses kernel recurrence K_L = K_{L-1}·(r_</r_>) for efficiency
+- Uses direct kernel computation K_L = (r_</r_>)^L × (1/r_>) via exp(L·log(ratio))
 - GPU acceleration via CuPy when available
 - Angular factors applied separately in dwba_coupling.py
 
@@ -207,15 +207,15 @@ def radial_ME_all_L(
     if not np.all(np.isfinite(inv_gtr)):
         inv_gtr[~np.isfinite(inv_gtr)] = 0.0
         
-    # Recurrence Initialization
-    # For L=0: Kernel_0 = 1/r_> = inv_gtr
-    # We maintain kernel_L in memory and update it inplace.
-    kernel_L = inv_gtr.copy()
+    # Clamp ratio to <1 to prevent drift at large L; use log-power for stability
+    ratio_clamped = np.minimum(ratio, 1.0 - 1e-12)
+    log_ratio = np.log(ratio_clamped + 1e-300)
     
     for L in range(L_max + 1):
-        if L > 0:
-            # Recurrence: K_L = K_{L-1} * ratio
-            kernel_L *= ratio
+        if L == 0:
+            kernel_L = inv_gtr
+        else:
+            kernel_L = inv_gtr * np.exp(L * log_ratio)
         
         # --- Direct Integral ---
         # I = < rho1 | Kernel | rho2 >
@@ -299,22 +299,21 @@ def radial_ME_all_L_gpu(
     r_less = cp.minimum(r_col, r_row)
     r_gtr  = cp.maximum(r_col, r_row)
     
-    # Avoid div/0
-    # On GPU we can set eps or mask
+    # Avoid div/0 and clamp ratio
     eps = 1e-30
     ratio = r_less / (r_gtr + eps)
-    # Correct for diagonal r=0 case if r_gtr=0? 
-    # Usually grid.r[0] > 0. If 0, handle?
-    # grid.r starts at r_min > 0 usually.
-    
-    kernel_L = 1.0 / (r_gtr + eps)
+    ratio = cp.minimum(ratio, 1.0 - 1e-12)
+    inv_gtr = 1.0 / (r_gtr + eps)
+    log_ratio = cp.log(ratio + eps)
     
     I_L_dir: Dict[int, float] = {}
     I_L_exc: Dict[int, float] = {}
 
     for L in range(L_max + 1):
-        if L > 0:
-            kernel_L *= ratio
+        if L == 0:
+            kernel_L = inv_gtr
+        else:
+            kernel_L = inv_gtr * cp.exp(L * log_ratio)
         
         # Direct Integral: < rho1 | K | rho2 >
         # cp.dot(matrix, vector)

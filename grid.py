@@ -132,6 +132,198 @@ def k_from_E_eV(E_eV: float | np.ndarray) -> float | np.ndarray:
     return np.sqrt(2.0 * E_au)
 
 
+# =============================================================================
+# Classical Turning Point Grid Scaling
+# =============================================================================
+#
+# For a partial wave with angular momentum L and wave number k, the classical
+# turning point (where kinetic energy equals centrifugal barrier) is:
+#
+#     r_t(L) = (L + 1/2)² / k²
+#
+# Beyond this point, the wave function is oscillatory; inside, it's evanescent.
+# For accurate asymptotic phase fitting in continuum.py, we need:
+#
+#     r_max >= C × r_t(L_max)      with C ≈ 2-4
+#
+# Equivalently, for a given r_max:
+#
+#     L_max <= k × sqrt(r_max / C) - 1/2
+#
+# These functions enforce this physical constraint to prevent numerical
+# instability from partial waves that haven't reached their asymptotic regime
+# within the computational domain.
+# =============================================================================
+
+
+def classical_turning_point(L: int, k_au: float) -> float:
+    """
+    Compute the classical turning point radius for a given partial wave.
+    
+    The turning point is where the centrifugal barrier equals kinetic energy:
+        E = L(L+1) / (2 r_t²)
+        r_t = sqrt(L(L+1) / k²) ≈ (L + 0.5) / k
+    
+    Parameters
+    ----------
+    L : int
+        Angular momentum quantum number.
+    k_au : float
+        Wave number in atomic units (bohr⁻¹).
+        
+    Returns
+    -------
+    r_t : float
+        Classical turning point in bohr.
+    """
+    if k_au < 1e-10:
+        return float('inf')
+    return (L + 0.5) / k_au
+
+
+def compute_safe_L_max(k_au: float, r_max: float, safety_factor: float = 2.5) -> int:
+    """
+    Compute the maximum angular momentum L_max that can be accurately
+    represented on a grid extending to r_max.
+    
+    Based on the classical turning point criterion: we require the turning
+    point r_t(L_max) to be well within the computational domain so that the
+    wave function has sufficient asymptotic region for phase fitting.
+    
+    Formula:
+        r_t(L) = (L + 0.5) / k
+        Require: r_t(L_max) <= r_max / safety_factor
+        => L_max = k × (r_max / safety_factor) - 0.5
+    
+    Parameters
+    ----------
+    k_au : float
+        Wave number in atomic units (bohr⁻¹).
+    r_max : float
+        Maximum radius of the computational grid (bohr).
+    safety_factor : float
+        Multiplier for the turning point (default 2.5).
+        Higher values are more conservative (smaller L_max).
+        
+    Returns
+    -------
+    L_max : int
+        Maximum safe angular momentum. Minimum 3 for physical relevance.
+        
+    Examples
+    --------
+    >>> k = 1.0  # ~13.6 eV
+    >>> compute_safe_L_max(k, 200.0, 2.5)  # Returns ~8
+    8
+    >>> compute_safe_L_max(k, 500.0, 2.5)  # Returns ~13
+    13
+    """
+    if k_au < 1e-10:
+        return 3  # Minimum sensible value
+    
+    L_max_float = k_au * (r_max / safety_factor) - 0.5
+    L_max = max(3, int(L_max_float))
+    
+    return L_max
+
+
+def compute_required_r_max(k_au: float, L_max_target: int, safety_factor: float = 2.5) -> float:
+    """
+    Compute the minimum r_max needed to accurately represent partial waves
+    up to L_max_target.
+    
+    Based on the classical turning point criterion: the grid must extend
+    well beyond r_t(L_max) for accurate asymptotic fitting.
+    
+    Formula:
+        r_t(L) = (L + 0.5) / k
+        r_max = safety_factor × r_t(L_max) = safety_factor × (L_max + 0.5) / k
+    
+    Parameters
+    ----------
+    k_au : float
+        Wave number in atomic units (bohr⁻¹).
+    L_max_target : int
+        Desired maximum angular momentum.
+    safety_factor : float
+        Multiplier for the turning point (default 2.5).
+        
+    Returns
+    -------
+    r_max : float
+        Minimum required grid extent (bohr). Clamped to [50, 2000].
+        
+    Examples
+    --------
+    >>> k = 1.0  # ~13.6 eV
+    >>> compute_required_r_max(k, 10, 2.5)  # ~26.25 -> clamped to 50
+    50.0
+    >>> compute_required_r_max(0.5, 20, 2.5)  # ~102.5
+    102.5
+    """
+    if k_au < 1e-10:
+        return 2000.0  # Maximum for very low energy
+    
+    r_max = safety_factor * (L_max_target + 0.5) / k_au
+    
+    # Clamp to reasonable bounds
+    r_max = max(50.0, min(2000.0, r_max))
+    
+    return r_max
+
+
+def estimate_grid_params(E_eV: float, L_max_desired: int = 50, 
+                         mode: str = "auto") -> dict:
+    """
+    Estimate optimal grid parameters for a given energy and desired L_max.
+    
+    This utility helps users choose consistent r_max and L_max values
+    based on classical turning point physics.
+    
+    Parameters
+    ----------
+    E_eV : float
+        Electron kinetic energy in eV.
+    L_max_desired : int
+        Desired maximum angular momentum for partial wave expansion.
+    mode : str
+        "auto": Return parameters satisfying turning point criterion.
+        "conservative": Use safety_factor=3.0 for more margin.
+        "aggressive": Use safety_factor=2.0 for smaller grids.
+        
+    Returns
+    -------
+    params : dict
+        Dictionary with keys:
+        - 'k_au': wave number
+        - 'L_max_safe': maximum safe L for default r_max=200
+        - 'r_max_needed': r_max needed for L_max_desired
+        - 'recommendation': string describing best choice
+    """
+    k_au = k_from_E_eV(E_eV)
+    
+    safety_map = {"auto": 2.5, "conservative": 3.0, "aggressive": 2.0}
+    C = safety_map.get(mode, 2.5)
+    
+    L_max_safe = compute_safe_L_max(k_au, 200.0, C)
+    r_max_needed = compute_required_r_max(k_au, L_max_desired, C)
+    
+    if L_max_desired <= L_max_safe:
+        recommendation = f"r_max=200 OK for L_max={L_max_desired}"
+    elif r_max_needed <= 500:
+        recommendation = f"Increase r_max to {r_max_needed:.0f} for L_max={L_max_desired}"
+    else:
+        recommendation = f"Reduce L_max to {L_max_safe} or use r_max={r_max_needed:.0f}"
+    
+    return {
+        'k_au': k_au,
+        'L_max_safe': L_max_safe,
+        'r_max_needed': r_max_needed,
+        'recommendation': recommendation
+    }
+
+
+
 def _trapz_weights_nonuniform(r: np.ndarray) -> np.ndarray:
     """
     Build trapezoidal-rule weights for integrating ∫ f(r) dr

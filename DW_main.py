@@ -42,6 +42,12 @@ from driver import (
     ExcitationChannelSpec,
     ev_to_au
 )
+from grid import (
+    k_from_E_eV,
+    compute_safe_L_max,
+    compute_required_r_max,
+)
+
 from ionization import (
     compute_ionization_cs,
     IonizationChannelSpec
@@ -363,9 +369,19 @@ def run_scan_excitation(run_name):
         return
 
     print_subheader("Excitation Numerics")
-    L_max_integrals = get_input_int("  L_max (multipole)", 15)
-    L_max_proj = get_input_int("  L_max_projectile (base, auto-scaled)", 5)
-    n_theta = get_input_int("  n_theta (DCS angular grid)", 200)
+    print("  Defaults: L_max=15, L_max_projectile=5, n_theta=200")
+    change_numerics = input("  Change defaults? [y/N]: ").strip().lower()
+    
+    if change_numerics == 'y':
+        L_max_integrals = get_input_int("  L_max (multipole)", 15)
+        L_max_proj = get_input_int("  L_max_projectile (base, auto-scaled)", 5)
+        n_theta = get_input_int("  n_theta (DCS angular grid)", 200)
+    else:
+        L_max_integrals = 15
+        L_max_proj = 5
+        n_theta = 200
+        print_info("Using default numerics")
+
 
     spec = ExcitationChannelSpec(
         l_i=li, l_f=lf,
@@ -459,6 +475,27 @@ def run_scan_excitation(run_name):
                 energies = np.unique(np.round(energies, 3))
                 print_info(f"Grid adjusted: {len(energies)} points from {energies[0]:.1f} eV")
             
+    # --- Adaptive r_max based on Classical Turning Point ---
+    # 
+    # At low energies (small k), high partial waves require larger r_max to reach
+    # asymptotic regime. We compute optimal r_max for the minimum energy in the scan.
+    #
+    # Formula: r_max = C × (L_max + 0.5) / k_min, where C ≈ 2.5 (safety factor)
+    #
+    E_min_scan = float(np.min(energies))
+    k_min = k_from_E_eV(E_min_scan - dE_thr) if E_min_scan > dE_thr else k_from_E_eV(0.5)
+    
+    # Compute r_max needed for requested L_max_projectile
+    r_max_needed = compute_required_r_max(k_min, L_max_proj, safety_factor=2.5)
+    r_max_optimal = max(200.0, min(r_max_needed, 1000.0))  # Clamp to [200, 1000]
+    
+    # Scale n_points with r_max to maintain grid density
+    n_points_base = 3000
+    n_points_optimal = int(n_points_base * (r_max_optimal / 200.0))
+    n_points_optimal = min(n_points_optimal, 8000)  # Cap memory usage
+    
+    print_info(f"Adaptive Grid: E_min={E_min_scan:.1f} eV, k_min={k_min:.2f} -> r_max={r_max_optimal:.0f}, n_points={n_points_optimal}")
+    
     # --- Main Loop ---
     
     # Pre-calculate static target properties (Optimization)
@@ -469,10 +506,11 @@ def run_scan_excitation(run_name):
         chan=spec,
         core_params=core_params,
         use_polarization=use_pol,
-        r_max=200.0,
-        n_points=3000
+        r_max=r_max_optimal,
+        n_points=n_points_optimal
     )
     print_success("Target prepared")
+
 
     run_meta = {
         "model": "static+polarization" if use_pol else "static",
@@ -630,10 +668,20 @@ def run_scan_ionization(run_name):
         return
         
     print("\n--- Ionization Numerics ---")
-    l_eject_max = get_input_int("  l_eject_max", 3)
-    L_max = get_input_int("  L_max (multipole)", 15)
-    L_max_proj = get_input_int("  L_max_projectile (base, auto-scaled)", 50)
-    n_energy_steps = get_input_int("  n_energy_steps (SDCS integration)", 10)
+    print("  Defaults: l_eject_max=3, L_max=15, L_max_projectile=50, n_energy_steps=10")
+    change_numerics = input("  Change defaults? [y/N]: ").strip().lower()
+    
+    if change_numerics == 'y':
+        l_eject_max = get_input_int("  l_eject_max", 3)
+        L_max = get_input_int("  L_max (multipole)", 15)
+        L_max_proj = get_input_int("  L_max_projectile (base, auto-scaled)", 50)
+        n_energy_steps = get_input_int("  n_energy_steps (SDCS integration)", 10)
+    else:
+        l_eject_max = 3
+        L_max = 15
+        L_max_proj = 50
+        n_energy_steps = 10
+        print_info("Using default numerics")
 
     spec = IonizationChannelSpec(
         l_i=li,
@@ -675,6 +723,21 @@ def run_scan_ionization(run_name):
             if not tdcs_angles:
                 tdcs_angles = None
     
+    # --- Adaptive r_max based on Classical Turning Point ---
+    E_min_scan = float(np.min(energies))
+    k_min = k_from_E_eV(E_min_scan - ion_thr) if E_min_scan > ion_thr else k_from_E_eV(0.5)
+    
+    # Compute r_max needed for requested L_max_projectile
+    r_max_needed = compute_required_r_max(k_min, L_max_proj, safety_factor=2.5)
+    r_max_optimal = max(200.0, min(r_max_needed, 1000.0))  # Clamp to [200, 1000]
+    
+    # Scale n_points with r_max to maintain grid density
+    n_points_base = 3000
+    n_points_optimal = int(n_points_base * (r_max_optimal / 200.0))
+    n_points_optimal = min(n_points_optimal, 8000)  # Cap memory usage
+    
+    print_info(f"Adaptive Grid: E_min={E_min_scan:.1f} eV, k_min={k_min:.2f} -> r_max={r_max_optimal:.0f}, n_points={n_points_optimal}")
+    
     # Pre-calculate (Optimization)
     print("\n[Optimization] Pre-calculating static target properties...")
     from driver import prepare_target, ExcitationChannelSpec
@@ -692,10 +755,11 @@ def run_scan_ionization(run_name):
         chan=tmp_chan,
         core_params=core_params,
         use_polarization=use_pol,
-        r_max=200.0,
-        n_points=3000
+        r_max=r_max_optimal,
+        n_points=n_points_optimal
     )
     print("[Optimization] Ready.")
+
 
     print(f"\nStarting calculation for {key} ({len(energies)} points)...")
     
@@ -708,7 +772,7 @@ def run_scan_ionization(run_name):
                 res = compute_ionization_cs(
                     E, spec, 
                     core_params=core_params, # Ignored for grid/V_core generation if _precalc used
-                    r_max=200.0, n_points=3000,
+                    r_max=r_max_optimal, n_points=n_points_optimal,
                     use_polarization=use_pol,
                     tdcs_angles_deg=tdcs_angles,
                     n_energy_steps=n_energy_steps,

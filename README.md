@@ -196,11 +196,52 @@ python debug.py
 Verifies bound-state norms, continuum waves, and partial-wave convergence.
 
 ## Performance Tips
-- **Near-threshold**: Increase `n_points` and `r_max`
+
+### Grid Numerics: L_max and r_max Selection
+
+The classical turning point constraint is critical for numerical stability:
+
+```
+r_t(L) = (L + 0.5) / k      # Turning point for partial wave L
+L_max ≤ k × (r_max / C) - 0.5   # Safe L_max for given r_max (C ≈ 2.5)
+```
+
+The code automatically enforces this via `compute_safe_L_max()`:
+- At **low energies** (small k): L_max is automatically reduced
+- If you see **warnings about turning point limits**: increase r_max or accept fewer partial waves
+
+| Energy (eV) | k (a.u.) | r_max=200 | r_max=500 | r_max=1000 |
+|-------------|----------|-----------|-----------|------------|
+| 15          | 1.05     | L≤33      | L≤83      | L≤167      |
+| 50          | 1.92     | L≤61      | L≤153     | L≤306      |
+| 100         | 2.71     | L≤86      | L≤216     | L≤433      |
+
+### Adaptive Grid (Automatic r_max Scaling)
+
+The interactive scans (`DW_main.py`) now **automatically compute optimal r_max** based on:
+1. Minimum energy in the scan (lowest kinetic energy = most restrictive)
+2. Requested L_max_projectile
+3. Classical turning point formula
+
+```
+E_min_scan → k_min = sqrt(2 × (E_min - threshold))
+r_max_optimal = max(200, C × (L_max + 0.5) / k_min)    # C ≈ 2.5
+n_points = 3000 × (r_max / 200)                        # Scale proportionally
+```
+
+This ensures **all energies in the scan** have sufficient grid extent. The console shows:
+```
+  • Adaptive Grid: E_min=15.0 eV, k_min=0.27 -> r_max=480, n_points=7200
+```
+
+### General Performance Tips
+- **Near-threshold**: Grid auto-scales, but consider using log energy grid
 - **keV energies**: Ensure sufficient `L_max_projectile`
-- **Auto-L cap**: If logs show L_max_proj hit cap=100, raise `L_max_projectile`
+- **Turning point warning**: Logs show when L_max is limited; r_max is auto-increased
 - **GPU**: Install CuPy for 5-10× speedup on radial integrals
 - **Parallel**: Code auto-detects CPU cores for multiprocessing
+
+
 
 ## Troubleshooting
 

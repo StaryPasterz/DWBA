@@ -67,6 +67,8 @@ from grid import (
     make_r_grid,
     ev_to_au,
     k_from_E_eV,
+    compute_safe_L_max,
+    compute_required_r_max,
 )
 from potential_core import (
     CorePotentialParams,
@@ -146,20 +148,43 @@ class IonizationResult:
     metadata: Optional[Dict[str, Any]] = None
 
 
-def _auto_L_max(k_i_au: float, L_requested: int, L_cap: int = 100) -> int:
+def _auto_L_max(k_i_au: float, L_requested: int, r_max: float = 200.0,
+                L_cap: int = 100) -> int:
     """
-    Auto-scale projectile L_max based on semi-classical estimates.
+    Auto-scale projectile L_max using classical turning point physics.
 
-    Matches the heuristic used in the excitation driver:
-      L_dynamic ~ k_i * 8 + 10
-      L_physical_max ~ k_i * 30 + 5
+    The centrifugal barrier creates a turning point at r_t(L) = (L + 0.5) / k.
+    For accurate asymptotic fitting, we require r_max >= C × r_t(L_max).
+    
+    Parameters
+    ----------
+    k_i_au : float
+        Incident wave number (atomic units).
+    L_requested : int
+        User-requested L_max base value.
+    r_max : float
+        Maximum radius of computational grid.
+    L_cap : int
+        Hard upper limit.
+        
+    Returns
+    -------
+    int
+        Safe L_max respecting turning point constraint.
     """
-    L_dynamic = int(k_i_au * 8.0) + 10
-    L_physical_max = int(k_i_au * 30.0) + 5
+    # Physics-based turning point limit
+    L_turning = compute_safe_L_max(k_i_au, r_max, safety_factor=2.5)
+    
+    # Dynamic convergence estimate
+    L_dynamic = int(k_i_au * 8.0) + 5
+    
+    # Take max of request/dynamic, then cap by turning point and hard limit
     L_max_proj = max(L_requested, L_dynamic)
-    L_max_proj = min(L_max_proj, L_physical_max)
+    L_max_proj = min(L_max_proj, L_turning)
     L_max_proj = min(L_max_proj, L_cap)
+    
     return max(L_max_proj, 0)
+
 
 # ============================================================================
 # Worker Function for Single Energy Point

@@ -44,6 +44,8 @@ from grid import (
     make_r_grid,
     ev_to_au,
     k_from_E_eV,
+    compute_safe_L_max,
+    compute_required_r_max,
 )
 from potential_core import (
     CorePotentialParams,
@@ -379,27 +381,47 @@ def compute_total_excitation_cs(
     # and k_i up to ~6 a.u. (500 eV), we need L ~ 60-90.
     
     L_requested = chan.L_max_projectile
-    # Heuristic: L_dynamic = k_i_au * R_eff + buffer.
-    # Using R_eff = 8.0 + safety 10 for proper convergence
-    L_dynamic = int(k_i_au * 8.0) + 10
     
-    # Physical upper bound: L_max ~ k * r_max (classical turning point)
-    # Beyond this, centrifugal barrier dominates and contributions should be zero.
-    # Using r_eff ~ 30 a.u. as practical integration range
-    L_physical_max = int(k_i_au * 30.0) + 5
+    # ==========================================================================
+    # CLASSICAL TURNING POINT CRITERION
+    # ==========================================================================
+    # The centrifugal barrier creates a classical turning point at:
+    #     r_t(L) = (L + 0.5) / k
+    # 
+    # For accurate asymptotic fitting, we require r_max >= C × r_t(L_max).
+    # Therefore: L_max <= k × (r_max / C) - 0.5
+    #
+    # Using grid r_max (from function params) and safety_factor C=2.5
+    # ==========================================================================
     
-    # We take the maximum of requested (user spec) and dynamic (convergence safety)
-    L_max_proj = max(L_requested, L_dynamic)
+    # Get actual r_max from grid (passed via function params, default 200)
+    r_max_actual = grid.r[-1] if grid is not None else 200.0
     
-    # Cap at physical max - no hard numerical cap, rely on upturn detection
-    L_max_proj = min(L_max_proj, L_physical_max)
+    # Compute maximum safe L based on classical turning point physics
+    L_turning_point = compute_safe_L_max(k_i_au, r_max_actual, safety_factor=2.5)
     
-    # Reasonable upper limit to prevent runaway in edge cases
+    # Dynamic estimate for convergence (how many L needed for given k and orbital size)
+    # R_eff ~ 8 a.u. typical for low excited states, buffer +5
+    L_dynamic = int(k_i_au * 8.0) + 5
+    
+    # Use the minimum of:
+    # 1. User requested (chan.L_max_projectile)
+    # 2. Dynamic estimate (convergence requirement)
+    # 3. Turning point limit (physical constraint from r_max)
+    L_max_proj = max(L_requested, L_dynamic)  # At least fulfill request/convergence
+    L_max_proj = min(L_max_proj, L_turning_point)  # But never exceed turning point
+    
+    # Hard cap for extreme cases (prevents runaway computation)
     L_max_proj = min(L_max_proj, 100)
     
-    logger.info("Auto-L: E=%.1f eV (k=%.2f) -> L_max_proj=%d", E_incident_eV, k_i_au, L_max_proj)
-    if L_max_proj >= 100:
-        logger.warning("Auto-L: L_max_proj hit cap=100; consider raising L_max_projectile.")
+    logger.info("Auto-L: E=%.1f eV (k=%.2f, r_max=%.0f) -> L_max_proj=%d (turning_pt=%d)", 
+                E_incident_eV, k_i_au, r_max_actual, L_max_proj, L_turning_point)
+    
+    if L_max_proj < L_dynamic:
+        logger.warning("L_max=%d limited by turning point (need r_max~%.0f for L=%d). "
+                       "Consider increasing r_max or accepting fewer partial waves.",
+                       L_max_proj, compute_required_r_max(k_i_au, L_dynamic), L_dynamic)
+
     
     # --- Execution Strategy Selection ---
     USE_GPU = False
@@ -513,6 +535,7 @@ def compute_total_excitation_cs(
             # === EARLY STOPPING CHECKS ===
             should_add = True
             stop_reason = None
+            pending_topup = None
             
             # CHECK 1: Negligible contribution (optimization)
             # If this partial wave contributes less than 0.01% of accumulated total, stop
@@ -523,7 +546,7 @@ def compute_total_excitation_cs(
                     should_add = True  # Still add this one, but stop after
             
             # CHECK 2: Upturn detection (numerical instability)
-            # More sensitive: 1.2x threshold, l_i > 10, single increase triggers stop
+            # More sensitive: >1.1x after L>8 triggers stop and uses top-up from last monotonic trio
             if l_i >= 2 and stop_reason is None:
                 prev_key = f"L{l_i-1}"
                 curr_key = f"L{l_i}"
@@ -531,16 +554,28 @@ def compute_total_excitation_cs(
                     prev_contrib = partial_waves_dict[prev_key]
                     curr_contrib = partial_waves_dict[curr_key]
                     
-                    # Stricter detection: 1.2x increase after L=10 indicates instability
-                    if curr_contrib > prev_contrib * 1.2 and prev_contrib > 1e-30 and l_i > 10:
+                    if curr_contrib > prev_contrib * 1.1 and prev_contrib > 1e-30 and l_i > 8:
                         nonmono_count += 1
                         if nonmono_count >= 1:  # Single increase is enough
-                            logger.warning("Upturn at L=%d: %.2e > %.2e (prev). Stopping sum.", 
+                            logger.warning("Upturn at L=%d: %.2e > %.2e (prev). Stopping sum and using tail from last monotonic trio.", 
                                           l_i, curr_contrib, prev_contrib)
                             should_add = False
                             # Mark as excluded
                             partial_waves_dict[f"{curr_key}_excluded"] = partial_waves_dict.pop(curr_key)
                             stop_reason = "Numerical instability (upturn)"
+                            # Prepare a conservative top-up from last 3 decreasing terms if available
+                            try:
+                                last_keys = [f"L{l_i-1}", f"L{l_i-2}", f"L{l_i-3}"]
+                                vals = [partial_waves_dict[k] for k in last_keys]
+                                if vals[0] < vals[1] and vals[1] < vals[2]:
+                                    q = vals[0] / vals[1]
+                                    q_prev = vals[1] / vals[2]
+                                    if 0.0 < q < 0.8 and abs(q - q_prev) < 0.2:
+                                        tail = vals[0] * q / (1.0 - q)
+                                        pending_topup = (tail, l_i-1, q)
+                                        logger.debug("Prepared tail from monotonic trio: tail=%.2e, q=%.3f (L>%d)", tail, q, l_i-1)
+                            except Exception:
+                                pending_topup = None
                     else:
                         nonmono_count = 0  # Reset on good decay
             
@@ -555,6 +590,10 @@ def compute_total_excitation_cs(
             
             if stop_reason:
                 logger.info("Stopping partial wave sum at L=%d: %s", l_i, stop_reason)
+                if pending_topup:
+                    tail, l_ref, q = pending_topup
+                    partial_waves_dict["born_topup"] = tail
+                    logger.info("Applied conservative top-up tail=%.2e from L>%d (q=%.3f)", tail, l_ref, q)
                 break
                 
             # Compute Total CS snapshot
@@ -754,12 +793,14 @@ def compute_total_excitation_cs(
             logger.debug("Top-Up: Skipped: %s", e)
 
     if born_topup_added and sigma_total_cm2_base > 0.0:
-        # Scale DCS so that its integral matches the top-up-corrected TCS.
-        # This assumes the missing high-L tail preserves the angular shape.
-        scale = sigma_total_cm2 / sigma_total_cm2_base
-        if np.isfinite(scale) and scale > 0.0:
-            total_dcs *= scale
-            sigma_total_au = sigma_total_au_base * scale
+        tail_frac = (sigma_total_cm2 - sigma_total_cm2_base) / sigma_total_cm2_base
+        if tail_frac < 0.1:
+            scale = sigma_total_cm2 / sigma_total_cm2_base
+            if np.isfinite(scale) and scale > 0.0:
+                total_dcs *= scale
+                sigma_total_au = sigma_total_au_base * scale
+        else:
+            logger.warning("Top-up fraction %.2f >= 0.1; skipping DCS scaling.", tail_frac)
 
     return DWBAResult(
         True, E_incident_eV, dE_target_eV,
