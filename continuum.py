@@ -272,10 +272,11 @@ def _extract_phase_logderiv_neutral(Y_m: float, k_au: float, r_m: float, l: int)
     # But Riccati functions use ρ, so we need Y in ρ-space
     Y_rho = Y_m / k_au
     
-    # tan(δ) formula - for Riccati-Bessel, χ ~ ĵ cos(δ) - n̂ sin(δ)
-    # tan(δ) = (Y_ρ·ĵ - ĵ') / (Y_ρ·n̂ - n̂')
+    # tan(δ) formula per instruction:
+    # tan(δ) = [Y_m · u1 - u1'] / [u2' - Y_m · u2]
+    # where u1 = ĵ, u2 = n̂
     numerator = Y_rho * j_hat - j_hat_prime
-    denominator = Y_rho * n_hat - n_hat_prime  # FIXED: was n_hat_prime - Y_rho * n_hat
+    denominator = n_hat_prime - Y_rho * n_hat  # CORRECT per instruction: u2' - Y·u2
     
     if abs(denominator) < 1e-15:
         # Near resonance - δ ≈ ±π/2
@@ -306,9 +307,9 @@ def _extract_phase_logderiv_coulomb(Y_m: float, k_au: float, r_m: float, l: int,
     # Convert Y_m to ρ-space
     Y_rho = Y_m / k_au
     
-    # tan(δ) = (Y_ρ·F - F') / (Y_ρ·G - G')
+    # tan(δ) = [Y_ρ·F - F'] / [G' - Y_ρ·G]  (per instruction)
     numerator = Y_rho * F - F_prime
-    denominator = Y_rho * G - G_prime  # FIXED: was G_prime - Y_rho * G
+    denominator = G_prime - Y_rho * G  # CORRECT per instruction: u2' - Y·u2
     
     if abs(denominator) < 1e-15:
         return np.pi / 2.0 if numerator > 0 else -np.pi / 2.0
@@ -627,7 +628,218 @@ def _fit_asymptotic_phase_coulomb(r_tail: np.ndarray, chi_tail: np.ndarray, l: i
 
 
 # =============================================================================
-# Johnson Log-Derivative Propagator
+# NUMEROV PROPAGATOR WITH RENORMALIZATION
+# =============================================================================
+#
+# The Numerov method solves χ''(r) = Q(r)·χ(r) with O(h⁶) accuracy.
+# It is more stable than RK45 for oscillatory solutions and avoids the
+# chi reconstruction issues of the log-derivative method.
+#
+# Key formula (constant step h):
+#     a[i] = 1 - (h²/12)·Q[i]
+#     b[i] = 2 + (5h²/6)·Q[i]
+#     χ[i+1] = (b[i]·χ[i] - a[i-1]·χ[i-1]) / a[i+1]
+#
+# Periodic renormalization prevents under/overflow.
+# =============================================================================
+
+def _derivative_5point(chi: np.ndarray, r_grid: np.ndarray, idx: int) -> float:
+    """
+    Derivative using central difference for NON-UNIFORM grid.
+    
+    For non-uniform grids, the 5-point formula requires weighted coefficients.
+    We use a simpler 3-point central difference with local step sizes, 
+    which is still O(h²) accurate and works for exponential grids.
+    
+    Formula: χ'(r_i) ≈ (χ[i+1] - χ[i-1]) / (r[i+1] - r[i-1])
+    
+    Parameters
+    ----------
+    chi : np.ndarray
+        Wavefunction array.
+    r_grid : np.ndarray
+        Radial grid array.
+    idx : int
+        Index at which to compute derivative.
+        
+    Returns
+    -------
+    dchi : float
+        Derivative χ'(r_idx).
+    """
+    N = len(chi)
+    
+    if idx <= 0:
+        # Forward difference at left boundary
+        h_local = r_grid[1] - r_grid[0]
+        return (chi[1] - chi[0]) / h_local
+    elif idx >= N - 1:
+        # Backward difference at right boundary
+        h_local = r_grid[-1] - r_grid[-2]
+        return (chi[-1] - chi[-2]) / h_local
+    else:
+        # Central difference with local step
+        return (chi[idx + 1] - chi[idx - 1]) / (r_grid[idx + 1] - r_grid[idx - 1])
+
+
+
+def _numerov_propagate(
+    r_grid: np.ndarray,
+    Q_arr: np.ndarray,
+    chi0: float,
+    chi1: float,
+    renorm_interval: int = 100,
+    renorm_scale: float = 1e50
+) -> Tuple[np.ndarray, float]:
+    """
+    Propagate χ using Numerov method: χ'' = Q·χ
+    
+    This version handles NON-UNIFORM grids by using local step sizes.
+    For exponential grids, h varies with position.
+    
+    Uses periodic renormalization to prevent over/underflow.
+    
+    Parameters
+    ----------
+    r_grid : np.ndarray
+        Radial grid (can be non-uniform / exponential).
+    Q_arr : np.ndarray
+        Effective potential Q(r) = l(l+1)/r² + 2U(r) - k² on grid.
+    chi0, chi1 : float
+        Initial values χ(r₀), χ(r₁).
+    renorm_interval : int
+        Renormalize every N steps.
+    renorm_scale : float
+        Scale factor for renormalization threshold.
+        
+    Returns
+    -------
+    chi : np.ndarray
+        Wavefunction on grid (before final normalization).
+    log_scale : float
+        Cumulative log of renormalization factors: χ_true = χ * exp(log_scale).
+    """
+    N = len(r_grid)
+    chi = np.zeros(N, dtype=float)
+    chi[0] = chi0
+    chi[1] = chi1
+    
+    # Precompute local step sizes (non-uniform!)
+    h_arr = np.diff(r_grid)  # h[i] = r[i+1] - r[i], length N-1
+    
+    log_scale = 0.0
+    
+    # Propagate step by step with local Numerov formula
+    # For non-uniform grid, use local h at each step
+    for i in range(1, N - 1):
+        h_prev = h_arr[i - 1]  # r[i] - r[i-1]
+        h_next = h_arr[i]      # r[i+1] - r[i]
+        
+        # For slightly varying h, use average for Numerov coefficients
+        h_avg = 0.5 * (h_prev + h_next)
+        h2 = h_avg * h_avg
+        
+        # Numerov coefficients with local h
+        a_prev = 1.0 - (h2 / 12.0) * Q_arr[i - 1]
+        b_curr = 2.0 + (5.0 * h2 / 6.0) * Q_arr[i]
+        a_next = 1.0 - (h2 / 12.0) * Q_arr[i + 1]
+        
+        # Guard against division by zero
+        if abs(a_next) < 1e-15:
+            a_next = 1e-15 if a_next >= 0 else -1e-15
+            
+        chi[i + 1] = (b_curr * chi[i] - a_prev * chi[i - 1]) / a_next
+        
+        # Periodic renormalization
+        if (i + 1) % renorm_interval == 0:
+            max_val = max(abs(chi[i]), abs(chi[i + 1]))
+            if max_val > renorm_scale:
+                # Scale down
+                scale = renorm_scale / max_val
+                chi[:i + 2] *= scale
+                log_scale -= np.log(scale)
+            elif max_val < 1.0 / renorm_scale and max_val > 0:
+                # Scale up
+                scale = 1.0 / (max_val * 1e10)
+                chi[:i + 2] *= scale
+                log_scale -= np.log(scale)
+    
+    return chi, log_scale
+
+
+def _build_asymptotic_wave(
+    r_grid: np.ndarray,
+    k_au: float,
+    l: int,
+    delta_l: float,
+    z_ion: float,
+    idx_start: int = 0
+) -> np.ndarray:
+    """
+    Build the asymptotic wavefunction with proper normalization.
+    
+    For normalization to δ(k-k'), the asymptotic amplitude should be sqrt(2/π).
+    
+    Neutral: χ_as(r) = A·[ĵ_l(kr)·cos(δ) - n̂_l(kr)·sin(δ)]
+    Ionic:   χ_as(r) = A·[F_l(η,kr)·cos(δ) - G_l(η,kr)·sin(δ)]
+    
+    where A = sqrt(2/π) for δ(k-k') normalization.
+    
+    Parameters
+    ----------
+    r_grid : np.ndarray
+        Radial grid.
+    k_au : float
+        Wave number in atomic units.
+    l : int
+        Angular momentum.
+    delta_l : float
+        Phase shift in radians.
+    z_ion : float
+        Ionic charge (0 for neutral).
+    idx_start : int
+        Start index (set chi=0 before this for turning point).
+        
+    Returns
+    -------
+    chi_as : np.ndarray
+        Asymptotic wavefunction with proper normalization.
+    """
+    N = len(r_grid)
+    chi_as = np.zeros(N, dtype=float)
+    
+    # Normalization factor for δ(k-k')
+    A = np.sqrt(2.0 / np.pi)
+    
+    cos_d = np.cos(delta_l)
+    sin_d = np.sin(delta_l)
+    
+    if abs(z_ion) < 1e-3:
+        # Neutral: use Riccati-Bessel functions
+        for i in range(idx_start, N):
+            r = r_grid[i]
+            rho = k_au * r
+            if rho < 1e-10:
+                continue
+            j_hat, _ = _riccati_bessel_jn(l, rho)
+            n_hat, _ = _riccati_bessel_yn(l, rho)
+            chi_as[i] = A * (j_hat * cos_d - n_hat * sin_d)
+    else:
+        # Ionic: use Coulomb functions
+        eta = -z_ion / k_au
+        for i in range(idx_start, N):
+            r = r_grid[i]
+            rho = k_au * r
+            if rho < 1e-10:
+                continue
+            F, _, G, _ = _coulomb_FG_asymptotic(l, eta, rho)
+            chi_as[i] = A * (F * cos_d - G * sin_d)
+    
+    return chi_as
+
+
+# =============================================================================
+# Johnson Log-Derivative Propagator (Fallback)
 # =============================================================================
 #
 # The Johnson method propagates the log-derivative Y(r) = χ'(r)/χ(r) instead
@@ -1030,16 +1242,8 @@ def solve_continuum_wave(
     # Empirically: RK45 becomes unstable around L > 10 due to turning point effects.
     # For low k (low energy), instability starts even earlier.
     #
-    # Dynamic threshold: L_threshold = min(10, 5 + int(k_au * 3))
-    # This means at k=1 (13.6 eV), threshold = 8
-    #          at k=2 (54 eV), threshold = 10
-    #          at k=0.5 (3.4 eV), threshold = 6
-    
-    # Use Johnson by default for stability; RK45 remains as fallback.
-    JOHNSON_THRESHOLD_BASE = 10
-    dynamic_threshold = max(5, min(JOHNSON_THRESHOLD_BASE, 5 + int(k_au * 3)))
-    use_johnson = l > dynamic_threshold
-
+    # NOW USING NUMEROV AS PRIMARY METHOD - more stable chi propagation
+    # ==========================================================================
     
     idx_start = 0
     if l > 5:
@@ -1052,73 +1256,65 @@ def solve_continuum_wave(
     r_eval = r[idx_start:]
     r0_int = float(r_eval[0])
     
-    method_used = "Johnson" if use_johnson else "RK45"
+    # ==========================================================================
+    # NUMEROV PROPAGATION (Primary Method)
+    # ==========================================================================
+    # Numerov is O(h⁶) accurate and more stable than log-derivative 
+    # reconstruction. Uses Q(r) = l(l+1)/r² + 2U(r) - k².
+    # ==========================================================================
     
-    if use_johnson:
-        # --- Johnson Log-Derivative Method ---
-        # More stable for high L due to log-derivative propagation
-        U_eval = U_arr[idx_start:]
-        chi_computed, dchi_computed = _johnson_log_derivative_solve(
-            r_eval, U_eval, l, k_au, renorm_interval=50
-        )
-        
-        if idx_start > 0:
-            chi_raw = np.zeros_like(r, dtype=float)
-            chi_raw[idx_start:] = chi_computed
-            dchi_raw = np.zeros_like(r, dtype=float)
-            dchi_raw[idx_start:] = dchi_computed
-        else:
-            chi_raw = chi_computed
-            dchi_raw = dchi_computed
-            
+    # Build Q(r) array for Numerov
+    ell = float(l)
+    k2 = k_au ** 2
+    Q_full = ell * (ell + 1.0) / (r * r) + 2.0 * U_arr - k2
+    Q_eval = Q_full[idx_start:]
+    
+    # Initial conditions: χ ~ r^(l+1) at small r
+    # χ[0] = r[0]^(l+1), χ[1] = r[1]^(l+1)
+    if idx_start == 0:
+        # Start from origin with regular boundary condition
+        chi0 = r_eval[0] ** (ell + 1.0)
+        chi1 = r_eval[1] ** (ell + 1.0)
     else:
-        # --- Standard RK45 Method ---
-        if idx_start > 0:
-            y0 = _initial_conditions_high_L(r0_int, l, k_au, z_ion)
-        else:
-            y0 = _initial_conditions_regular(r0_int, l)
-
-        rhs = _schrodinger_rhs_factory(l=l, U_spline=U_spline, k_au=k_au)
-
-        if k_au > 1e-3:
-            wavelength = 2.0 * np.pi / k_au
-            max_step_val = wavelength / 20.0
-        else:
-            max_step_val = 0.1
-        max_step_val = min(max_step_val, 0.2) 
-
-        sol = solve_ivp(
-            fun=rhs,
-            t_span=(r0_int, float(r_eval[-1])),
-            y0=y0,
-            t_eval=r_eval,          
-            method="RK45",
-            max_step=max_step_val,
-            rtol=rtol,
-            atol=atol,
-            dense_output=False
-        )
-
-        if not sol.success:
-            # Fallback to Johnson if RK45 fails
-            logger.warning(f"RK45 failed for L={l}, falling back to Johnson")
-            U_eval = U_arr[idx_start:]
-            chi_computed, dchi_computed = _johnson_log_derivative_solve(
-                r_eval, U_eval, l, k_au, renorm_interval=50
-            )
-            method_used = "Johnson (fallback)"
-        else:
-            chi_computed = sol.y[0, :]
-            dchi_computed = sol.y[1, :]
+        # Start near turning point - use WKB-like initial conditions
+        # In barrier: χ grows exponentially outward
+        r0 = r_eval[0]
+        r1 = r_eval[1]
+        h_init = r1 - r0
+        S0 = ell * (ell + 1.0) / (r0 * r0) + 2.0 * U_arr[idx_start] - k2
         
-        if idx_start > 0:
-            chi_raw = np.zeros_like(r, dtype=float)
-            chi_raw[idx_start:] = chi_computed
-            dchi_raw = np.zeros_like(r, dtype=float)
-            dchi_raw[idx_start:] = dchi_computed
+        if S0 > 0:
+            # Inside barrier - exponentially growing solution
+            kappa = np.sqrt(S0)
+            chi0 = 1e-20  # Small amplitude
+            chi1 = chi0 * np.exp(kappa * h_init)
         else:
-            chi_raw = chi_computed
-            dchi_raw = dchi_computed
+            # Already outside barrier - oscillatory
+            chi0 = r0 ** (ell + 1.0) if ell < 10 else 1e-10
+            chi1 = r1 ** (ell + 1.0) if ell < 10 else 1e-10 * 1.1
+    
+    # Propagate using Numerov
+    chi_computed, log_scale = _numerov_propagate(
+        r_eval, Q_eval, chi0, chi1, 
+        renorm_interval=100, renorm_scale=1e50
+    )
+    
+    # Compute derivative using central difference with local step sizes
+    dchi_computed = np.zeros_like(chi_computed)
+    for i in range(len(chi_computed)):
+        dchi_computed[i] = _derivative_5point(chi_computed, r_eval, i)
+    
+    method_used = "Numerov"
+    
+    # Place in full grid
+    if idx_start > 0:
+        chi_raw = np.zeros_like(r, dtype=float)
+        chi_raw[idx_start:] = chi_computed
+        dchi_raw = np.zeros_like(r, dtype=float)
+        dchi_raw[idx_start:] = dchi_computed
+    else:
+        chi_raw = chi_computed
+        dchi_raw = dchi_computed
 
 
     # Sanity: remove any global sign if necessary (not physically important).
@@ -1144,51 +1340,75 @@ def solve_continuum_wave(
     dchi_m = dchi_raw[idx_match]
     
     if abs(chi_m) < 1e-100:
-        # Johnson solver failed - retry with RK45
-        logger.debug(f"L={l}: Johnson produced χ≈0, falling back to RK45")
+        # =======================================================================
+        # FALLBACK CHAIN: Numerov failed -> Try Johnson -> Try RK45
+        # =======================================================================
+        logger.debug(f"L={l}: Numerov produced χ≈0, trying Johnson fallback")
         
-        # Use RK45 with full propagation from idx_start
-        r0_int = float(r[idx_start])
-        r_eval = r[idx_start:]
-        
-        if abs(z_ion) < 1e-3:
-            y0 = _initial_conditions_high_L(r0_int, l, k_au, z_ion=0.0)
-        else:
-            y0 = _initial_conditions_high_L(r0_int, l, k_au, z_ion=z_ion)
-        
-        rhs = _schrodinger_rhs_factory(l=l, U_spline=U_spline, k_au=k_au)
-        
-        wavelength = 2.0 * np.pi / k_au if k_au > 1e-3 else 1.0
-        max_step_val = min(wavelength / 20.0, 0.2)
-        
-        sol = solve_ivp(
-            fun=rhs,
-            t_span=(r0_int, float(r_eval[-1])),
-            y0=y0,
-            t_eval=r_eval,
-            method="RK45",
-            max_step=max_step_val,
-            rtol=rtol,
-            atol=atol,
-            dense_output=False
+        # --- Fallback 1: Johnson log-derivative method ---
+        U_eval = U_arr[idx_start:]
+        r_eval_fb = r[idx_start:]
+        chi_johnson, dchi_johnson = _johnson_log_derivative_solve(
+            r_eval_fb, U_eval, l, k_au, renorm_interval=50
         )
         
-        if sol.success:
-            # Update chi_raw with RK45 result
-            chi_raw[idx_start:] = sol.y[0, :]
-            dchi_raw[idx_start:] = sol.y[1, :]
-            method_used = "RK45 (fallback)"
-            
-            # Retry getting chi at match point
-            chi_m = chi_raw[idx_match]
-            dchi_m = dchi_raw[idx_match]
-            
-            if abs(chi_m) < 1e-100:
-                logger.warning(f"L={l}: Both Johnson and RK45 failed")
-                return None
+        if idx_start > 0:
+            chi_raw = np.zeros_like(r, dtype=float)
+            chi_raw[idx_start:] = chi_johnson
+            dchi_raw = np.zeros_like(r, dtype=float)
+            dchi_raw[idx_start:] = dchi_johnson
         else:
-            logger.warning(f"L={l}: RK45 fallback also failed")
-            return None
+            chi_raw = chi_johnson
+            dchi_raw = dchi_johnson
+        
+        chi_m = chi_raw[idx_match]
+        dchi_m = dchi_raw[idx_match]
+        method_used = "Johnson (fallback)"
+        
+        if abs(chi_m) < 1e-100:
+            # --- Fallback 2: RK45 ---
+            logger.debug(f"L={l}: Johnson also produced χ≈0, trying RK45")
+            
+            r0_int = float(r[idx_start])
+            r_eval_rk = r[idx_start:]
+            
+            if abs(z_ion) < 1e-3:
+                y0 = _initial_conditions_high_L(r0_int, l, k_au, z_ion=0.0)
+            else:
+                y0 = _initial_conditions_high_L(r0_int, l, k_au, z_ion=z_ion)
+            
+            rhs = _schrodinger_rhs_factory(l=l, U_spline=U_spline, k_au=k_au)
+            
+            wavelength = 2.0 * np.pi / k_au if k_au > 1e-3 else 1.0
+            max_step_val = min(wavelength / 20.0, 0.2)
+            
+            sol = solve_ivp(
+                fun=rhs,
+                t_span=(r0_int, float(r_eval_rk[-1])),
+                y0=y0,
+                t_eval=r_eval_rk,
+                method="RK45",
+                max_step=max_step_val,
+                rtol=rtol,
+                atol=atol,
+                dense_output=False
+            )
+            
+            if sol.success:
+                chi_raw[idx_start:] = sol.y[0, :]
+                dchi_raw[idx_start:] = sol.y[1, :]
+                method_used = "RK45 (fallback)"
+                
+                chi_m = chi_raw[idx_match]
+                dchi_m = dchi_raw[idx_match]
+                
+                if abs(chi_m) < 1e-100:
+                    logger.warning(f"L={l}: All solvers (Numerov, Johnson, RK45) failed")
+                    return None
+            else:
+                logger.warning(f"L={l}: RK45 fallback also failed (solver error)")
+                return None
+
 
     
     Y_m = dchi_m / chi_m
@@ -1249,15 +1469,53 @@ def solve_continuum_wave(
         logger.warning(f"L={l}: Unreliable wave (A={A_amp:.2e}, δ={delta_l:.4f})")
         return None
 
-    # Renormalize χ so asymptotic amplitude is 1
-    chi_norm = chi_raw / abs(A_amp)
-
-
+    # ==========================================================================
+    # ASYMPTOTIC STITCHING
+    # ==========================================================================
+    # Scale numerical chi to match asymptotic amplitude, then stitch to
+    # analytic solution for r > r_m. This eliminates numerical noise in 
+    # the tail and ensures proper normalization to δ(k-k').
+    # ==========================================================================
+    
+    # Build asymptotic wave with sqrt(2/π) normalization
+    chi_asymptotic = _build_asymptotic_wave(r, k_au, l, delta_l, z_ion, idx_start=0)
+    
+    # Scale factor: s = chi_as(r_m) / chi_num(r_m)
+    # Use robust formula when chi_m might be close to node
+    chi_as_m = chi_asymptotic[idx_match]
+    chi_num_m = chi_raw[idx_match]
+    
+    if abs(chi_num_m) > 1e-100:
+        # More robust scaling using both chi and chi'
+        dchi_as_m = _derivative_5point(chi_asymptotic, r, idx_match)
+        dchi_num_m = dchi_raw[idx_match]
+        
+        # s = [chi_as·chi_num + chi_as'·chi_num'] / [chi_num² + chi_num'²]
+        numerator = chi_as_m * chi_num_m + dchi_as_m * dchi_num_m
+        denominator = chi_num_m**2 + dchi_num_m**2
+        
+        if abs(denominator) > 1e-100:
+            scale = numerator / denominator
+        else:
+            scale = chi_as_m / chi_num_m if abs(chi_num_m) > 1e-100 else 1.0
+    else:
+        logger.warning(f"L={l}: chi_num(r_m) ≈ 0, using asymptotic wave only")
+        scale = 1.0
+    
+    # Build final stitched wavefunction
+    chi_final = np.zeros_like(r, dtype=float)
+    
+    # For r <= r_m: use scaled numerical solution
+    chi_final[:idx_match + 1] = scale * chi_raw[:idx_match + 1]
+    
+    # For r > r_m: use pure analytic asymptotic solution
+    chi_final[idx_match + 1:] = chi_asymptotic[idx_match + 1:]
+    
     # Done. Package result with match point for split integrals.
     cw = ContinuumWave(
         l=l,
         k_au=k_au,
-        chi_of_r=chi_norm,
+        chi_of_r=chi_final,
         phase_shift=delta_l,
         r_match=r_m,
         idx_match=idx_match

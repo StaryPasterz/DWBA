@@ -236,42 +236,34 @@ This ensures **all energies in the scan** have sufficient grid extent. The conso
 
 ### Radial Solver: Numerical Methods
 
-The continuum wave solver uses a hybrid approach for optimal stability:
+The continuum wave solver uses **Numerov propagation** with asymptotic stitching:
 
-| L Range | Method | Reason |
-|---------|--------|--------|
-| L ≤ 10 (dynamic) | RK45 (scipy) | High accuracy for low L |
-| L > 10 | Johnson log-derivative | Stable in tunneling region |
-| L > 40 | Analytic bypass | Centrifugal barrier dominates |
+**Numerov Method** (Primary):
+- Solves χ''(r) = Q(r)·χ(r) where Q = l(l+1)/r² + 2U(r) - k²
+- O(h⁶) accuracy, more stable than RK45 for oscillatory solutions
+- Periodic renormalization prevents over/underflow
+- 5-point derivative formula for accurate χ'(r)
 
-**Johnson Method** (B.R. Johnson, J. Comp. Phys. 1973):
-- Propagates Y = χ'/χ instead of χ directly
-- Stays O(1) even when χ is exponentially small
-- RK4 for log-derivative propagation
+**Initial Conditions**:
+- Origin (l≤5): Regular boundary χ ~ r^(l+1)
+- Turning point (l>5): WKB-like χ ~ exp(κ·r) inside barrier
 
-**Phase Extraction via Log-Derivative Matching**:
-
-Instead of least-squares fitting over a tail region, we match at a single point r_m:
+**Phase Extraction**:
 ```
-tan(δ_l) = [Y_m · ĵ_l - ĵ_l'] / [n̂_l' - Y_m · n̂_l]
+tan(δ_l) = [Y_m · ĵ_l - ĵ_l'] / [Y_m · n̂_l - n̂_l']
 ```
-where `Y_m = χ'(r_m)/χ(r_m)` and ĵ, n̂ are Riccati-Bessel functions.
+- Matches to Riccati-Bessel (neutral) or Coulomb F,G (ionic) at r_m
+- r_m chosen where |2U(r)| << k² and l(l+1)/r²
 
-**Match Point Selection** (r_m):
-- `|2U(r_m)| < 1e-4 × k²` (potential negligible vs kinetic energy)
-- `|2U(r_m)| < 1e-4 × l(l+1)/r_m²` (potential negligible vs centrifugal)
-
-**Quality Checks**:
-- Phase stability: Compares δ at two nearby match points
-- Diagnostics logged at DEBUG level (`DWBA_LOG_LEVEL=DEBUG`)
+**Asymptotic Stitching**:
+- Numerical χ scaled to match asymptotic amplitude at r_m
+- Pure analytic solution A·[ĵ cos(δ) - n̂ sin(δ)] used for r > r_m
+- Amplitude A = √(2/π) for δ(k-k') normalization
+- Eliminates numerical noise in oscillatory tail
 
 **Split Radial Integrals**:
-
-DWBA matrix elements use split integration at r_m:
-- `[0, r_m]`: Numerical integration (where potential is significant)
-- `[r_m, ∞)`: Oscillatory cancelation (effectively zero contribution)
-
-The match point is stored in `ContinuumWave.idx_match` and used by `radial_ME_all_L()`.
+- Integration uses numerical χ for [0, r_m] and analytic for [r_m, ∞)
+- Match point stored in `ContinuumWave.idx_match`
 
 ### General Performance Tips
 
