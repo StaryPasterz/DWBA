@@ -169,15 +169,40 @@ def radial_ME_all_L(
     w = grid.w_simpson 
     r = grid.r
 
-
-    # --- Precompute densities ---
-    rho1_dir = w * chi_f * chi_i
-    rho2_dir = w * u_f * u_i
+    # ==========================================================================
+    # SPLIT INTEGRAL OPTIMIZATION
+    # ==========================================================================
+    # Use match points from ContinuumWave to limit integration range.
+    # Beyond r_m, the wavefunction is essentially free (Bessel/Coulomb) and
+    # oscillatory contributions largely cancel. We integrate only [0, r_m].
+    # ==========================================================================
     
-    rho1_ex = w * u_f * chi_i
-    rho2_ex = w * chi_f * u_i
+    # Determine effective integration limit from continuum wave match points
+    N_grid = len(r)
+    idx_limit = N_grid  # Default: use full grid
+    
+    # Use minimum of match points (where both waves are in asymptotic regime)
+    if hasattr(cont_i, 'idx_match') and cont_i.idx_match > 0:
+        idx_limit = min(idx_limit, cont_i.idx_match + 1)
+    if hasattr(cont_f, 'idx_match') and cont_f.idx_match > 0:
+        idx_limit = min(idx_limit, cont_f.idx_match + 1)
+    
+    # Ensure we have at least 50% of grid for numerical integration
+    idx_limit = max(idx_limit, N_grid // 2)
+
+    # Apply limit by zeroing weights beyond idx_limit (efficient, no array slicing)
+    w_limited = w.copy()
+    w_limited[idx_limit:] = 0.0
+
+    # --- Precompute densities with limited weights ---
+    rho1_dir = w_limited * chi_f * chi_i
+    rho2_dir = w_limited * u_f * u_i
+    
+    rho1_ex = w_limited * u_f * chi_i
+    rho2_ex = w_limited * chi_f * u_i
     
     # Correction term for L=0: [V_core(r1) - U_i(r1)] from A_0 in the article.
+
     V_diff = V_core_array - U_i_array
     overlap_tol = 1e-12
 

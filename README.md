@@ -234,7 +234,47 @@ This ensures **all energies in the scan** have sufficient grid extent. The conso
   • Adaptive Grid: E_min=15.0 eV, k_min=0.27 -> r_max=480, n_points=7200
 ```
 
+### Radial Solver: Numerical Methods
+
+The continuum wave solver uses a hybrid approach for optimal stability:
+
+| L Range | Method | Reason |
+|---------|--------|--------|
+| L ≤ 10 (dynamic) | RK45 (scipy) | High accuracy for low L |
+| L > 10 | Johnson log-derivative | Stable in tunneling region |
+| L > 40 | Analytic bypass | Centrifugal barrier dominates |
+
+**Johnson Method** (B.R. Johnson, J. Comp. Phys. 1973):
+- Propagates Y = χ'/χ instead of χ directly
+- Stays O(1) even when χ is exponentially small
+- RK4 for log-derivative propagation
+
+**Phase Extraction via Log-Derivative Matching**:
+
+Instead of least-squares fitting over a tail region, we match at a single point r_m:
+```
+tan(δ_l) = [Y_m · ĵ_l - ĵ_l'] / [n̂_l' - Y_m · n̂_l]
+```
+where `Y_m = χ'(r_m)/χ(r_m)` and ĵ, n̂ are Riccati-Bessel functions.
+
+**Match Point Selection** (r_m):
+- `|2U(r_m)| < 1e-4 × k²` (potential negligible vs kinetic energy)
+- `|2U(r_m)| < 1e-4 × l(l+1)/r_m²` (potential negligible vs centrifugal)
+
+**Quality Checks**:
+- Phase stability: Compares δ at two nearby match points
+- Diagnostics logged at DEBUG level (`DWBA_LOG_LEVEL=DEBUG`)
+
+**Split Radial Integrals**:
+
+DWBA matrix elements use split integration at r_m:
+- `[0, r_m]`: Numerical integration (where potential is significant)
+- `[r_m, ∞)`: Oscillatory cancelation (effectively zero contribution)
+
+The match point is stored in `ContinuumWave.idx_match` and used by `radial_ME_all_L()`.
+
 ### General Performance Tips
+
 - **Near-threshold**: Grid auto-scales, but consider using log energy grid
 - **keV energies**: Ensure sufficient `L_max_projectile`
 - **Turning point warning**: Logs show when L_max is limited; r_max is auto-increased

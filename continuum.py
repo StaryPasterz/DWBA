@@ -48,7 +48,7 @@ from typing import Tuple
 
 from scipy.interpolate import CubicSpline
 from scipy.integrate import solve_ivp
-from scipy.special import spherical_jn, loggamma
+from scipy.special import spherical_jn, spherical_yn, loggamma
 
 
 from grid import RadialGrid, k_from_E_eV, ev_to_au
@@ -78,18 +78,245 @@ class ContinuumWave:
         (i.e. unit amplitude).
         Shape (N,), same as the global radial grid.
     phase_shift : float
-        δ_l in radians, extracted from the asymptotic fit.
+        δ_l in radians, extracted from the log-derivative matching.
         Physically this encodes the short-range distortion due to U_j(r).
+    r_match : float
+        Matching radius where log-derivative was matched. Beyond this point,
+        the wavefunction is essentially free (Bessel/Coulomb).
+        Used for splitting radial integrals into numerical + analytical parts.
+    idx_match : int
+        Grid index corresponding to r_match. For integrals, use [0:idx_match+1]
+        for reliable numerical part.
     """
     l: int
     k_au: float
     chi_of_r: np.ndarray
     phase_shift: float
+    r_match: float = 0.0      # Match point radius
+    idx_match: int = -1       # Match point grid index (-1 = not set, use full grid)
+
 
     @property
     def u_of_r(self) -> np.ndarray:
         """Alias for chi_of_r to ensure compatibility with BoundOrbital interface."""
         return self.chi_of_r
+
+
+# =============================================================================
+# RICCATI-BESSEL AND COULOMB FUNCTIONS FOR PHASE EXTRACTION
+# =============================================================================
+
+def _riccati_bessel_jn(l: int, rho: float) -> Tuple[float, float]:
+    """
+    Riccati-Bessel function ĵ_l(ρ) = ρ·j_l(ρ) and its derivative.
+    
+    Returns (ĵ_l, ĵ_l') where derivative is with respect to ρ.
+    Uses recurrence: ĵ_l'(ρ) = ĵ_{l-1}(ρ) - (l/ρ)·ĵ_l(ρ) for l>0
+    """
+    if rho < 1e-10:
+        # Small argument limit: j_l(ρ) ~ ρ^l / (2l+1)!!
+        return 0.0, 0.0
+    
+    jl = float(spherical_jn(l, rho))
+    j_hat = rho * jl  # ĵ_l = ρ·j_l
+    
+    if l == 0:
+        # ĵ_0 = sin(ρ), ĵ_0' = cos(ρ)
+        j_hat_prime = np.cos(rho)
+    else:
+        # Use j_{l-1} for derivative
+        jl_minus1 = float(spherical_jn(l - 1, rho))
+        j_hat_prime = rho * jl_minus1 - l * jl
+    
+    return j_hat, j_hat_prime
+
+
+def _riccati_bessel_yn(l: int, rho: float) -> Tuple[float, float]:
+    """
+    Riccati-Neumann function n̂_l(ρ) = ρ·y_l(ρ) and its derivative.
+    
+    Returns (n̂_l, n̂_l') where derivative is with respect to ρ.
+    Note: y_l is also called n_l (Neumann function) in some texts.
+    """
+    if rho < 1e-10:
+        # y_l diverges at origin
+        return -1e30, -1e30
+    
+    yl = float(spherical_yn(l, rho))
+    n_hat = rho * yl  # n̂_l = ρ·y_l
+    
+    if l == 0:
+        # n̂_0 = -cos(ρ), n̂_0' = sin(ρ)
+        n_hat_prime = np.sin(rho)
+    else:
+        # Use y_{l-1} for derivative
+        yl_minus1 = float(spherical_yn(l - 1, rho))
+        n_hat_prime = rho * yl_minus1 - l * yl
+    
+    return n_hat, n_hat_prime
+
+
+def _coulomb_FG_asymptotic(l: int, eta: float, rho: float) -> Tuple[float, float, float, float]:
+    """
+    Asymptotic Coulomb functions F_l, G_l and their derivatives.
+    
+    For ρ >> l, η:
+        F_l(η,ρ) ≈ sin(θ)
+        G_l(η,ρ) ≈ cos(θ)
+    where θ = ρ + η·ln(2ρ) - lπ/2 + σ_l
+    
+    Returns (F, F', G, G')
+    """
+    if rho < 1e-10:
+        return 0.0, 0.0, 1e30, 1e30
+    
+    # Coulomb phase shift σ_l = arg Γ(l+1+iη)
+    sigma_l = np.imag(loggamma(l + 1 + 1j * eta))
+    
+    # Asymptotic argument
+    theta = rho + eta * np.log(2.0 * rho) - (l * np.pi / 2.0) + sigma_l
+    
+    # Derivative of theta: dθ/dρ = 1 + η/ρ
+    theta_prime = 1.0 + eta / rho
+    
+    F = np.sin(theta)
+    G = np.cos(theta)
+    F_prime = theta_prime * np.cos(theta)
+    G_prime = -theta_prime * np.sin(theta)
+    
+    return F, F_prime, G, G_prime
+
+
+def _find_match_point(r_grid: np.ndarray, U_arr: np.ndarray, k_au: float, l: int,
+                       threshold: float = 1e-4, idx_start: int = 0) -> Tuple[int, float]:
+    """
+    Find optimal matching point r_m where potential is negligible.
+    
+    Criteria:
+        |2U(r_m)| < threshold × k²
+        |2U(r_m)| < threshold × l(l+1)/r_m²  (for l > 0)
+    
+    Parameters
+    ----------
+    idx_start : int
+        Minimum index to consider (where propagation actually starts).
+        Match point must be >= idx_start to have valid wavefunction.
+    
+    Returns the index and r value of the match point.
+    Searches from large r inward to find the outermost valid point.
+    """
+    k2 = k_au ** 2
+    N = len(r_grid)
+    
+    # Start from ~80% of grid to avoid edge effects
+    search_start = int(0.8 * N)
+    
+    # Minimum search index: must be beyond idx_start (where χ has amplitude)
+    # Add buffer to ensure we're well into oscillatory region
+    min_search_idx = max(idx_start + 10, N // 4)
+    
+    for idx in range(search_start, min_search_idx, -1):
+        r = r_grid[idx]
+        U = U_arr[idx]
+        
+        # Criterion 1: potential small vs kinetic energy
+        if abs(2.0 * U) > threshold * k2:
+            continue
+        
+        # Criterion 2: potential small vs centrifugal (for l > 0)
+        if l > 0:
+            centrifugal = l * (l + 1) / (r * r)
+            if abs(2.0 * U) > threshold * centrifugal:
+                continue
+        
+        # Found a good point
+        return idx, r
+    
+    # Fallback: use point slightly after idx_start (ensure valid wavefunction)
+    fallback_idx = min(search_start, max(idx_start + 20, int(0.5 * N)))
+    logger.debug(f"No ideal match point found for L={l}, k={k_au:.3f}; using idx={fallback_idx}")
+    return fallback_idx, r_grid[fallback_idx]
+
+
+def _extract_phase_logderiv_neutral(Y_m: float, k_au: float, r_m: float, l: int) -> float:
+    """
+    Extract phase shift using log-derivative matching for neutral target.
+    
+    Formula:
+        tan(δ_l) = [Y_m · ĵ_l(kr_m) - ĵ_l'(kr_m)] / [n̂_l'(kr_m) - Y_m · n̂_l(kr_m)]
+    
+    Parameters
+    ----------
+    Y_m : float
+        Log-derivative χ'/χ at match point.
+    k_au : float
+        Wave number in atomic units.
+    r_m : float
+        Match point radius.
+    l : int
+        Angular momentum.
+        
+    Returns
+    -------
+    delta_l : float
+        Phase shift in radians.
+    """
+    rho_m = k_au * r_m
+    
+    # Get Riccati-Bessel functions and derivatives at match point
+    j_hat, j_hat_prime = _riccati_bessel_jn(l, rho_m)
+    n_hat, n_hat_prime = _riccati_bessel_yn(l, rho_m)
+    
+    # Convert Y_m (derivative w.r.t. r) to Y_rho (derivative w.r.t. ρ)
+    # χ' = dχ/dr = k · dχ/dρ, so Y_m = k · Y_rho
+    # But Riccati functions use ρ, so we need Y in ρ-space
+    Y_rho = Y_m / k_au
+    
+    # tan(δ) formula - for Riccati-Bessel, χ ~ ĵ cos(δ) - n̂ sin(δ)
+    # tan(δ) = (Y_ρ·ĵ - ĵ') / (Y_ρ·n̂ - n̂')
+    numerator = Y_rho * j_hat - j_hat_prime
+    denominator = Y_rho * n_hat - n_hat_prime  # FIXED: was n_hat_prime - Y_rho * n_hat
+    
+    if abs(denominator) < 1e-15:
+        # Near resonance - δ ≈ ±π/2
+        return np.pi / 2.0 if numerator > 0 else -np.pi / 2.0
+    
+    tan_delta = numerator / denominator
+    delta_l = np.arctan(tan_delta)
+    
+    return delta_l
+
+
+def _extract_phase_logderiv_coulomb(Y_m: float, k_au: float, r_m: float, l: int, 
+                                     z_ion: float) -> float:
+    """
+    Extract phase shift using log-derivative matching for ionic target.
+    
+    Formula:
+        tan(δ_l) = [Y_m · F_l - F_l'] / [G_l' - Y_m · G_l]
+    
+    where F_l, G_l are Coulomb functions at (η, kr_m).
+    """
+    eta = -z_ion / k_au
+    rho_m = k_au * r_m
+    
+    # Get Coulomb functions at match point
+    F, F_prime, G, G_prime = _coulomb_FG_asymptotic(l, eta, rho_m)
+    
+    # Convert Y_m to ρ-space
+    Y_rho = Y_m / k_au
+    
+    # tan(δ) = (Y_ρ·F - F') / (Y_ρ·G - G')
+    numerator = Y_rho * F - F_prime
+    denominator = Y_rho * G - G_prime  # FIXED: was G_prime - Y_rho * G
+    
+    if abs(denominator) < 1e-15:
+        return np.pi / 2.0 if numerator > 0 else -np.pi / 2.0
+    
+    tan_delta = numerator / denominator
+    delta_l = np.arctan(tan_delta)
+    
+    return delta_l
 
 
 def _schrodinger_rhs_factory(l: int, U_spline: CubicSpline, k_au: float):
@@ -398,7 +625,251 @@ def _fit_asymptotic_phase_coulomb(r_tail: np.ndarray, chi_tail: np.ndarray, l: i
     
     return float(A), float(delta_l)
 
+
+# =============================================================================
+# Johnson Log-Derivative Propagator
+# =============================================================================
+#
+# The Johnson method propagates the log-derivative Y(r) = χ'(r)/χ(r) instead
+# of χ directly. This is numerically stable even in classically forbidden 
+# regions (tunneling) where χ itself would under/overflow.
+#
+# Reference: B.R. Johnson, J. Comp. Phys. 13, 445 (1973)
+# 
+# The Riccati equation for Y is:
+#     dY/dr = -Y² - S(r)
+# where S(r) = l(l+1)/r² + 2U(r) - k²
+#
+# =============================================================================
+
+def _johnson_log_derivative_solve(
+    r_grid: np.ndarray,
+    U_arr: np.ndarray,
+    l: int,
+    k_au: float,
+    renorm_interval: int = 50
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Solve radial Schrödinger using Johnson's log-derivative propagator.
+    
+    This method is much more stable than direct ODE integration for high L
+    because it propagates Y = χ'/χ which stays O(1) even when χ is tiny.
+    
+    Parameters
+    ----------
+    r_grid : np.ndarray
+        Radial grid points (must be monotonically increasing).
+    U_arr : np.ndarray  
+        Potential values U(r) on grid.
+    l : int
+        Angular momentum quantum number.
+    k_au : float
+        Wave number in atomic units.
+    renorm_interval : int
+        Renormalize wavefunction every N steps to prevent overflow.
+        
+    Returns
+    -------
+    chi : np.ndarray
+        Wavefunction χ(r) on grid.
+    dchi : np.ndarray
+        Derivative χ'(r) on grid.
+    """
+    N = len(r_grid)
+    k2 = k_au ** 2
+    ell = float(l)
+    
+    # Initialize arrays
+    chi = np.zeros(N, dtype=float)
+    dchi = np.zeros(N, dtype=float)
+    
+    # --- Initial Conditions ---
+    # For high L in tunneling region, use WKB approximation
+    # Y_WKB = sqrt(S(r)) where S > 0 (inside barrier)
+    r0 = r_grid[0]
+    S0 = ell * (ell + 1.0) / (r0 * r0) + 2.0 * U_arr[0] - k2
+    
+    if S0 > 0:
+        # Inside barrier: WKB gives Y ≈ +sqrt(S)
+        Y_init = np.sqrt(S0)
+    else:
+        # Outside barrier: oscillatory, Y ≈ (l+1)/r as small r
+        Y_init = (ell + 1.0) / r0
+    
+    # Start with unit amplitude - will be renormalized anyway
+    chi[0] = 1.0
+    dchi[0] = Y_init * chi[0]
+    
+    Y_current = Y_init
+    
+    # --- RK4 Propagation for Y ---
+    # dY/dr = -Y² - S(r)
+    # More stable than simple Euler
+    
+    for i in range(N - 1):
+        r = r_grid[i]
+        r_next = r_grid[i + 1]
+        h = r_next - r
+        
+        # S(r) function
+        def S_func(rr, idx_hint):
+            # Interpolate U if needed
+            if idx_hint < N - 1:
+                t = (rr - r_grid[idx_hint]) / (r_grid[idx_hint + 1] - r_grid[idx_hint])
+                U_interp = U_arr[idx_hint] * (1 - t) + U_arr[idx_hint + 1] * t
+            else:
+                U_interp = U_arr[-1]
+            return ell * (ell + 1.0) / (rr * rr) + 2.0 * U_interp - k2
+        
+        # RK4 for Y
+        def dY(rr, Y_val, idx):
+            return -Y_val**2 - S_func(rr, idx)
+        
+        k1 = dY(r, Y_current, i)
+        k2_rk = dY(r + 0.5*h, Y_current + 0.5*h*k1, i)
+        k3 = dY(r + 0.5*h, Y_current + 0.5*h*k2_rk, i)
+        k4 = dY(r_next, Y_current + h*k3, i)
+        
+        Y_next = Y_current + (h/6.0) * (k1 + 2*k2_rk + 2*k3 + k4)
+        
+        # Limit Y to prevent numerical explosion
+        Y_next = np.clip(Y_next, -100.0, 100.0)
+        
+        # Reconstruct chi from Y using logarithmic integration
+        Y_avg = 0.5 * (Y_current + Y_next)
+        exp_arg = h * Y_avg
+        exp_arg = np.clip(exp_arg, -30, 30)  # Stricter limits
+        
+        chi[i + 1] = chi[i] * np.exp(exp_arg)
+        dchi[i + 1] = Y_next * chi[i + 1]
+        
+        Y_current = Y_next
+        
+        # Renormalize more frequently to prevent issues
+        if (i + 1) % renorm_interval == 0:
+            max_val = np.max(np.abs(chi[:i + 2]))
+            if max_val > 1e5 or (max_val < 1e-100 and max_val > 0):
+                if max_val > 0:
+                    scale = 1.0 / max_val
+                    chi[:i + 2] *= scale
+                    dchi[:i + 2] *= scale
+    
+    # Final normalization to reasonable scale
+    max_val = np.max(np.abs(chi))
+    if max_val > 0 and max_val != 1.0:
+        chi /= max_val
+        dchi /= max_val
+    
+    return chi, dchi
+
+
+
+def _verify_wronskian(
+    chi: np.ndarray,
+    dchi: np.ndarray,
+    r_match: float,
+    r_grid: np.ndarray,
+    l: int,
+    k_au: float,
+    z_ion: float
+) -> float:
+    """
+    Verify solution quality at match point by checking log-derivative smoothness.
+    
+    Instead of comparing with asymptotic formula (which has singularities),
+    we check that the log-derivative Y = χ'/χ is smooth by comparing
+    values at two nearby points.
+    
+    Returns
+    -------
+    smoothness_error : float
+        Relative variation in Y between two nearby points. <0.1 is good.
+    """
+    # Find match index
+    idx = np.searchsorted(r_grid, r_match)
+    idx = min(max(idx, 2), len(r_grid) - 3)
+    
+    # Compare Y at two nearby points
+    chi_1 = chi[idx]
+    dchi_1 = dchi[idx]
+    chi_2 = chi[idx - 2]
+    dchi_2 = dchi[idx - 2]
+    
+    if abs(chi_1) < 1e-100 or abs(chi_2) < 1e-100:
+        return 0.0  # Can't check if amplitude is tiny
+    
+    Y_1 = dchi_1 / chi_1
+    Y_2 = dchi_2 / chi_2
+    
+    # The log-derivative should be smooth (slowly varying)
+    # Compute relative change normalized by k (natural scale)
+    delta_r = abs(r_grid[idx] - r_grid[idx - 2])
+    dY_dr = (Y_1 - Y_2) / (delta_r + 1e-10)
+    
+    # Expected rate of change is O(1/r) or O(k), so normalize by k
+    smoothness_error = abs(dY_dr) / (k_au + 1.0)
+    
+    # Also check if Y is within reasonable bounds
+    # For oscillatory solution, |Y| should be O(k)
+    if abs(Y_1) > 10.0 * k_au and k_au > 0.1:
+        smoothness_error = max(smoothness_error, 1.0)  # Flag as bad
+    
+    return min(smoothness_error, 10.0)  # Cap at 10 for readability
+
+
+def _log_convergence_diagnostics(
+    l: int,
+    k_au: float,
+    A_amp: float,
+    delta_l: float,
+    phase_stable: bool,
+    wronskian_error: float,
+    method_used: str
+):
+    """
+    Log convergence diagnostics for a partial wave.
+    
+    Parameters
+    ----------
+    l : int
+        Angular momentum.
+    k_au : float
+        Wave number.
+    A_amp : float
+        Fitted amplitude.
+    delta_l : float
+        Phase shift.
+    phase_stable : bool
+        Whether phase is stable across tail regions.
+    wronskian_error : float
+        Wronskian deviation from expected.
+    method_used : str
+        "RK45" or "Johnson".
+    """
+    status = "OK"
+    issues = []
+    
+    if not phase_stable:
+        issues.append("phase_unstable")
+        status = "WARN"
+    
+    if wronskian_error > 0.1:
+        issues.append(f"wronskian_err={wronskian_error:.2f}")
+        status = "WARN"
+    
+    if A_amp < 1e-10:
+        issues.append("tiny_amplitude")
+        status = "WARN"
+    
+    if status == "WARN":
+        logger.warning(f"L={l:3d} [{method_used}] A={A_amp:.2e} δ={delta_l:+.4f} "
+                       f"issues: {', '.join(issues)}")
+    else:
+        logger.debug(f"L={l:3d} [{method_used}] A={A_amp:.2e} δ={delta_l:+.4f} OK")
+
+
 def solve_continuum_wave(
+
     grid: RadialGrid,
     U_channel: DistortingPotential,
     l: int,
@@ -511,136 +982,284 @@ def solve_continuum_wave(
     # spline interpolation of U(r) so we can evaluate it at arbitrary r during integration
     U_spline = CubicSpline(r, U_arr, bc_type="natural")
 
-    # --- Analytic Bypass for High L (Neutral) ---
-    # For very high L (e.g. > 60), the centrifugal barrier L(L+1)/r^2 dominates the potential U(r).
-    # The solution is effectively a free particle wave (Bessel function).
-    # Numerical integration is unstable due to underflow/noise domination.
-    # We return the exact analytic solution j_l(kr).
-    if l > 60 and abs(z_ion) < 1e-3:
-        # u(r) = r * j_l(k*r)
-        rho_vec = k_au * r
-        # spherical_jn(l, z) is efficient for vector z in scipy
-        jl_vals = spherical_jn(l, rho_vec)
-        # Normalize to Unit Amplitude: u ~ (1/k) sin. So multiply by k.
-        chi_analytic = r * jl_vals * k_au
+    # ==========================================================================
+    # DYNAMIC BYPASS CHECK BASED ON r_m
+    # ==========================================================================
+    # Instead of fixed L threshold, check if potential is negligible at small r.
+    # If r_m (where |2U| << k²) is found very early in the grid,
+    # numerical integration is unnecessary - use analytic solution.
+    #
+    # This makes the bypass decision physical rather than heuristic.
+    # ==========================================================================
+    
+    # Try to find match point - if it's at very small r, potential is negligible everywhere
+    idx_match_check, r_m_check = _find_match_point(r, U_arr, k_au, l, threshold=1e-4)
+    
+    # If r_m is found in the first 10% of grid, potential is negligible → use analytic
+    fraction_to_match = idx_match_check / len(r)
+    use_analytic_bypass = fraction_to_match < 0.15  # If match point is in first 15% of grid
+    
+    if use_analytic_bypass:
+        logger.debug(f"L={l}: Analytic bypass (r_m={r_m_check:.1f} at {fraction_to_match*100:.0f}% of grid)")
         
-        # Phase shift is 0 relative to plane wave
+        if abs(z_ion) < 1e-3:
+            # Neutral: use Riccati-Bessel
+            rho_vec = k_au * r
+            jl_vals = spherical_jn(l, rho_vec)
+            chi_analytic = r * jl_vals * k_au
+            return ContinuumWave(l, k_au, chi_analytic, 0.0)
+        else:
+            # Ionic: use asymptotic Coulomb
+            eta = -z_ion / k_au
+            coulomb_phase = np.imag(loggamma(l + 1 + 1j * eta))
+            rho_vec = k_au * r
+            theta = rho_vec + eta * np.log(2.0 * rho_vec + 1e-30) - (l * np.pi / 2.0) + coulomb_phase
+            chi_coulomb = np.sin(theta)
+            # Zero below turning point (asymptotic invalid there)
+            r_turning = np.sqrt(l * (l + 1)) / k_au
+            chi_coulomb[r < 0.5 * r_turning] = 0.0
+            return ContinuumWave(l, k_au, chi_coulomb, 0.0)
 
-        return ContinuumWave(l, k_au, chi_analytic, 0.0)
-
-    # --- Optimization: For high l, skip deep tunneling region ---
 
     # The centrifugal barrier l(l+1)/r^2 is huge at small r.
     # The solution is effectively zero until we approach the classical turning point r_c ~ sqrt(l(l+1))/k.
     # Integrating from r_min (e.g. 0.05) when r_c is 12 (for l=100) causes extreme stiffness and failure.
     
+    # --- Solver Selection ---
+    # Use Johnson log-derivative for stability in tunneling region.
+    # Empirically: RK45 becomes unstable around L > 10 due to turning point effects.
+    # For low k (low energy), instability starts even earlier.
+    #
+    # Dynamic threshold: L_threshold = min(10, 5 + int(k_au * 3))
+    # This means at k=1 (13.6 eV), threshold = 8
+    #          at k=2 (54 eV), threshold = 10
+    #          at k=0.5 (3.4 eV), threshold = 6
+    
+    # Use Johnson by default for stability; RK45 remains as fallback.
+    JOHNSON_THRESHOLD_BASE = 10
+    dynamic_threshold = max(5, min(JOHNSON_THRESHOLD_BASE, 5 + int(k_au * 3)))
+    use_johnson = l > dynamic_threshold
+
+    
     idx_start = 0
     if l > 5:
         r_turn = np.sqrt(l*(l+1)) / k_au
-        # Start at a fraction of turning point (e.g. 0.3) where wavefunction is still tiny but ODE is stable
         r_safe = r_turn * 0.9
-        
-        # Find index in grid
         idx_found = np.searchsorted(r, r_safe)
         if idx_found > 0 and idx_found < len(r) - 20: 
             idx_start = idx_found
             
-    # Define integration sub-grid
     r_eval = r[idx_start:]
-    
-    # initial conditions at the first grid point of evaluation
     r0_int = float(r_eval[0])
     
-    if idx_start > 0:
-        # Verify 90% of turning point - might imply we are in a region where U is small?
-        # At turning point L(L+1)/r^2 ~ k^2. 
-        # Potential V(r) is usually small compared to centrifugal there.
-        # So Bessel/Coulomb initialization is physically justified.
-        y0 = _initial_conditions_high_L(r0_int, l, k_au, z_ion)
-    else:
-        y0 = _initial_conditions_regular(r0_int, l)
-
-
-    # define RHS of ODE system
-    rhs = _schrodinger_rhs_factory(l=l, U_spline=U_spline, k_au=k_au)
-
-    # integrate outward up to r_max
-    # r_max = float(r[-1]) # Not needed explicitly if using t_eval
-
-    # Determine max_step to avoid aliasing oscillations (lambda = 2pi/k)
-    # We want at least 10-20 steps per wavelength.
-    # lambda ~ 2*pi / k_au.
-    if k_au > 1e-3:
-        wavelength = 2.0 * np.pi / k_au
-        max_step_val = wavelength / 20.0
-    else:
-        max_step_val = 0.1 # default safe step
-        
-    # Cap max_step to avoid being too small or too large
-    # For high L, we might need smaller steps initially, but RK45 adapts. 
-    # Just ensure we don't miss oscillations.
-    max_step_val = min(max_step_val, 0.2) 
-
-    sol = solve_ivp(
-        fun=rhs,
-        t_span=(r0_int, float(r_eval[-1])),
-        y0=y0,
-        t_eval=r_eval,          
-        method="RK45",
-        max_step=max_step_val,
-        rtol=rtol,
-        atol=atol,
-        dense_output=False
-    )
-
-    if not sol.success:
-        raise RuntimeError(f"solve_continuum_wave: ODE solver failed: {sol.message}")
-
-    # Extract χ(r) from solution and pad with zeros if needed
-    chi_computed = sol.y[0, :]  # shape (N_eval,)
+    method_used = "Johnson" if use_johnson else "RK45"
     
-    if idx_start > 0:
-        chi_raw = np.zeros_like(r, dtype=float)
-        chi_raw[idx_start:] = chi_computed
+    if use_johnson:
+        # --- Johnson Log-Derivative Method ---
+        # More stable for high L due to log-derivative propagation
+        U_eval = U_arr[idx_start:]
+        chi_computed, dchi_computed = _johnson_log_derivative_solve(
+            r_eval, U_eval, l, k_au, renorm_interval=50
+        )
+        
+        if idx_start > 0:
+            chi_raw = np.zeros_like(r, dtype=float)
+            chi_raw[idx_start:] = chi_computed
+            dchi_raw = np.zeros_like(r, dtype=float)
+            dchi_raw[idx_start:] = dchi_computed
+        else:
+            chi_raw = chi_computed
+            dchi_raw = dchi_computed
+            
     else:
-        chi_raw = chi_computed
+        # --- Standard RK45 Method ---
+        if idx_start > 0:
+            y0 = _initial_conditions_high_L(r0_int, l, k_au, z_ion)
+        else:
+            y0 = _initial_conditions_regular(r0_int, l)
+
+        rhs = _schrodinger_rhs_factory(l=l, U_spline=U_spline, k_au=k_au)
+
+        if k_au > 1e-3:
+            wavelength = 2.0 * np.pi / k_au
+            max_step_val = wavelength / 20.0
+        else:
+            max_step_val = 0.1
+        max_step_val = min(max_step_val, 0.2) 
+
+        sol = solve_ivp(
+            fun=rhs,
+            t_span=(r0_int, float(r_eval[-1])),
+            y0=y0,
+            t_eval=r_eval,          
+            method="RK45",
+            max_step=max_step_val,
+            rtol=rtol,
+            atol=atol,
+            dense_output=False
+        )
+
+        if not sol.success:
+            # Fallback to Johnson if RK45 fails
+            logger.warning(f"RK45 failed for L={l}, falling back to Johnson")
+            U_eval = U_arr[idx_start:]
+            chi_computed, dchi_computed = _johnson_log_derivative_solve(
+                r_eval, U_eval, l, k_au, renorm_interval=50
+            )
+            method_used = "Johnson (fallback)"
+        else:
+            chi_computed = sol.y[0, :]
+            dchi_computed = sol.y[1, :]
+        
+        if idx_start > 0:
+            chi_raw = np.zeros_like(r, dtype=float)
+            chi_raw[idx_start:] = chi_computed
+            dchi_raw = np.zeros_like(r, dtype=float)
+            dchi_raw[idx_start:] = dchi_computed
+        else:
+            chi_raw = chi_computed
+            dchi_raw = dchi_computed
+
 
     # Sanity: remove any global sign if necessary (not physically important).
     # We won't flip sign here because the asymptotic fit will absorb it into δ_l anyway.
 
-    # --- Fit asymptotic tail to get amplitude and phase shift ---
+    # ==========================================================================
+    # PHASE EXTRACTION VIA LOG-DERIVATIVE MATCHING
+    # ==========================================================================
+    #
+    # Instead of fitting over an entire tail region, we match at a single point
+    # r_m where the potential is negligible. This is more stable and accurate.
+    #
+    # Formula: tan(δ_l) = [Y_m · j_l - j_l'] / [n_l' - Y_m · n_l]
+    # where Y_m = χ'(r_m) / χ(r_m) is the log-derivative from numerical propagation.
+    #
+    # ==========================================================================
+    
+    # --- Step 1: Find optimal match point (must be beyond idx_start) ---
+    idx_match, r_m = _find_match_point(r, U_arr, k_au, l, threshold=1e-4, idx_start=idx_start)
+    
+    # Get log-derivative at match point
+    chi_m = chi_raw[idx_match]
+    dchi_m = dchi_raw[idx_match]
+    
+    if abs(chi_m) < 1e-100:
+        # Johnson solver failed - retry with RK45
+        logger.debug(f"L={l}: Johnson produced χ≈0, falling back to RK45")
+        
+        # Use RK45 with full propagation from idx_start
+        r0_int = float(r[idx_start])
+        r_eval = r[idx_start:]
+        
+        if abs(z_ion) < 1e-3:
+            y0 = _initial_conditions_high_L(r0_int, l, k_au, z_ion=0.0)
+        else:
+            y0 = _initial_conditions_high_L(r0_int, l, k_au, z_ion=z_ion)
+        
+        rhs = _schrodinger_rhs_factory(l=l, U_spline=U_spline, k_au=k_au)
+        
+        wavelength = 2.0 * np.pi / k_au if k_au > 1e-3 else 1.0
+        max_step_val = min(wavelength / 20.0, 0.2)
+        
+        sol = solve_ivp(
+            fun=rhs,
+            t_span=(r0_int, float(r_eval[-1])),
+            y0=y0,
+            t_eval=r_eval,
+            method="RK45",
+            max_step=max_step_val,
+            rtol=rtol,
+            atol=atol,
+            dense_output=False
+        )
+        
+        if sol.success:
+            # Update chi_raw with RK45 result
+            chi_raw[idx_start:] = sol.y[0, :]
+            dchi_raw[idx_start:] = sol.y[1, :]
+            method_used = "RK45 (fallback)"
+            
+            # Retry getting chi at match point
+            chi_m = chi_raw[idx_match]
+            dchi_m = dchi_raw[idx_match]
+            
+            if abs(chi_m) < 1e-100:
+                logger.warning(f"L={l}: Both Johnson and RK45 failed")
+                return None
+        else:
+            logger.warning(f"L={l}: RK45 fallback also failed")
+            return None
 
-    N = r.size
-    n_tail = max(20, int(np.floor(tail_fraction * N)))
-    if n_tail >= N // 2:
-        # tail can't be the entire grid; enforce upper bound
-        n_tail = max(20, N // 4)
-
-    tail_slice = slice(N - n_tail, N)
-    r_tail = r[tail_slice]
-    chi_tail = chi_raw[tail_slice]
-
-    # Decide matching strategy
+    
+    Y_m = dchi_m / chi_m
+    
+    # --- Step 2: Extract phase using log-derivative matching ---
     if abs(z_ion) < 1e-3:
-        A_amp, delta_l = _fit_asymptotic_phase_neutral(r_tail, chi_tail, l, k_au)
+        delta_l = _extract_phase_logderiv_neutral(Y_m, k_au, r_m, l)
     else:
-        A_amp, delta_l = _fit_asymptotic_phase_coulomb(r_tail, chi_tail, l, k_au, z_ion)
+        delta_l = _extract_phase_logderiv_coulomb(Y_m, k_au, r_m, l, z_ion)
+    
+    # --- Step 3: Compute amplitude for normalization ---
+    # At match point: χ = A·[ĵ cos(δ) - n̂ sin(δ)]
+    # So: A = χ / [ĵ cos(δ) - n̂ sin(δ)]
+    rho_m = k_au * r_m
+    
+    if abs(z_ion) < 1e-3:
+        j_hat, _ = _riccati_bessel_jn(l, rho_m)
+        n_hat, _ = _riccati_bessel_yn(l, rho_m)
+        ref_value = j_hat * np.cos(delta_l) - n_hat * np.sin(delta_l)
+    else:
+        eta = -z_ion / k_au
+        F, _, G, _ = _coulomb_FG_asymptotic(l, eta, rho_m)
+        ref_value = F * np.cos(delta_l) - G * np.sin(delta_l)
+    
+    if abs(ref_value) < 1e-100:
+        logger.warning(f"L={l}: Reference value ≈ 0, using |χ(r_m)| for normalization")
+        A_amp = abs(chi_m)
+    else:
+        A_amp = chi_m / ref_value
+    
+    # --- Diagnostics ---
+    # Check phase stability by comparing with slightly shifted match point
+    if idx_match > 10:
+        idx_alt = idx_match - 5
+        chi_alt = chi_raw[idx_alt]
+        dchi_alt = dchi_raw[idx_alt]
+        if abs(chi_alt) > 1e-100:
+            Y_alt = dchi_alt / chi_alt
+            r_alt = r[idx_alt]
+            if abs(z_ion) < 1e-3:
+                delta_alt = _extract_phase_logderiv_neutral(Y_alt, k_au, r_alt, l)
+            else:
+                delta_alt = _extract_phase_logderiv_coulomb(Y_alt, k_au, r_alt, l, z_ion)
+            
+            phase_variation = abs(delta_l - delta_alt)
+            phase_stable = phase_variation <= 0.05
+            if not phase_stable:
+                logger.warning(f"Phase unstable for L={l}: δ varies by {phase_variation:.4f} rad")
+        else:
+            phase_stable = True
+    else:
+        phase_stable = True
+    
+    # Log diagnostics
+    logger.debug(f"L={l:3d} [{method_used}] r_m={r_m:.1f} Y_m={Y_m:.4f} δ={delta_l:+.4f} A={A_amp:.2e}")
 
-    if not np.isfinite(A_amp) or not np.isfinite(delta_l) or A_amp == 0.0:
-        # Wave is unreliable (small amplitude or poor fit) - return None
-        # Caller should handle this by skipping this partial wave
+    if not np.isfinite(A_amp) or not np.isfinite(delta_l) or abs(A_amp) < 1e-100:
+        logger.warning(f"L={l}: Unreliable wave (A={A_amp:.2e}, δ={delta_l:.4f})")
         return None
 
     # Renormalize χ so asymptotic amplitude is 1
-    chi_norm = chi_raw / A_amp
+    chi_norm = chi_raw / abs(A_amp)
 
-    
-    # Done. Package result.
+
+    # Done. Package result with match point for split integrals.
     cw = ContinuumWave(
-
         l=l,
         k_au=k_au,
         chi_of_r=chi_norm,
-        phase_shift=delta_l
+        phase_shift=delta_l,
+        r_match=r_m,
+        idx_match=idx_match
     )
     return cw
