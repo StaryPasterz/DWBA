@@ -62,6 +62,126 @@ from logging_config import get_logger
 logger = get_logger(__name__)
 
 # =============================================================================
+# CENTRALIZED DEFAULT PARAMETERS
+# =============================================================================
+# All numerical defaults organized by category. These are displayed to users
+# and can be modified before calculation.
+
+DEFAULTS = {
+    # --- Grid Parameters ---
+    "grid": {
+        "r_max": 200.0,           # Maximum radius (a.u.)
+        "n_points": 3000,         # Number of radial grid points
+        "r_max_scale_factor": 2.5, # Safety factor for adaptive r_max
+        "n_points_max": 8000,     # Maximum grid points (memory cap)
+    },
+    
+    # --- Excitation-specific ---
+    "excitation": {
+        "L_max_integrals": 15,    # Maximum multipole L for Coulomb expansion
+        "L_max_projectile": 5,    # Base partial wave L_max for projectile
+        "n_theta": 200,           # Angular grid for DCS
+        "pilot_energy_eV": 1000.0, # Calibration energy
+    },
+    
+    # --- Ionization-specific ---
+    "ionization": {
+        "l_eject_max": 3,         # Maximum ejected electron l
+        "L_max": 15,              # Multipole L_max
+        "L_max_projectile": 50,   # Base partial wave L_max
+        "n_energy_steps": 10,     # SDCS integration steps
+    },
+    
+    # --- Oscillatory Integrals ---
+    "oscillatory": {
+        "CC_nodes": 5,            # Clenshaw-Curtis nodes per interval
+        "phase_increment": 1.5708, # π/2 radians per sub-interval
+        "min_grid_fraction": 0.10, # Minimum match point fraction
+        "k_threshold": 0.5,       # k_total threshold for Filon
+    },
+    
+    # --- Energy Grid ---
+    "energy_grid": {
+        "start_epsilon_eV": 0.5,  # Start above threshold (eV)
+        "log_density_factor": 1.0, # Log grid density multiplier
+        "points_per_decade": 10,  # Base points per log decade
+    },
+}
+
+
+def display_defaults(category: str = None):
+    """Display default parameters, optionally filtered by category."""
+    print()
+    if category and category in DEFAULTS:
+        categories = {category: DEFAULTS[category]}
+    else:
+        categories = DEFAULTS
+    
+    for cat_name, params in categories.items():
+        print(f"  ┌─ {cat_name.upper()} ─────────────────────────────")
+        for key, val in params.items():
+            if isinstance(val, float):
+                print(f"  │  {key:<22} = {val:.4g}")
+            else:
+                print(f"  │  {key:<22} = {val}")
+        print(f"  └{'─' * 40}")
+
+
+def get_defaults_copy() -> dict:
+    """Return a deep copy of defaults for modification."""
+    import copy
+    return copy.deepcopy(DEFAULTS)
+
+
+def prompt_use_defaults(categories: list = None) -> dict:
+    """
+    Display defaults and ask user if they want to use them.
+    Returns the (possibly modified) defaults dict.
+    
+    Parameters
+    ----------
+    categories : list, optional
+        List of category names to display (e.g., ['grid', 'excitation'])
+        If None, displays all categories.
+    """
+    print_subheader("Numerical Parameters")
+    
+    if categories:
+        for cat in categories:
+            if cat in DEFAULTS:
+                display_defaults(cat)
+    else:
+        display_defaults()
+    
+    print()
+    use_defaults = input("  Use these defaults? [Y/n]: ").strip().lower()
+    
+    params = get_defaults_copy()
+    
+    if use_defaults == 'n':
+        print("\n  Edit parameters (press Enter to keep default):")
+        
+        if categories:
+            cats_to_edit = [c for c in categories if c in DEFAULTS]
+        else:
+            cats_to_edit = list(DEFAULTS.keys())
+        
+        for cat_name in cats_to_edit:
+            print(f"\n  ── {cat_name.upper()} ──")
+            for key, default_val in DEFAULTS[cat_name].items():
+                if isinstance(default_val, int):
+                    params[cat_name][key] = get_input_int(f"    {key}", default_val)
+                elif isinstance(default_val, float):
+                    params[cat_name][key] = get_input_float(f"    {key}", default_val)
+        
+        print_success("Parameters updated")
+    else:
+        print_info("Using default parameters")
+    
+    return params
+
+
+# =============================================================================
 # UI Formatting Helpers
 # =============================================================================
 
@@ -368,19 +488,13 @@ def run_scan_excitation(run_name):
         print("Error: Invalid n, l combination (n must be > l).")
         return
 
-    print_subheader("Excitation Numerics")
-    print("  Defaults: L_max=15, L_max_projectile=5, n_theta=200")
-    change_numerics = input("  Change defaults? [y/N]: ").strip().lower()
+    # Use centralized defaults with improved UI
+    params = prompt_use_defaults(categories=['grid', 'excitation', 'oscillatory'])
     
-    if change_numerics == 'y':
-        L_max_integrals = get_input_int("  L_max (multipole)", 15)
-        L_max_proj = get_input_int("  L_max_projectile (base, auto-scaled)", 5)
-        n_theta = get_input_int("  n_theta (DCS angular grid)", 200)
-    else:
-        L_max_integrals = 15
-        L_max_proj = 5
-        n_theta = 200
-        print_info("Using default numerics")
+    L_max_integrals = params['excitation']['L_max_integrals']
+    L_max_proj = params['excitation']['L_max_projectile']
+    n_theta = params['excitation']['n_theta']
+    pilot_E = params['excitation']['pilot_energy_eV']
 
 
     spec = ExcitationChannelSpec(
@@ -666,22 +780,14 @@ def run_scan_ionization(run_name):
     if n_idx_i < 1:
         print("Error: Invalid n, l combination (n must be > l).")
         return
-        
-    print("\n--- Ionization Numerics ---")
-    print("  Defaults: l_eject_max=3, L_max=15, L_max_projectile=50, n_energy_steps=10")
-    change_numerics = input("  Change defaults? [y/N]: ").strip().lower()
     
-    if change_numerics == 'y':
-        l_eject_max = get_input_int("  l_eject_max", 3)
-        L_max = get_input_int("  L_max (multipole)", 15)
-        L_max_proj = get_input_int("  L_max_projectile (base, auto-scaled)", 50)
-        n_energy_steps = get_input_int("  n_energy_steps (SDCS integration)", 10)
-    else:
-        l_eject_max = 3
-        L_max = 15
-        L_max_proj = 50
-        n_energy_steps = 10
-        print_info("Using default numerics")
+    # Use centralized defaults with improved UI
+    params = prompt_use_defaults(categories=['grid', 'ionization', 'oscillatory'])
+    
+    l_eject_max = params['ionization']['l_eject_max']
+    L_max = params['ionization']['L_max']
+    L_max_proj = params['ionization']['L_max_projectile']
+    n_energy_steps = params['ionization']['n_energy_steps']
 
     spec = IonizationChannelSpec(
         l_i=li,

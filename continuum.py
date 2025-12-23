@@ -74,7 +74,7 @@ class ContinuumWave:
     chi_of_r : np.ndarray
         The radial function χ_l(k,r) on grid.r, AFTER normalization so that
         asymptotically
-            χ_l(k,r) ~ sin(k r - l π/2 + δ_l)
+            χ_l(k,r) ~ sin(k r + η ln(2kr) - l π/2 + σ_l + δ_l)
         (i.e. unit amplitude).
         Shape (N,), same as the global radial grid.
     phase_shift : float
@@ -87,6 +87,12 @@ class ContinuumWave:
     idx_match : int
         Grid index corresponding to r_match. For integrals, use [0:idx_match+1]
         for reliable numerical part.
+    eta : float
+        Sommerfeld parameter η = -z_ion/k for Coulomb potential.
+        For neutral targets (z_ion=0), η=0.
+    sigma_l : float
+        Coulomb phase shift σ_l = arg(Γ(l+1+iη)).
+        For neutral targets, σ_l=0.
     """
     l: int
     k_au: float
@@ -94,6 +100,8 @@ class ContinuumWave:
     phase_shift: float
     r_match: float = 0.0      # Match point radius
     idx_match: int = -1       # Match point grid index (-1 = not set, use full grid)
+    eta: float = 0.0          # Sommerfeld parameter (-z_ion/k)
+    sigma_l: float = 0.0      # Coulomb phase shift arg(Γ(l+1+iη))
 
 
     @property
@@ -143,6 +151,11 @@ def _riccati_bessel_yn(l: int, rho: float) -> Tuple[float, float]:
         return -1e30, -1e30
     
     yl = float(spherical_yn(l, rho))
+    
+    # Guard against overflow (spherical_yn can overflow for large l, small rho)
+    if not np.isfinite(yl) or abs(yl) > 1e50:
+        return -1e30, -1e30
+    
     n_hat = rho * yl  # n̂_l = ρ·y_l
     
     if l == 0:
@@ -151,9 +164,15 @@ def _riccati_bessel_yn(l: int, rho: float) -> Tuple[float, float]:
     else:
         # Use y_{l-1} for derivative
         yl_minus1 = float(spherical_yn(l - 1, rho))
-        n_hat_prime = rho * yl_minus1 - l * yl
+        
+        # Guard against overflow
+        if not np.isfinite(yl_minus1) or abs(yl_minus1) > 1e50:
+            n_hat_prime = -1e30
+        else:
+            n_hat_prime = rho * yl_minus1 - l * yl
     
     return n_hat, n_hat_prime
+
 
 
 def _coulomb_FG_asymptotic(l: int, eta: float, rho: float) -> Tuple[float, float, float, float]:
@@ -1511,13 +1530,28 @@ def solve_continuum_wave(
     # For r > r_m: use pure analytic asymptotic solution
     chi_final[idx_match + 1:] = chi_asymptotic[idx_match + 1:]
     
-    # Done. Package result with match point for split integrals.
+    # =========================================================================
+    # Compute Coulomb phase parameters for oscillatory integral tail
+    # =========================================================================
+    # η = -z_ion/k (Sommerfeld parameter)
+    # σ_l = arg(Γ(l+1+iη)) (Coulomb phase shift)
+    eta_val = -z_ion / k_au if k_au > 0 else 0.0
+    
+    # Compute σ_l = Im(log(Γ(l+1+iη)))
+    if abs(eta_val) > 1e-10:
+        sigma_l_val = float(np.imag(loggamma(l + 1 + 1j * eta_val)))
+    else:
+        sigma_l_val = 0.0
+    
+    # Done. Package result with match point and Coulomb params for split integrals.
     cw = ContinuumWave(
         l=l,
         k_au=k_au,
         chi_of_r=chi_final,
         phase_shift=delta_l,
         r_match=r_m,
-        idx_match=idx_match
+        idx_match=idx_match,
+        eta=eta_val,
+        sigma_l=sigma_l_val
     )
     return cw

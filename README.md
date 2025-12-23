@@ -42,6 +42,7 @@ DW_antigravity_v2/
 ├── distorting_potential.py # Construction of U_i, U_f
 ├── dwba_matrix_elements.py # Radial DWBA integrals (CPU/GPU)
 ├── dwba_coupling.py        # Angular coupling and amplitudes
+├── oscillatory_integrals.py # Filon/phase-adaptive quadrature
 ├── sigma_total.py          # DCS/TCS assembly
 ├── calibration.py          # Tong model implementation
 ├── potential_core.py       # SAE core potential V(r)
@@ -130,6 +131,37 @@ Menu:
 - Exchange term uses swapped detection angles for indistinguishable electrons (Jones/Madison).
 - Numerics: l_eject_max, L_max (multipole), L_max_projectile (base, auto-scaled from k_i), n_energy_steps.
 - Polarization option is heuristic and not part of the article DWBA.
+
+### Centralized Default Parameters
+
+All numerical defaults are organized by category and displayed before calculation:
+
+```
+  ┌─ GRID ─────────────────────────────
+  │  r_max                  = 200
+  │  n_points               = 3000
+  │  r_max_scale_factor     = 2.5
+  │  n_points_max           = 8000
+  └────────────────────────────────────
+
+  ┌─ EXCITATION ───────────────────────
+  │  L_max_integrals        = 15
+  │  L_max_projectile       = 5
+  │  n_theta                = 200
+  │  pilot_energy_eV        = 1000
+  └────────────────────────────────────
+
+  ┌─ OSCILLATORY ──────────────────────
+  │  CC_nodes               = 5
+  │  phase_increment        = 1.571
+  │  min_grid_fraction      = 0.1
+  │  k_threshold            = 0.5
+  └────────────────────────────────────
+```
+
+When prompted, enter:
+- **Y** (or Enter): Use all defaults unchanged
+- **n**: Edit any parameter individually
 
 Outputs: `results_<run>_exc.json`, `results_<run>_ion.json` in project root. Excitation entries include angular grids (`theta_deg`) and both raw/calibrated DCS in a.u. for later plotting. Ionization entries include SDCS data and optional TDCS entries (`angles_deg`, `values`).
 
@@ -265,15 +297,102 @@ tan(δ_l) = [Y_m · ĵ_l - ĵ_l'] / [Y_m · n̂_l - n̂_l']
 - Integration uses numerical χ for [0, r_m] and analytic for [r_m, ∞)
 - Match point stored in `ContinuumWave.idx_match`
 
+### Oscillatory Radial Integrals
+
+For high partial waves and energies, the radial integrands oscillate rapidly:
+
+```
+χ_i(k_i, r) × χ_f(k_f, r) × K_L(r₁, r₂)
+```
+
+The **oscillatory_integrals.py** module provides specialized quadrature:
+
+**Phase Sampling Diagnostic**:
+- Checks if grid spacing satisfies Nyquist: Δφ < π/4 per step
+- Logs warnings when undersampling detected (helps debugging p-orbital issues)
+
+**Filon + Clenshaw-Curtis Method** (Active in Main Path):
+- Uses constant phase splitting: Δφ = π/2 per sub-interval
+- 5 Chebyshev nodes per sub-interval for accuracy
+- Integrand interpolated to CC nodes, summed with CC weights
+- **Direct integrals**: Use `filon` method (CC outer integral only)
+- **Exchange integrals**: Use `filon_exchange` method (CC both inner AND outer)
+- Per instruction: "rozbij całkę na przedziały, na których faza robi stały przyrost"
+
+**Exchange Inner Integral Treatment**:
+- Exchange densities contain continuum waves in both rho1 and rho2
+- `filon_exchange` applies CC to the inner integral (over r2) for each r1
+- Vectorized kernel interpolation using searchsorted + linear interp
+- ~10x slower than `filon` but handles oscillatory inner integrals correctly
+
+**Analytical Multipole Tail** (L ≥ 1, Excitation Only):
+- **Excitation only**: Disabled for ionization (where bound_f is ContinuumWave)
+- **Correct multipole moment**: Uses ∫r^L × u_f × u_i dr (not ∫u_f × u_i)
+- **Correct envelope decay**: 1/r^(L+1) kernel, so L=1 uses 1/r², L=2 uses 1/r³
+- **Coulomb asymptotic phase**: For ionic targets, includes:
+  - η ln(2kr) logarithmic correction (Sommerfeld parameter η = -z_ion/k)
+  - σ_l = arg(Γ(l+1+iη)) Coulomb phase shift
+  - Full phase: kr + η ln(2kr) - lπ/2 + σ_l + δ
+- L=1: Exact integration using Si(x), Ci(x) special functions
+- L>1: Asymptotic expansion with boundary term
+- **Exchange integrals**: No analytical tail (oscillatory quadrature via CC)
+
+**GPU Acceleration**:
+- `radial_ME_all_L_gpu()` supports `use_oscillatory_quadrature` parameter
+- Match point domain splitting reduces GPU memory transfer
+- Analytical tails computed on CPU, kernel integration on GPU
+- **Automatic GPU selection**: `HAS_CUPY and check_cupy_runtime()`
+- CPU and GPU versions produce identical results
+
+**Advanced Quadrature API**:
+- `clenshaw_curtis_nodes(n, a, b)` - returns Chebyshev nodes and weights
+- `generate_phase_nodes(r_start, r_end, k_total, Δφ)` - constant phase grid
+- `oscillatory_kernel_integral_2d(..., method="filon")` - direct integrals
+- `oscillatory_kernel_integral_2d(..., method="filon_exchange")` - exchange integrals
+
+**Usage**:
+```python
+# CPU version with oscillatory quadrature
+integrals = radial_ME_all_L(
+    grid, V_core, U_i, orb_i, orb_f, chi_i, chi_f, L_max,
+    use_oscillatory_quadrature=True
+)
+
+# GPU version with oscillatory quadrature (auto-selected when available)
+integrals_gpu = radial_ME_all_L_gpu(
+    grid, V_core, U_i, orb_i, orb_f, chi_i, chi_f, L_max,
+    use_oscillatory_quadrature=True
+)
+
+# Advanced: Clenshaw-Curtis nodes for custom integration
+from oscillatory_integrals import clenshaw_curtis_nodes, generate_phase_nodes
+nodes, weights = clenshaw_curtis_nodes(7, 0, 100)  # 7 CC nodes on [0, 100]
+phase_grid = generate_phase_nodes(0, 200, k_i + k_f)  # Constant Δφ grid
+```
+
 ### General Performance Tips
 
 - **Near-threshold**: Grid auto-scales, but consider using log energy grid
 - **keV energies**: Ensure sufficient `L_max_projectile`
 - **Turning point warning**: Logs show when L_max is limited; r_max is auto-increased
-- **GPU**: Install CuPy for 5-10× speedup on radial integrals
+- **GPU**: Install CuPy for 5-10× speedup on radial integrals (auto-detected)
 - **Parallel**: Code auto-detects CPU cores for multiprocessing
 
 
+
+
+### Numerical Safeguards
+
+The oscillatory integral module includes automatic safeguards:
+
+| Safeguard | Limit | Purpose |
+|-----------|-------|---------|
+| MAX_REFINE_INTERVALS | 100 | Prevents infinite refinement loops |
+| MAX_SUBDIVISIONS | 50/interval | Caps memory usage per interval |
+| MAX_ARGUMENT (Si/Ci) | 10⁶ | Prevents special function overflow |
+| NaN/Inf checking | Automatic | Falls back to standard method |
+
+**Logging levels**: Set `DWBA_LOG_LEVEL=DEBUG` to see phase-adaptive details.
 
 ## Troubleshooting
 
@@ -282,6 +401,9 @@ tan(δ_l) = [Y_m · ĵ_l - ĵ_l'] / [Y_m · n̂_l - n̂_l']
 | Cross sections too small | Check (2π)⁴ factor in excitation and ionization |
 | Near-threshold zeros | Use log grid, ensure energy > threshold + 0.5 eV |
 | Slow runs | Reduce `n_points`, enable GPU |
+| Solver failures (L>50) | Expected for very high L; code uses analytical bypass |
+| "All solvers failed" | Check grid r_max vs turning point; increase r_max |
+| Non-finite integral warnings | Indicates numerical issues; check input wavefunctions |
 | Fit gives different results | Reference params are protected; fitted params may vary |
 
 ## References
