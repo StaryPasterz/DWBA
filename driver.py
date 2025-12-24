@@ -69,6 +69,7 @@ from dwba_matrix_elements import (
     HAS_CUPY,
     check_cupy_runtime,
     RadialDWBAIntegrals,
+    OscillatoryMethod,
 )
 from sigma_total import (
     integrate_dcs_over_angles,
@@ -84,6 +85,19 @@ from logging_config import get_logger
 
 # Initialize module logger
 logger = get_logger(__name__)
+
+# =============================================================================
+# GLOBAL OSCILLATORY CONFIGURATION
+# =============================================================================
+# Can be set from DW_main.py before calculations. Used by all radial_ME calls.
+OSCILLATORY_CONFIG = {
+    "method": "advanced"  # "legacy" / "advanced" / "full_split"
+}
+
+def set_oscillatory_method(method: OscillatoryMethod):
+    """Set the oscillatory integral method globally."""
+    OSCILLATORY_CONFIG["method"] = method
+    logger.info("Oscillatory method set to: %s", method)
 
 
 
@@ -177,7 +191,8 @@ def _worker_partial_wave(
 
         # Integrals
         integrals = radial_ME_all_L(
-            grid, V_core, U_i.U_of_r, orb_i, orb_f, chi_i, chi_f, chan.L_max_integrals
+            grid, V_core, U_i.U_of_r, orb_i, orb_f, chi_i, chi_f, chan.L_max_integrals,
+            oscillatory_method=OSCILLATORY_CONFIG["method"]
         )
         
         # Distribute
@@ -502,7 +517,8 @@ def compute_total_excitation_cs(
                 
                 # --- GPU INTEGRALS ---
                 integrals = radial_ME_all_L_gpu(
-                    grid, V_core, U_i.U_of_r, orb_i, orb_f, chi_i, chi_f, chan.L_max_integrals
+                    grid, V_core, U_i.U_of_r, orb_i, orb_f, chi_i, chi_f, chan.L_max_integrals,
+                    oscillatory_method=OSCILLATORY_CONFIG["method"]
                 )
                 
                 # Distribute (CPU - fast)

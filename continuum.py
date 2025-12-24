@@ -1238,7 +1238,7 @@ def solve_continuum_wave(
             rho_vec = k_au * r
             jl_vals = spherical_jn(l, rho_vec)
             chi_analytic = r * jl_vals * k_au
-            return ContinuumWave(l, k_au, chi_analytic, 0.0)
+            return ContinuumWave(l, k_au, chi_analytic, 0.0, eta=0.0, sigma_l=0.0)
         else:
             # Ionic: use asymptotic Coulomb
             eta = -z_ion / k_au
@@ -1249,7 +1249,7 @@ def solve_continuum_wave(
             # Zero below turning point (asymptotic invalid there)
             r_turning = np.sqrt(l * (l + 1)) / k_au
             chi_coulomb[r < 0.5 * r_turning] = 0.0
-            return ContinuumWave(l, k_au, chi_coulomb, 0.0)
+            return ContinuumWave(l, k_au, chi_coulomb, 0.0, eta=eta, sigma_l=coulomb_phase)
 
 
     # The centrifugal barrier l(l+1)/r^2 is huge at small r.

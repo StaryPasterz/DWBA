@@ -40,7 +40,8 @@ from dataclasses import asdict
 from driver import (
     compute_total_excitation_cs,
     ExcitationChannelSpec,
-    ev_to_au
+    ev_to_au,
+    set_oscillatory_method
 )
 from grid import (
     k_from_E_eV,
@@ -94,10 +95,11 @@ DEFAULTS = {
     
     # --- Oscillatory Integrals ---
     "oscillatory": {
-        "CC_nodes": 5,            # Clenshaw-Curtis nodes per interval
-        "phase_increment": 1.5708, # π/2 radians per sub-interval
-        "min_grid_fraction": 0.10, # Minimum match point fraction
-        "k_threshold": 0.5,       # k_total threshold for Filon
+        "method": "advanced",         # "legacy" / "advanced" / "full_split"
+        "CC_nodes": 5,                # Clenshaw-Curtis nodes per interval
+        "phase_increment": 1.5708,    # π/2 radians per sub-interval
+        "min_grid_fraction": 0.10,    # Minimum match point fraction
+        "k_threshold": 0.5,           # k_total threshold for Filon
     },
     
     # --- Energy Grid ---
@@ -495,6 +497,9 @@ def run_scan_excitation(run_name):
     L_max_proj = params['excitation']['L_max_projectile']
     n_theta = params['excitation']['n_theta']
     pilot_E = params['excitation']['pilot_energy_eV']
+    
+    # Set oscillatory method globally
+    set_oscillatory_method(params['oscillatory']['method'])
 
 
     spec = ExcitationChannelSpec(
@@ -788,6 +793,9 @@ def run_scan_ionization(run_name):
     L_max = params['ionization']['L_max']
     L_max_proj = params['ionization']['L_max_projectile']
     n_energy_steps = params['ionization']['n_energy_steps']
+    
+    # Set oscillatory method globally
+    set_oscillatory_method(params['oscillatory']['method'])
 
     spec = IonizationChannelSpec(
         l_i=li,

@@ -77,10 +77,767 @@ else:
 _CC_W_REF = (2.0 / (_CC_N - 1)) * (1 - 2 * _weight_sums)  # Weights on [-1, 1]
 
 
+# =============================================================================
+# NUMERICAL STABILITY UTILITIES
+# =============================================================================
+
+def _kahan_sum_complex(values: np.ndarray) -> complex:
+    """
+    Kahan compensated summation for complex values.
+    
+    Reduces roundoff error when summing many small contributions that may
+    partially cancel, which is common in oscillatory integrals.
+    
+    Parameters
+    ----------
+    values : np.ndarray
+        Complex array of values to sum.
+        
+    Returns
+    -------
+    total : complex
+        Compensated sum with reduced roundoff error.
+    """
+    total_re = 0.0
+    total_im = 0.0
+    c_re = 0.0  # Compensation for real part
+    c_im = 0.0  # Compensation for imaginary part
+    
+    for val in values:
+        # Real part
+        y_re = val.real - c_re
+        t_re = total_re + y_re
+        c_re = (t_re - total_re) - y_re
+        total_re = t_re
+        
+        # Imaginary part
+        y_im = val.imag - c_im
+        t_im = total_im + y_im
+        c_im = (t_im - total_im) - y_im
+        total_im = t_im
+    
+    return complex(total_re, total_im)
+
+
+def _kahan_sum_real(values: np.ndarray) -> float:
+    """Kahan compensated summation for real values."""
+    total = 0.0
+    c = 0.0
+    for val in values:
+        y = float(val) - c
+        t = total + y
+        c = (t - total) - y
+        total = t
+    return total
+
 
 # =============================================================================
-# PHASE SAMPLING DIAGNOSTICS
+# sinA × sinB DECOMPOSITION (Per Instruction)
 # =============================================================================
+# "Wtedy iloczyn chi_a * chi_b rozbijasz tożsamością:
+#  sin A sin B = 1/2 * [cos(A-B) - cos(A+B)]"
+# =============================================================================
+
+def compute_product_phases(
+    k_a: float, l_a: int, delta_a: float, eta_a: float, sigma_a: float,
+    k_b: float, l_b: int, delta_b: float, eta_b: float, sigma_b: float
+) -> tuple:
+    """
+    Compute phase parameters for sinA × sinB decomposition.
+    
+    Given two continuum waves with phases:
+        Φ_a(r) = k_a·r + η_a·ln(2k_a·r) - l_a·π/2 + σ_a + δ_a
+        Φ_b(r) = k_b·r + η_b·ln(2k_b·r) - l_b·π/2 + σ_b + δ_b
+    
+    The product χ_a × χ_b ~ sin(Φ_a) × sin(Φ_b) = ½[cos(Φ_a-Φ_b) - cos(Φ_a+Φ_b)]
+    
+    Returns parameters for the two resulting cosine terms.
+    
+    Returns
+    -------
+    (k_minus, phi_const_minus, eta_minus) : parameters for cos(Φ_a - Φ_b)
+    (k_plus, phi_const_plus, eta_plus) : parameters for cos(Φ_a + Φ_b)
+    """
+    # Frequency differences
+    k_minus = k_a - k_b
+    k_plus = k_a + k_b
+    
+    # Constant phase parts (not including k·r or η·ln terms)
+    phi_const_a = -l_a * np.pi / 2 + sigma_a + delta_a
+    phi_const_b = -l_b * np.pi / 2 + sigma_b + delta_b
+    
+    phi_const_minus = phi_const_a - phi_const_b
+    phi_const_plus = phi_const_a + phi_const_b
+    
+    # Sommerfeld parameter combinations
+    eta_minus = eta_a - eta_b
+    eta_plus = eta_a + eta_b
+    
+    return (k_minus, phi_const_minus, eta_minus), (k_plus, phi_const_plus, eta_plus)
+
+
+def dwba_outer_integral_1d(
+    envelope_func,
+    k_a: float, l_a: int, delta_a: float, eta_a: float, sigma_a: float,
+    k_b: float, l_b: int, delta_b: float, eta_b: float, sigma_b: float,
+    r_m: float,
+    r_max: float,
+    delta_phi: float = np.pi / 4
+) -> float:
+    """
+    Compute outer oscillatory integral for DWBA using sinA×sinB decomposition.
+    
+    I_out = ∫_{r_m}^{r_max} f(r) × χ_a(r) × χ_b(r) dr
+    
+    where χ ~ sin(Φ) and we use:
+        sin(Φ_a) sin(Φ_b) = ½[cos(Φ_a - Φ_b) - cos(Φ_a + Φ_b)]
+    
+    Each cosine term is computed as Re of exp(iΦ) using Filon or Levin.
+    
+    Parameters
+    ----------
+    envelope_func : callable
+        Slowly-varying envelope f(r) (may include 1/r^n from multipole).
+    k_a, l_a, delta_a, eta_a, sigma_a : float, int, float, float, float
+        Wave parameters for χ_a.
+    k_b, l_b, delta_b, eta_b, sigma_b : float, int, float, float, float
+        Wave parameters for χ_b.
+    r_m : float
+        Match point (start of asymptotic region).
+    r_max : float
+        Maximum radius.
+    delta_phi : float
+        Phase increment per segment.
+        
+    Returns
+    -------
+    integral : float
+        Value of the outer integral (real).
+    """
+    if r_max <= r_m + 1e-10:
+        return 0.0
+    
+    # Decompose into cos(Φ- ) and cos(Φ+ ) terms
+    (k_minus, phi_c_minus, eta_minus), (k_plus, phi_c_plus, eta_plus) = compute_product_phases(
+        k_a, l_a, delta_a, eta_a, sigma_a,
+        k_b, l_b, delta_b, eta_b, sigma_b
+    )
+    
+    # Phase functions for the two terms
+    # Φ_±(r) = k_± · r + η_± · ln(2√(k_a k_b) r) + φ_const_±
+    # Note: For product, the logarithmic term is η_a ln(2k_a r) - η_b ln(2k_b r)
+    # We approximate this for the tail region where both waves are asymptotic
+    
+    def phi_minus(r):
+        result = k_minus * r + phi_c_minus
+        if abs(eta_a) > 1e-10:
+            result += eta_a * np.log(2 * k_a * r + 1e-30)
+        if abs(eta_b) > 1e-10:
+            result -= eta_b * np.log(2 * k_b * r + 1e-30)
+        return result
+    
+    def phi_plus(r):
+        result = k_plus * r + phi_c_plus
+        if abs(eta_a) > 1e-10:
+            result += eta_a * np.log(2 * k_a * r + 1e-30)
+        if abs(eta_b) > 1e-10:
+            result += eta_b * np.log(2 * k_b * r + 1e-30)
+        return result
+    
+    def phi_minus_prime(r):
+        result = k_minus
+        if abs(eta_a) > 1e-10:
+            result += eta_a / r
+        if abs(eta_b) > 1e-10:
+            result -= eta_b / r
+        return result
+    
+    def phi_plus_prime(r):
+        result = k_plus
+        if abs(eta_a) > 1e-10:
+            result += eta_a / r
+        if abs(eta_b) > 1e-10:
+            result += eta_b / r
+        return result
+    
+    def phi_minus_prime2(r):
+        result = 0.0
+        if abs(eta_a) > 1e-10:
+            result -= eta_a / (r * r)
+        if abs(eta_b) > 1e-10:
+            result += eta_b / (r * r)
+        return result
+    
+    def phi_plus_prime2(r):
+        result = 0.0
+        if abs(eta_a) > 1e-10:
+            result -= eta_a / (r * r)
+        if abs(eta_b) > 1e-10:
+            result -= eta_b / (r * r)
+        return result
+    
+    # Compute I_minus = ∫ f(r) cos(Φ_-(r)) dr = Re ∫ f(r) exp(iΦ_-(r)) dr
+    I_minus_complex = compute_outer_integral_oscillatory(
+        envelope_func, phi_minus, phi_minus_prime, phi_minus_prime2,
+        r_m, r_max, delta_phi
+    )
+    I_minus = I_minus_complex.real
+    
+    # Compute I_plus = ∫ f(r) cos(Φ_+(r)) dr = Re ∫ f(r) exp(iΦ_+(r)) dr
+    I_plus_complex = compute_outer_integral_oscillatory(
+        envelope_func, phi_plus, phi_plus_prime, phi_plus_prime2,
+        r_m, r_max, delta_phi
+    )
+    I_plus = I_plus_complex.real
+    
+    # Final result: ½(I_minus - I_plus)
+    return 0.5 * (I_minus - I_plus)
+
+
+
+
+def compute_asymptotic_phase(
+    r: float,
+    k: float,
+    l: int,
+    delta: float = 0.0,
+    eta: float = 0.0,
+    sigma: float = 0.0
+) -> float:
+    """
+    Compute asymptotic phase of continuum wave at radius r.
+    
+    Φ(r) = k·r + η·ln(2kr) - l·π/2 + σ_l + δ_l
+    
+    For neutral targets (η=0), this reduces to:
+    Φ(r) = k·r - l·π/2 + δ_l
+    
+    Parameters
+    ----------
+    r : float
+        Radius in atomic units.
+    k : float
+        Wave number.
+    l : int
+        Angular momentum.
+    delta : float
+        Short-range phase shift.
+    eta : float
+        Sommerfeld parameter (-z_ion/k).
+    sigma : float
+        Coulomb phase shift arg(Γ(l+1+iη)).
+        
+    Returns
+    -------
+    phi : float
+        Total phase in radians.
+    """
+    phi = k * r - l * np.pi / 2 + delta + sigma
+    if abs(eta) > 1e-10 and k * r > 1e-6:
+        phi += eta * np.log(2 * k * r)
+    return phi
+
+
+def compute_phase_derivative(
+    r: float,
+    k: float,
+    eta: float = 0.0
+) -> float:
+    """
+    Compute derivative of asymptotic phase: Φ'(r) = k + η/r.
+    
+    For neutral targets: Φ'(r) = k (constant).
+    For Coulomb: Φ'(r) = k + η/r (decreases with r for attractive).
+    """
+    if abs(eta) > 1e-10 and r > 1e-6:
+        return k + eta / r
+    return k
+
+
+def compute_phase_second_derivative(
+    r: float,
+    eta: float = 0.0
+) -> float:
+    """
+    Compute second derivative of phase: Φ''(r) = -η/r².
+    
+    For neutral targets: Φ''(r) = 0.
+    For Coulomb: Φ''(r) = -η/r².
+    
+    This is used to decide between Filon (Φ'' small) and Levin (Φ'' large).
+    """
+    if abs(eta) > 1e-10 and r > 1e-6:
+        return -eta / (r * r)
+    return 0.0
+
+
+# =============================================================================
+# CHEBYSHEV NODES FOR LEVIN COLLOCATION
+# =============================================================================
+
+def _chebyshev_nodes(n: int, a: float, b: float) -> np.ndarray:
+    """
+    Generate Chebyshev nodes on interval [a, b].
+    
+    x_k = (a+b)/2 + (b-a)/2 * cos((2k+1)π / (2n))  for k = 0, 1, ..., n-1
+    
+    These are the zeros of T_n(x), avoiding endpoint singularities.
+    """
+    k = np.arange(n)
+    x_ref = np.cos((2 * k + 1) * np.pi / (2 * n))  # On [-1, 1]
+    return 0.5 * (b - a) * (x_ref + 1) + a  # Map to [a, b]
+
+
+def _chebyshev_differentiation_matrix(n: int) -> np.ndarray:
+    """
+    Compute Chebyshev differentiation matrix on [-1, 1].
+    
+    D[i,j] gives the derivative operator: (d/dx u)_i ≈ Σ_j D[i,j] u_j
+    
+    For Levin collocation, we solve: u' + i Φ' u = f
+    which becomes: (D + diag(i Φ')) u = f
+    """
+    if n < 2:
+        return np.zeros((n, n))
+    
+    # Chebyshev-Lobatto points on [-1, 1] for differentiation
+    theta = np.pi * np.arange(n) / (n - 1)
+    x = np.cos(theta)
+    
+    # c vector for endpoints weighting
+    c = np.ones(n)
+    c[0] = 2.0
+    c[-1] = 2.0
+    
+    # Build differentiation matrix
+    D = np.zeros((n, n))
+    for i in range(n):
+        for j in range(n):
+            if i != j:
+                D[i, j] = (c[i] / c[j]) * ((-1) ** (i + j)) / (x[i] - x[j])
+        
+    # Diagonal: D[i,i] = -sum of off-diagonal terms
+    for i in range(n):
+        D[i, i] = -np.sum(D[i, :])
+    
+    return D
+
+
+# =============================================================================
+# LEVIN COLLOCATION FOR OSCILLATORY INTEGRALS
+# =============================================================================
+
+def _levin_segment_complex(
+    f_vals: np.ndarray,
+    r_nodes: np.ndarray,
+    Phi_vals: np.ndarray,
+    Phi_prime_vals: np.ndarray
+) -> complex:
+    """
+    Levin collocation for ∫ f(r) exp(iΦ(r)) dr on a segment.
+    
+    Solves the ODE: u'(r) + i·Φ'(r)·u(r) = f(r)
+    
+    Then uses: ∫ f exp(iΦ) dr = u(b)·exp(iΦ(b)) - u(a)·exp(iΦ(a))
+    
+    Parameters
+    ----------
+    f_vals : np.ndarray
+        Envelope function values at collocation nodes.
+    r_nodes : np.ndarray
+        Radial nodes for collocation (Chebyshev-Lobatto).
+    Phi_vals : np.ndarray
+        Phase Φ(r) at nodes.
+    Phi_prime_vals : np.ndarray
+        Phase derivative Φ'(r) at nodes.
+        
+    Returns
+    -------
+    integral : complex
+        Value of ∫ f(r) exp(iΦ(r)) dr on segment.
+        
+    Notes
+    -----
+    This is the "most robust" method for highly oscillatory integrals
+    with variable frequency. It works when Filon fails due to nonlinear phase.
+    
+    References
+    ----------
+    - D. Levin, "Fast integration of rapidly oscillatory functions" (1982)
+    - S. Olver, "Moment-free numerical integration" (2006)
+    """
+    n = len(r_nodes)
+    if n < 2:
+        return 0.0 + 0.0j
+    
+    a, b = r_nodes[0], r_nodes[-1]
+    h = b - a
+    
+    if h < 1e-15:
+        return 0.0 + 0.0j
+    
+    # Build the Levin system: (D + i·diag(Φ'))·u = f
+    # where D is the differentiation matrix scaled for [a, b]
+    
+    # Get differentiation matrix on [-1, 1], scale by 2/h for [a, b]
+    D_ref = _chebyshev_differentiation_matrix(n)
+    D = D_ref * (2.0 / h)  # Scale derivative for interval [a, b]
+    
+    # Build system matrix: A = D + i·diag(Φ')
+    A = D + 1j * np.diag(Phi_prime_vals)
+    
+    # Solve A·u = f for u (complex vector)
+    try:
+        u = np.linalg.solve(A, f_vals.astype(complex))
+    except np.linalg.LinAlgError:
+        # Fallback: use least squares if singular
+        u, _, _, _ = np.linalg.lstsq(A, f_vals.astype(complex), rcond=None)
+    
+    # Boundary terms: I = u(b)·exp(iΦ(b)) - u(a)·exp(iΦ(a))
+    exp_a = np.exp(1j * Phi_vals[0])
+    exp_b = np.exp(1j * Phi_vals[-1])
+    
+    integral = u[-1] * exp_b - u[0] * exp_a
+    
+    return integral
+
+
+def levin_oscillatory_integral(
+    f_func,
+    phi_func,
+    phi_prime_func,
+    r_start: float,
+    r_end: float,
+    n_nodes: int = 8,
+    n_segments: int = 1
+) -> complex:
+    """
+    Levin collocation for ∫ f(r) exp(iΦ(r)) dr.
+    
+    High-level interface that divides into segments and applies Levin on each.
+    
+    Parameters
+    ----------
+    f_func : callable
+        Envelope function f(r).
+    phi_func : callable
+        Phase function Φ(r).
+    phi_prime_func : callable
+        Phase derivative Φ'(r).
+    r_start, r_end : float
+        Integration bounds.
+    n_nodes : int
+        Number of Chebyshev nodes per segment (default 8).
+    n_segments : int
+        Number of segments to divide interval into.
+        
+    Returns
+    -------
+    integral : complex
+        Result of integration.
+    """
+    if n_segments < 1:
+        n_segments = 1
+    
+    segment_bounds = np.linspace(r_start, r_end, n_segments + 1)
+    contributions = []
+    
+    for i in range(n_segments):
+        a, b = segment_bounds[i], segment_bounds[i + 1]
+        
+        # Get Chebyshev-Lobatto nodes on [a, b]
+        theta = np.pi * np.arange(n_nodes) / (n_nodes - 1)
+        x_ref = np.cos(theta)[::-1]  # Ascending order
+        r_nodes = 0.5 * (b - a) * (x_ref + 1) + a
+        
+        # Evaluate functions at nodes
+        f_vals = np.array([f_func(r) for r in r_nodes])
+        Phi_vals = np.array([phi_func(r) for r in r_nodes])
+        Phi_prime_vals = np.array([phi_prime_func(r) for r in r_nodes])
+        
+        # Levin on this segment
+        contrib = _levin_segment_complex(f_vals, r_nodes, Phi_vals, Phi_prime_vals)
+        contributions.append(contrib)
+    
+    # Use Kahan summation for stability
+    return _kahan_sum_complex(np.array(contributions))
+
+
+# =============================================================================
+# COMPLEX FILON QUADRATURE (exp(iΦ) form)
+# =============================================================================
+
+def _filon_segment_complex(
+    f_vals: np.ndarray,
+    r_nodes: np.ndarray,
+    omega: float,
+    phase_offset: float = 0.0
+) -> complex:
+    """
+    Filon quadrature for ∫ f(r) × exp(i(ω·r + φ₀)) dr on a segment.
+    
+    Assumes phase is LINEAR: Φ(r) ≈ ω·r + φ₀ (constant frequency).
+    Uses cubic interpolation of f(r) and analytical exp integration.
+    
+    Parameters
+    ----------
+    f_vals : np.ndarray
+        Envelope values at r_nodes.
+    r_nodes : np.ndarray
+        Radial nodes on segment.
+    omega : float
+        Local frequency ω = Φ'(r_mid).
+    phase_offset : float
+        Phase at segment start: φ₀ = Φ(r_a) - ω·r_a.
+        
+    Returns
+    -------
+    integral : complex
+        Value of ∫ f(r) exp(iΦ(r)) dr.
+    """
+    n = len(r_nodes)
+    if n < 2:
+        return 0.0 + 0.0j
+    
+    a, b = r_nodes[0], r_nodes[-1]
+    h = b - a
+    
+    if h < 1e-15:
+        return 0.0 + 0.0j
+    
+    # Handle small ω (nearly non-oscillatory)
+    if abs(omega * h) < 1e-3:
+        # Use Taylor expansion for weights or standard quadrature
+        # ∫ f exp(iΦ) ≈ exp(iΦ_mid) × ∫ f dr (for small phase change)
+        mid_phase = omega * (a + b) / 2 + phase_offset
+        from scipy.integrate import simpson
+        integral_f = simpson(f_vals, x=r_nodes)
+        return integral_f * np.exp(1j * mid_phase)
+    
+    # Filon with 3 points (Simpson-type)
+    if n == 3:
+        # Midpoint
+        f0, f1, f2 = f_vals[0], f_vals[1], f_vals[2]
+        r0, r1, r2 = r_nodes[0], r_nodes[1], r_nodes[2]
+        
+        # Filon coefficients
+        theta = omega * h / 2
+        sin_t = np.sin(theta)
+        cos_t = np.cos(theta)
+        
+        if abs(theta) < 0.3:
+            # Taylor expansion for numerical stability
+            t2 = theta ** 2
+            t3 = theta ** 3
+            alpha = 2 * t3 / 45 * (1 - t2 / 7 + t2**2 / 189)
+            beta = 2/3 + 2*t2/15 - 4*t2**2/105 + 2*t2**3/567
+            gamma = 4/3 - 2*t2/15 + 1*t2**2/210 - t2**3/11340
+        else:
+            t2 = theta ** 2
+            sin_2t = np.sin(2 * theta)
+            cos_2t = np.cos(2 * theta)
+            alpha = (t2 + theta * sin_2t / 2 - 2 * sin_t**2) / (theta**3)
+            beta = 2 * (theta * (1 + cos_2t) - sin_2t) / (theta**3)
+            gamma = 4 * (sin_t - theta * cos_t) / (theta**3)
+        
+        # Phases
+        phi0 = omega * r0 + phase_offset
+        phi1 = omega * r1 + phase_offset
+        phi2 = omega * r2 + phase_offset
+        
+        # Complex exponentials
+        exp0 = np.exp(1j * phi0)
+        exp1 = np.exp(1j * phi1)
+        exp2 = np.exp(1j * phi2)
+        
+        # Filon formula in complex form
+        # I ≈ h × [α×(f₀×exp₀_deriv - f₂×exp₂_deriv) + β×(f₀×exp₀ + f₂×exp₂) + γ×f₁×exp₁]
+        # where deriv means derivative of exp gives extra factor
+        # Simplified: use standard Filon weights
+        integral = (h / 2) * (
+            alpha * (-1j / omega) * (f2 * exp2 - f0 * exp0) +
+            beta * (f0 * exp0 + f2 * exp2) +
+            gamma * f1 * exp1
+        )
+        return integral
+    
+    # General case: divide into triplets
+    result = 0.0 + 0.0j
+    for i in range(0, n - 2, 2):
+        segment_contrib = _filon_segment_complex(
+            f_vals[i:i+3], r_nodes[i:i+3], omega, phase_offset
+        )
+        result += segment_contrib
+    
+    # Handle odd leftover
+    if n > 2 and (n - 1) % 2 == 1:
+        # Last two points: trapezoid with exp
+        r_last = r_nodes[-2:]
+        f_last = f_vals[-2:]
+        phi_last = omega * r_last + phase_offset
+        h_last = r_last[-1] - r_last[0]
+        result += 0.5 * h_last * (f_last[0] * np.exp(1j * phi_last[0]) + 
+                                   f_last[1] * np.exp(1j * phi_last[1]))
+    
+    return result
+
+
+def filon_oscillatory_integral(
+    f_func,
+    omega: float,
+    phase_offset: float,
+    r_start: float,
+    r_end: float,
+    delta_phi: float = np.pi / 4,
+    n_nodes_per_segment: int = 5
+) -> complex:
+    """
+    Filon quadrature for ∫ f(r) exp(i(ωr + φ₀)) dr with phase segmentation.
+    
+    Divides [r_start, r_end] into segments with constant phase increment ΔΦ,
+    then applies Filon on each segment.
+    
+    Parameters
+    ----------
+    f_func : callable
+        Envelope function f(r).
+    omega : float
+        Constant angular frequency.
+    phase_offset : float
+        Phase at r=0.
+    r_start, r_end : float
+        Integration bounds.
+    delta_phi : float
+        Phase increment per segment (default π/4).
+    n_nodes_per_segment : int
+        Number of nodes per segment for Filon (default 5).
+        
+    Returns
+    -------
+    integral : complex
+        Result of integration.
+    """
+    if abs(omega) < 1e-10:
+        # Non-oscillatory: use standard quadrature
+        from scipy.integrate import quad
+        result_re, _ = quad(lambda r: f_func(r) * np.cos(phase_offset), r_start, r_end)
+        result_im, _ = quad(lambda r: f_func(r) * np.sin(phase_offset), r_start, r_end)
+        return result_re + 1j * result_im
+    
+    # Generate segments with constant phase increment
+    dr_per_segment = delta_phi / abs(omega)
+    n_segments = max(1, int(np.ceil((r_end - r_start) / dr_per_segment)))
+    segment_bounds = np.linspace(r_start, r_end, n_segments + 1)
+    
+    contributions = []
+    for i in range(n_segments):
+        a, b = segment_bounds[i], segment_bounds[i + 1]
+        r_nodes = np.linspace(a, b, n_nodes_per_segment)
+        f_vals = np.array([f_func(r) for r in r_nodes])
+        
+        # omega is constant, phase_offset is the offset at r=0
+        contrib = _filon_segment_complex(f_vals, r_nodes, omega, phase_offset)
+        contributions.append(contrib)
+    
+    return _kahan_sum_complex(np.array(contributions))
+
+
+# =============================================================================
+# UNIFIED OUTER INTEGRAL INTERFACE
+# =============================================================================
+
+def compute_outer_integral_oscillatory(
+    f_func,
+    phi_func,
+    phi_prime_func,
+    phi_prime2_func,
+    r_m: float,
+    r_max: float,
+    delta_phi: float = np.pi / 4,
+    n_nodes: int = 8,
+    filon_threshold: float = 0.1
+) -> complex:
+    """
+    Compute outer oscillatory integral I_out = ∫_{r_m}^{r_max} f(r) exp(iΦ(r)) dr.
+    
+    Automatically chooses between Filon (linear phase) and Levin (nonlinear phase)
+    based on the magnitude of |Φ''| × h².
+    
+    Parameters
+    ----------
+    f_func : callable
+        Envelope function f(r).
+    phi_func : callable
+        Phase function Φ(r).
+    phi_prime_func : callable
+        Phase derivative Φ'(r).
+    phi_prime2_func : callable
+        Second derivative Φ''(r).
+    r_m : float
+        Match point (start of outer region).
+    r_max : float
+        Maximum radius.
+    delta_phi : float
+        Target phase increment per segment.
+    n_nodes : int
+        Nodes per segment for Levin.
+    filon_threshold : float
+        If |Φ''| × h² < threshold, use Filon; else Levin.
+        
+    Returns
+    -------
+    integral : complex
+        Outer integral contribution.
+        
+    Notes
+    -----
+    From the instruction:
+    - "Kryterium «czy Filon jest bezpieczny»: jeśli na segmencie |Φ''| × h² << 1 
+       (np. < 0.1), to Filon działa świetnie. Jak nie, przechodzisz na Levin."
+    """
+    if r_max <= r_m + 1e-10:
+        return 0.0 + 0.0j
+    
+    # Estimate h from phase increment
+    omega_mid = abs(phi_prime_func((r_m + r_max) / 2))
+    if omega_mid < 1e-10:
+        # Non-oscillatory
+        from scipy.integrate import quad
+        result_re, _ = quad(lambda r: f_func(r) * np.cos(phi_func(r)), r_m, r_max)
+        result_im, _ = quad(lambda r: f_func(r) * np.sin(phi_func(r)), r_m, r_max)
+        return result_re + 1j * result_im
+    
+    h = delta_phi / omega_mid
+    
+    # Check phase linearity: is |Φ''| × h² small?
+    phi_pp_mid = abs(phi_prime2_func((r_m + r_max) / 2))
+    linearity_test = phi_pp_mid * h * h
+    
+    if linearity_test < filon_threshold:
+        # Use Filon (constant frequency approximation)
+        logger.debug(
+            "Outer integral: using Filon (|Φ''|×h²=%.2e < %.1f)",
+            linearity_test, filon_threshold
+        )
+        return filon_oscillatory_integral(
+            f_func, omega_mid, phi_func(r_m) - omega_mid * r_m,
+            r_m, r_max, delta_phi
+        )
+    else:
+        # Use Levin (handles nonlinear phase)
+        logger.debug(
+            "Outer integral: using Levin (|Φ''|×h²=%.2e >= %.1f)",
+            linearity_test, filon_threshold
+        )
+        # Estimate number of segments
+        n_segments = max(1, int(np.ceil((r_max - r_m) / h)))
+        return levin_oscillatory_integral(
+            f_func, phi_func, phi_prime_func,
+            r_m, r_max, n_nodes, n_segments
+        )
+
+
+
 
 def check_phase_sampling(
     r: np.ndarray,
@@ -605,9 +1362,21 @@ def _analytical_multipole_tail(
     """
     Analytically compute the oscillatory tail contribution for multipole L.
     
-    For L ≥ 1, the multipole kernel decays as r^(-L-1) at large r.
-    The integral ∫_{r_m}^∞ χ_i·χ_f × r^(-L-1) dr has a finite contribution
-    that can be computed using asymptotic expansions.
+    Theory
+    ------
+    For L ≥ 1, we need to evaluate:
+        ∫_{r_m}^∞ sin(k_i r + φ_i) sin(k_f r + φ_f) / r^(L+1) dr
+    
+    Using sin(A)sin(B) = (1/2)[cos(A-B) - cos(A+B)], this becomes:
+        (1/2) ∫_{r_m}^∞ [cos(k_- r + φ_-) - cos(k_+ r + φ_+)] / r^(L+1) dr
+    
+    where k_± = k_i ± k_f and φ_± = φ_i ± φ_f.
+    
+    For n = L+1 ≥ 2, integration by parts gives:
+        ∫_{r_m}^∞ cos(ωr + φ) / r^n dr ≈ sin(ωr_m + φ) / (ω r_m^n)
+                                           + n cos(ωr_m + φ) / (ω² r_m^(n+1))
+    
+    The leading term dominates for large r_m.
     
     Parameters
     ----------
@@ -620,9 +1389,9 @@ def _analytical_multipole_tail(
     l_i, l_f : int
         Angular momenta of continuum waves.
     L : int
-        Multipole index.
+        Multipole index (L >= 1).
     bound_overlap : float
-        ∫ r^L × u_f × u_i dr (multipole moment of bound state densities).
+        Multipole moment ∫ r^L × u_f × u_i dr of bound state densities.
     eta_i, eta_f : float
         Sommerfeld parameters η = -z_ion/k.
     sigma_i, sigma_f : float
@@ -636,53 +1405,66 @@ def _analytical_multipole_tail(
     if r_m < 1e-3 or abs(bound_overlap) < 1e-12:
         return 0.0
     
-    # For L=1 (dipole), use exact Si/Ci formula
-    # FIX: Kernel for L=1 is r_< / r_>^2, so envelope decays as 1/r^2, not 1/r
-    if L == 1:
-        A_env = 1.0 / (r_m ** 2)  # 1/r² decay for dipole
-        return _analytical_dipole_tail(
-            r_m, k_i, k_f, delta_i, delta_f, l_i, l_f, A_env,
-            eta_i, eta_f, sigma_i, sigma_f
-        ) * bound_overlap
-    
-    # For L > 1, use asymptotic approximation
-    # Kernel is r_<^L / r_>^(L+1), so envelope decays as 1/r^(L+1)
-    # The bound state integral contributes r^L factor (computed as moment_L in caller)
-    # So net envelope is 1/r^(L+1) from the kernel
-    
-    # Leading order contribution at r_m:
-    # ∫_{r_m}^∞ sin(k_i r + φ_i) sin(k_f r + φ_f) / r^(L+1) dr
-    # ≈ 1/r_m^L × [cos((k_i-k_f)r_m + Δφ)/(k_i-k_f) - cos((k_i+k_f)r_m + Σφ)/(k_i+k_f)] / 2
-    
-    # Include Coulomb phase terms
+    # Include Coulomb phase terms at r_m
     log_term_i = eta_i * np.log(2 * k_i * r_m + 1e-30) if abs(eta_i) > 1e-10 else 0.0
     log_term_f = eta_f * np.log(2 * k_f * r_m + 1e-30) if abs(eta_f) > 1e-10 else 0.0
     
-    phi_i = -l_i * np.pi / 2 + sigma_i + delta_i + log_term_i
-    phi_f = -l_f * np.pi / 2 + sigma_f + delta_f + log_term_f
+    phi_i = k_i * r_m - l_i * np.pi / 2 + sigma_i + delta_i + log_term_i
+    phi_f = k_f * r_m - l_f * np.pi / 2 + sigma_f + delta_f + log_term_f
     
     k_diff = k_i - k_f
     k_sum = k_i + k_f
-    phi_diff = phi_i - phi_f
-    phi_sum = phi_i + phi_f
+    
+    # Exponent for denominator
+    n = L + 1  # Kernel decays as 1/r^(L+1)
     
     tail = 0.0
     
-    # Term 1: cos((k_i-k_f)·r_m + Δφ) / (k_i-k_f)
+    # =========================================================================
+    # For integrals of form ∫_{r_m}^∞ cos(ωr + φ) / r^n dr, use asymptotic:
+    # 
+    # ∫_{r_m}^∞ cos(ωr + φ) / r^n dr ≈ sin(ωr_m + φ) / (ω · r_m^n)  [leading]
+    #                                   + n·cos(ωr_m + φ) / (ω² · r_m^(n+1))
+    #
+    # The integral ∫ cos(x)/x^n dx = -sin(x)/(n-1)/x^(n-1) + ω∫sin(x)/x^(n-1)dx
+    # For large r_m, boundary term at r_m dominates.
+    # =========================================================================
+    
+    # Term 1: ∫ cos(k_- r + φ_i - φ_f) / r^n dr
+    # Phase at r_m for difference frequency
+    phi_minus_at_rm = phi_i - phi_f  # Already includes k_i r_m - k_f r_m = k_diff * r_m
+    # Correction: phi_minus should be the phase of cos(k_diff * r + φ_i_const - φ_f_const)
+    # At r = r_m: phase = k_diff * r_m + (constant parts)
+    phi_i_const = -l_i * np.pi / 2 + sigma_i + delta_i + log_term_i
+    phi_f_const = -l_f * np.pi / 2 + sigma_f + delta_f + log_term_f
+    phi_diff = k_diff * r_m + phi_i_const - phi_f_const
+    
     if abs(k_diff) > 1e-6:
-        term1 = np.cos(k_diff * r_m + phi_diff) / k_diff
-        tail += 0.5 * term1
+        # Leading-order asymptotic: sin(φ) / (ω r_m^n)
+        term1_lead = np.sin(phi_diff) / (k_diff * (r_m ** n))
+        # Next-order correction: n cos(φ) / (ω² r_m^(n+1))
+        term1_corr = n * np.cos(phi_diff) / (k_diff**2 * (r_m ** (n + 1)))
+        tail += 0.5 * (term1_lead + term1_corr)
+    else:
+        # k_diff ≈ 0: elastic scattering, cos term becomes constant
+        # ∫ 1/r^n dr = 1/((n-1) r_m^(n-1)) for n > 1
+        if n > 1:
+            tail += 0.5 * np.cos(phi_diff) / ((n - 1) * (r_m ** (n - 1)))
     
-    # Term 2: -cos((k_i+k_f)·r_m + Σφ) / (k_i+k_f)
+    # Term 2: -∫ cos(k_+ r + φ_i + φ_f) / r^n dr
+    phi_sum = k_sum * r_m + phi_i_const + phi_f_const
+    
     if k_sum > 1e-6:
-        term2 = np.cos(k_sum * r_m + phi_sum) / k_sum
-        tail -= 0.5 * term2
+        term2_lead = np.sin(phi_sum) / (k_sum * (r_m ** n))
+        term2_corr = n * np.cos(phi_sum) / (k_sum**2 * (r_m ** (n + 1)))
+        tail -= 0.5 * (term2_lead + term2_corr)
     
-    # FIX: Scale by 1/r_m^L (the integration gives 1/r^L boundary term from 1/r^(L+1) integrand)
-    # The r^L from moment cancels with 1/r^L leaving tail contribution
-    A_env = 1.0 / (r_m ** L) if r_m > 1.0 else 1.0
+    # SAFEGUARD: Check for numerical issues
+    if not np.isfinite(tail):
+        logger.warning("_analytical_multipole_tail: Non-finite result L=%d, returning 0", L)
+        return 0.0
     
-    return A_env * tail * bound_overlap
+    return tail * bound_overlap
 
 
 # =============================================================================
