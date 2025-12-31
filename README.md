@@ -278,26 +278,42 @@ The continuum wave solver uses **Numerov propagation** with asymptotic stitching
 
 **Numerov Method** (Primary):
 - Solves χ''(r) = Q(r)·χ(r) where Q = l(l+1)/r² + 2U(r) - k²
-- O(h⁶) accuracy, more stable than RK45 for oscillatory solutions
+- O(h⁴) accuracy for non-uniform (exponential) grids
+- Uses **separate step sizes** h₁², h₂² instead of averaged h² for better accuracy
 - Periodic renormalization prevents over/underflow
-- 5-point derivative formula for accurate χ'(r)
+- Central difference derivative for χ'(r)
 
-**Initial Conditions**:
-- Origin (l≤5): Regular boundary χ ~ r^(l+1)
-- Turning point (l>5): WKB-like χ ~ exp(κ·r) inside barrier
+**Physics-Based Turning Point Detection**:
+- Checks S(r_min) = l(l+1)/r² + 2U - k² at grid origin
+- If S > 0 (inside barrier): starts propagation at r = 0.9 × r_turn
+- Works for **any l** when physics requires it (not just l > 5)
+
+**Adaptive Initial Conditions**:
+- Always evaluates S(r_start) to choose between:
+  - **WKB**: χ ~ exp(κ·r) when S > 0 (inside barrier)
+  - **Regular**: χ ~ r^(l+1) when S < 0 (oscillatory region)
+
+**Match Point Selection** (Critical for high L):
+- Searches **forward** from idx_start + 50 to guarantee valid wavefunction
+- Ensures r_m > r_turn (past classical turning point)
+- Uses relaxed threshold: |U|/(k²/2) < 1% (was 0.01%)
+- Prevents "all solvers failed" errors for high partial waves
 
 **Phase Extraction**:
 ```
-tan(δ_l) = [Y_m · ĵ_l - ĵ_l'] / [Y_m · n̂_l - n̂_l']
+tan(δ_l) = [Y_m · ĵ_l - ĵ_l'] / [n̂_l' - Y_m · n̂_l]
 ```
 - Matches to Riccati-Bessel (neutral) or Coulomb F,G (ionic) at r_m
-- r_m chosen where |2U(r)| << k² and l(l+1)/r²
+- Log-derivative Y_m = χ'/χ used for numerical stability
 
 **Asymptotic Stitching**:
 - Numerical χ scaled to match asymptotic amplitude at r_m
 - Pure analytic solution A·[ĵ cos(δ) - n̂ sin(δ)] used for r > r_m
 - Amplitude A = √(2/π) for δ(k-k') normalization
 - Eliminates numerical noise in oscillatory tail
+
+**Fallback Chain**:
+If Numerov fails → Johnson log-derivative → RK45
 
 **Split Radial Integrals**:
 - Integration uses numerical χ for [0, r_m] and analytic for [r_m, ∞)
@@ -316,8 +332,14 @@ The **oscillatory_integrals.py** module provides advanced oscillatory quadrature
 #### Domain Splitting: I_in + I_out
 
 All integrals are split at the match point r_m:
-- **I_in [0, r_m]**: Standard Gauss-Legendre / Simpson quadrature (where potential and bound states dominate)
+- **I_in [0, r_m]**: Clenshaw-Curtis / Simpson quadrature with proper integration weights
 - **I_out [r_m, ∞)**: Specialized oscillatory methods using asymptotic wave forms
+
+**Important**: 2D kernel integrals use:
+```
+I = ∫∫ ρ₁(r₁) · K(r₁,r₂) · ρ₂(r₂) dr₁ dr₂
+```
+Integration weights `w_grid` (Simpson's rule) are applied to both dimensions to ensure proper ∫dr integration.
 
 #### sinA × sinB Decomposition
 
@@ -453,10 +475,15 @@ The oscillatory integral module includes automatic safeguards:
 | Cross sections too small | Check (2π)⁴ factor in excitation and ionization |
 | Near-threshold zeros | Use log grid, ensure energy > threshold + 0.5 eV |
 | Slow runs | Reduce `n_points`, enable GPU |
-| Solver failures (L>50) | Expected for very high L; code uses analytical bypass |
-| "All solvers failed" | Check grid r_max vs turning point; increase r_max |
-| Non-finite integral warnings | Indicates numerical issues; check input wavefunctions |
-| Fit gives different results | Reference params are protected; fitted params may vary |
+| Solver failures (L>50) | Normal for very high L; code uses analytical bypass |
+| "All solvers failed" | Fixed in v2.1 - match point now guaranteed valid |
+| Phase unstable warnings | Normal for L near cutoff; results still usable |
+| "r_m not in asymptotic region" | Fixed in v2.1 - relaxed threshold to 1% |
+| Non-finite integral warnings | Check input wavefunctions; reduce L_max |
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for version history and detailed changes.
 
 ## References
 

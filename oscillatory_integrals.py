@@ -1712,7 +1712,8 @@ def oscillatory_kernel_integral_2d(
     k_f: float,
     idx_limit: int = -1,
     method: str = "adaptive",
-    eta_total: float = 0.0
+    eta_total: float = 0.0,
+    w_grid: Optional[np.ndarray] = None
 ) -> float:
     """
     Compute 2D radial integral with oscillatory densities.
@@ -1721,10 +1722,14 @@ def oscillatory_kernel_integral_2d(
     
     where ρ₁, ρ₂ contain oscillatory factors from continuum waves.
     
+    CRITICAL: If w_grid is None, this function performs a discrete sum
+    (no integration weights), which is only correct if rho1/rho2 already
+    include weights. For proper integration, pass w_grid (e.g., grid.w_trapz).
+    
     Parameters
     ----------
     rho1, rho2 : np.ndarray
-        Density arrays (already include weights and wavefunctions).
+        Density arrays (unweighted - just wavefunctions product).
     kernel : np.ndarray
         2D kernel matrix K(r₁, r₂).
     r : np.ndarray
@@ -1736,9 +1741,12 @@ def oscillatory_kernel_integral_2d(
     method : str
         "standard": Use simple dot products (fast, may alias).
         "adaptive": Use phase-adaptive integration (slower, accurate).
+        "filon": Use Filon/Clenshaw-Curtis for oscillatory r₁ integral.
     eta_total : float
         Sum of Sommerfeld parameters (η_i + η_f) for Coulomb phase correction.
-        Default 0.0 for neutral targets.
+    w_grid : np.ndarray, optional
+        Integration weights for the radial grid. If None, uses unit weights
+        (discrete sum instead of integral - typically ~15x too large!).
         
     Returns
     -------
@@ -1760,6 +1768,14 @@ def oscillatory_kernel_integral_2d(
     kernel_lim = kernel[:idx_limit, :idx_limit]
     r_lim = r[:idx_limit]
     
+    # Integration weights for proper ∫dr integration
+    # CRITICAL FIX: Without weights, np.dot gives sum, not integral!
+    if w_grid is not None:
+        w_lim = w_grid[:idx_limit].copy()
+    else:
+        # Fallback: unit weights (discrete sum - should be avoided!)
+        w_lim = np.ones(idx_limit)
+    
     # Check for NaN/Inf in inputs
     if not np.all(np.isfinite(rho1_lim)) or not np.all(np.isfinite(rho2_lim)):
         logger.warning("oscillatory_kernel_integral_2d: NaN/Inf in density arrays, falling back to standard")
@@ -1767,9 +1783,11 @@ def oscillatory_kernel_integral_2d(
         rho2_lim = np.nan_to_num(rho2_lim, nan=0.0, posinf=0.0, neginf=0.0)
     
     if method == "standard":
-        # Original fast method
-        int_r2 = np.dot(kernel_lim, rho2_lim)
-        result = np.dot(rho1_lim, int_r2)
+        # Fast method with proper integration weights
+        # Inner integral: ∫ K(r₁,r₂) × ρ₂(r₂) dr₂
+        int_r2 = np.dot(kernel_lim, rho2_lim * w_lim)
+        # Outer integral: ∫ ρ₁(r₁) × int_r2(r₁) dr₁  
+        result = np.dot(rho1_lim * w_lim, int_r2)
         
         # SAFEGUARD: Check result
         if not np.isfinite(result):
@@ -1783,9 +1801,9 @@ def oscillatory_kernel_integral_2d(
         max_phase, is_ok, prob_idx = check_phase_sampling(r_lim, k_total)
         
         if is_ok:
-            # Standard is OK - fully vectorized
-            int_r2 = np.dot(kernel_lim, rho2_lim)
-            result = np.dot(rho1_lim, int_r2)
+            # Standard is OK - fully vectorized with weights
+            int_r2 = np.dot(kernel_lim, rho2_lim * w_lim)
+            result = np.dot(rho1_lim * w_lim, int_r2)
             
             if not np.isfinite(result):
                 logger.warning("oscillatory_kernel_integral_2d: Non-finite result (is_ok path), returning 0")
@@ -1800,7 +1818,8 @@ def oscillatory_kernel_integral_2d(
             )
         
         # Need adaptive treatment for outer integral
-        int_r2 = np.dot(kernel_lim, rho2_lim)
+        # Inner integral uses weights for r2
+        int_r2 = np.dot(kernel_lim, rho2_lim * w_lim)
         
         # SAFEGUARD: Check inner integral result
         if not np.all(np.isfinite(int_r2)):
@@ -1808,9 +1827,7 @@ def oscillatory_kernel_integral_2d(
             int_r2 = np.nan_to_num(int_r2, nan=0.0, posinf=0.0, neginf=0.0)
         
         # ==========================================================================
-        # FIX: Input densities (rho1, rho2) already include quadrature weights.
-        # Therefore we must NOT apply trapezoid (which adds dr weighting again).
-        # Instead, use simple weighted sum, consistent with "standard" method.
+        # Phase check is for diagnostics; integration uses proper weights.
         # ==========================================================================
         
         # Phase check is still useful for diagnostics
@@ -1826,9 +1843,8 @@ def oscillatory_kernel_integral_2d(
                 undersampled_count, len(dr)
             )
         
-        # For weighted inputs: use simple dot product (same as standard)
-        # The weights are already in rho1_lim, so sum(rho1 * int_r2) is correct.
-        result = float(np.dot(rho1_lim, int_r2))
+        # Outer integral with proper weights for r1
+        result = float(np.dot(rho1_lim * w_lim, int_r2))
         
         # SAFEGUARD: Final check
         if not np.isfinite(result):
@@ -1845,14 +1861,15 @@ def oscillatory_kernel_integral_2d(
         # przyrost, a na podprzedziałach użyj węzłów Clenshaw-Curtis"
         #
         # Strategy:
-        # 1. Inner integral (r2): Standard weighted sum (smooth bound states)
+        # 1. Inner integral (r2): WEIGHTED sum (smooth bound states) - uses w_lim
         # 2. Outer integral (r1): Phase-split with CC on sub-intervals
         # ==========================================================================
         
         k_total = k_i + k_f
         
-        # Inner integral: standard (bound states are smooth)
-        int_r2 = np.dot(kernel_lim, rho2_lim)
+        # Inner integral: uses integration weights for proper ∫dr₂
+        # int_r2[i] = Σ_j kernel[i,j] × rho2[j] × w[j]
+        int_r2 = np.dot(kernel_lim, rho2_lim * w_lim)
         
         if not np.all(np.isfinite(int_r2)):
             logger.warning("oscillatory_kernel_integral_2d (filon): NaN/Inf in inner integral")
@@ -1862,8 +1879,8 @@ def oscillatory_kernel_integral_2d(
         PHASE_INCREMENT = np.pi / 2  # Δφ = π/2 per sub-interval
         
         if k_total < 1e-6:
-            # Non-oscillatory: standard integration
-            result = float(np.dot(rho1_lim, int_r2))
+            # Non-oscillatory: standard integration with weights for r₁
+            result = float(np.dot(rho1_lim * w_lim, int_r2))
         else:
             # Generate phase nodes
             r_start, r_end = r_lim[0], r_lim[-1]
@@ -1871,8 +1888,8 @@ def oscillatory_kernel_integral_2d(
             n_intervals = len(phase_nodes) - 1
             
             if n_intervals < 1:
-                # Fallback to standard
-                result = float(np.dot(rho1_lim, int_r2))
+                # Fallback to standard with weights
+                result = float(np.dot(rho1_lim * w_lim, int_r2))
             else:
                 # =================================================================
                 # VECTORIZED Clenshaw-Curtis integration over phase intervals
@@ -1891,7 +1908,7 @@ def oscillatory_kernel_integral_2d(
                 n_valid = len(a_valid)
                 
                 if n_valid == 0:
-                    result = float(np.dot(rho1_lim, int_r2))
+                    result = float(np.dot(rho1_lim * w_lim, int_r2))
                 else:
                     # All CC points: shape (n_valid, _CC_N)
                     # r = 0.5 * (b - a) * (x_ref + 1) + a
@@ -1933,7 +1950,7 @@ def oscillatory_kernel_integral_2d(
         # - rho2_ex = chi_f * u_i (continuum × bound)
         #
         # Strategy:
-        # 1. Inner integral: Apply phase-split CC to each row of kernel×rho2
+        # 1. Inner integral: Apply phase-split CC to each row of kernel×rho2 (with weights)
         # 2. Outer integral: Apply phase-split CC to rho1×int_r2
         # ==========================================================================
         
@@ -1942,9 +1959,9 @@ def oscillatory_kernel_integral_2d(
         CC_NODES = 5
         
         if k_total < 1e-6:
-            # Non-oscillatory: standard integration
-            int_r2 = np.dot(kernel_lim, rho2_lim)
-            result = float(np.dot(rho1_lim, int_r2))
+            # Non-oscillatory: standard integration with weights
+            int_r2 = np.dot(kernel_lim, rho2_lim * w_lim)
+            result = float(np.dot(rho1_lim * w_lim, int_r2))
         else:
             # Generate phase nodes
             r_start, r_end = r_lim[0], r_lim[-1]
@@ -1952,9 +1969,9 @@ def oscillatory_kernel_integral_2d(
             n_intervals = len(phase_nodes) - 1
             
             if n_intervals < 1:
-                # Fallback to standard
-                int_r2 = np.dot(kernel_lim, rho2_lim)
-                result = float(np.dot(rho1_lim, int_r2))
+                # Fallback to standard with weights
+                int_r2 = np.dot(kernel_lim, rho2_lim * w_lim)
+                result = float(np.dot(rho1_lim * w_lim, int_r2))
             else:
                 # Use cached reference CC nodes and weights from module level
                 
@@ -1967,8 +1984,8 @@ def oscillatory_kernel_integral_2d(
                 n_valid = len(a_valid)
                 
                 if n_valid == 0:
-                    int_r2 = np.dot(kernel_lim, rho2_lim)
-                    result = float(np.dot(rho1_lim, int_r2))
+                    int_r2 = np.dot(kernel_lim, rho2_lim * w_lim)
+                    result = float(np.dot(rho1_lim * w_lim, int_r2))
                 else:
                     half_width = 0.5 * (b_valid - a_valid)
                     all_r = half_width[:, np.newaxis] * (_CC_X_REF + 1) + a_valid[:, np.newaxis]

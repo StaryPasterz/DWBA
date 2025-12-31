@@ -139,7 +139,7 @@ def k_from_E_eV(E_eV: float | np.ndarray) -> float | np.ndarray:
 # For a partial wave with angular momentum L and wave number k, the classical
 # turning point (where kinetic energy equals centrifugal barrier) is:
 #
-#     r_t(L) = (L + 1/2)² / k²
+#     E = k²/2 = L(L+1)/(2r²)  →  r_t(L) = √(L(L+1)) / k ≈ (L + 0.5) / k
 #
 # Beyond this point, the wave function is oscillatory; inside, it's evanescent.
 # For accurate asymptotic phase fitting in continuum.py, we need:
@@ -148,7 +148,7 @@ def k_from_E_eV(E_eV: float | np.ndarray) -> float | np.ndarray:
 #
 # Equivalently, for a given r_max:
 #
-#     L_max <= k × sqrt(r_max / C) - 1/2
+#     L_max <= k × (r_max / C) - 0.5
 #
 # These functions enforce this physical constraint to prevent numerical
 # instability from partial waves that haven't reached their asymptotic regime

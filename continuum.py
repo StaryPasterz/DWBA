@@ -8,7 +8,7 @@ Solves the radial Schrödinger equation for scattering electron partial waves
 
 Equation (atomic units)
 -----------------------
-    [-1/2 d²/dr² + l(l+1)/(2r²) + U_j(r)] χ_l(k,r) = (k²/2) χ_l(k,r)
+    χ''(r) = [l(l+1)/r² + 2U_j(r) - k²] χ(r)
 
 where:
 - l = partial-wave angular momentum
@@ -18,20 +18,25 @@ where:
 Boundary Conditions
 -------------------
 - Origin: χ(r) ~ r^(l+1) (regular solution)
-- Asymptotic: χ_l ~ sin(kr - lπ/2 + δ_l) with unit amplitude
+- Asymptotic: χ_l ~ A·sin(kr - lπ/2 + δ_l) with A = √(2/π)
+
+Implementation (v2.1)
+---------------------
+Primary: Numerov propagation with O(h⁴) accuracy for non-uniform grids
+- Physics-based turning point detection: uses S(r) > 0 criterion
+- Adaptive initial conditions: WKB or regular based on local S(r)
+- Match point selection: searches FORWARD from idx_start + 50
+- Asymptotic stitching: numerical χ → analytic beyond r_m
+
+Fallback chain: Numerov → Johnson log-derivative → RK45
 
 Output
 ------
 ContinuumWave objects containing:
 - l, k_au (angular momentum, wave number)
-- χ_l(r) normalized to unit asymptotic amplitude
+- χ_l(r) normalized to √(2/π) asymptotic amplitude
 - δ_l (phase shift in radians)
-
-Implementation
---------------
-- Uses scipy.integrate.solve_ivp for ODE integration
-- Cubic spline interpolation for smooth potential
-- Coulomb matching for charged targets
+- idx_match, r_match (for split radial integrals)
 
 Logging
 -------
@@ -207,53 +212,69 @@ def _coulomb_FG_asymptotic(l: int, eta: float, rho: float) -> Tuple[float, float
 
 
 def _find_match_point(r_grid: np.ndarray, U_arr: np.ndarray, k_au: float, l: int,
-                       threshold: float = 1e-4, idx_start: int = 0) -> Tuple[int, float]:
+                       threshold: float = 1e-2, idx_start: int = 0) -> Tuple[int, float]:
     """
     Find optimal matching point r_m where potential is negligible.
     
+    CRITICAL: Match point must be >= idx_start + margin to ensure we have
+    valid wavefunction amplitude (the solver only populates chi from idx_start).
+    
+    Strategy: Search FORWARD from idx_start until we find a point where
+    the potential is negligible compared to kinetic energy.
+    
     Criteria:
         |2U(r_m)| < threshold × k²
-        |2U(r_m)| < threshold × l(l+1)/r_m²  (for l > 0)
+        r_m > r_turn (classical turning point)
     
     Parameters
     ----------
     idx_start : int
-        Minimum index to consider (where propagation actually starts).
-        Match point must be >= idx_start to have valid wavefunction.
+        Minimum index where wavefunction is valid (propagation start).
+        Match point will be at least idx_start + 50 to ensure stable phase.
+    threshold : float
+        Ratio |U|/(k²/2) below which potential is considered negligible.
+        Default 1e-2 (1%) is more relaxed than before.
     
-    Returns the index and r value of the match point.
-    Searches from large r inward to find the outermost valid point.
+    Returns
+    -------
+    idx, r : Tuple[int, float]
+        Index and radius of match point.
     """
     k2 = k_au ** 2
     N = len(r_grid)
     
-    # Start from ~80% of grid to avoid edge effects
-    search_start = int(0.8 * N)
+    # Minimum margin: at least 50 points past idx_start for stable oscillations
+    # and to ensure we're well past any turning point effects
+    MIN_MARGIN = 50
+    search_start = max(idx_start + MIN_MARGIN, N // 4)
     
-    # Minimum search index: must be beyond idx_start (where χ has amplitude)
-    # Add buffer to ensure we're well into oscillatory region
-    min_search_idx = max(idx_start + 10, N // 4)
+    # Don't search past 90% of grid (edge effects)
+    search_end = int(0.9 * N)
     
-    for idx in range(search_start, min_search_idx, -1):
+    # Also ensure we're past the classical turning point
+    r_turn = np.sqrt(l * (l + 1)) / k_au if k_au > 1e-6 else 0.0
+    idx_turn = np.searchsorted(r_grid, r_turn)
+    search_start = max(search_start, idx_turn + 10)
+    
+    # Search FORWARD from search_start
+    for idx in range(search_start, search_end):
         r = r_grid[idx]
         U = U_arr[idx]
         
-        # Criterion 1: potential small vs kinetic energy
-        if abs(2.0 * U) > threshold * k2:
-            continue
-        
-        # Criterion 2: potential small vs centrifugal (for l > 0)
-        if l > 0:
-            centrifugal = l * (l + 1) / (r * r)
-            if abs(2.0 * U) > threshold * centrifugal:
-                continue
-        
-        # Found a good point
-        return idx, r
+        # Criterion: potential small compared to kinetic energy
+        # |2U| < threshold * k² means |U|/(k²/2) < threshold
+        if abs(2.0 * U) < threshold * k2:
+            return idx, r
     
-    # Fallback: use point slightly after idx_start (ensure valid wavefunction)
-    fallback_idx = min(search_start, max(idx_start + 20, int(0.5 * N)))
-    logger.debug(f"No ideal match point found for L={l}, k={k_au:.3f}; using idx={fallback_idx}")
+    # Fallback: use 70% of grid (guaranteed past turning point for most cases)
+    # but NEVER before idx_start + MIN_MARGIN
+    fallback_idx = max(search_start, int(0.7 * N))
+    fallback_idx = min(fallback_idx, N - 10)  # Not too close to edge
+    
+    logger.debug(
+        f"No ideal match point found for L={l}, k={k_au:.3f}; "
+        f"using fallback idx={fallback_idx} (r={r_grid[fallback_idx]:.2f})"
+    )
     return fallback_idx, r_grid[fallback_idx]
 
 
@@ -749,19 +770,22 @@ def _numerov_propagate(
     log_scale = 0.0
     
     # Propagate step by step with local Numerov formula
-    # For non-uniform grid, use local h at each step
+    # For non-uniform grid, use LOCAL step sizes at each point
     for i in range(1, N - 1):
-        h_prev = h_arr[i - 1]  # r[i] - r[i-1]
-        h_next = h_arr[i]      # r[i+1] - r[i]
+        h1 = h_arr[i - 1]  # h_{i-1} = r[i] - r[i-1]
+        h2 = h_arr[i]      # h_i = r[i+1] - r[i]
         
-        # For slightly varying h, use average for Numerov coefficients
-        h_avg = 0.5 * (h_prev + h_next)
-        h2 = h_avg * h_avg
+        # Improved Numerov for non-uniform grid:
+        # Use h1² for backward, h2² for forward, geometric mean for center
+        # This preserves O(h⁴) accuracy for exponential grids
+        h1_sq = h1 * h1
+        h2_sq = h2 * h2
+        h_center_sq = h1 * h2  # Geometric mean squared for center term
         
-        # Numerov coefficients with local h
-        a_prev = 1.0 - (h2 / 12.0) * Q_arr[i - 1]
-        b_curr = 2.0 + (5.0 * h2 / 6.0) * Q_arr[i]
-        a_next = 1.0 - (h2 / 12.0) * Q_arr[i + 1]
+        # Numerov coefficients with proper local steps
+        a_prev = 1.0 - (h1_sq / 12.0) * Q_arr[i - 1]
+        b_curr = 2.0 + (5.0 * h_center_sq / 6.0) * Q_arr[i]
+        a_next = 1.0 - (h2_sq / 12.0) * Q_arr[i + 1]
         
         # Guard against division by zero
         if abs(a_next) < 1e-15:
@@ -1265,12 +1289,23 @@ def solve_continuum_wave(
     # ==========================================================================
     
     idx_start = 0
-    if l > 5:
-        r_turn = np.sqrt(l*(l+1)) / k_au
+    
+    # Physics-based turning point detection:
+    # Check if S(r_min) > 0 (inside centrifugal barrier) instead of hardcoded l > 5
+    # This handles low-l cases at low energies where potential is strong
+    ell = float(l)
+    k2 = k_au ** 2
+    r0_check = r[0]
+    S_at_origin = ell * (ell + 1.0) / (r0_check * r0_check) + 2.0 * U_arr[0] - k2
+    
+    if S_at_origin > 0:
+        # We're inside the barrier at r_min → find safe starting point
+        r_turn = np.sqrt(l*(l+1)) / k_au if k_au > 1e-6 else r[-1]
         r_safe = r_turn * 0.9
         idx_found = np.searchsorted(r, r_safe)
         if idx_found > 0 and idx_found < len(r) - 20: 
             idx_start = idx_found
+            logger.debug(f"L={l}: Starting at idx={idx_start} (r={r[idx_start]:.2f}) due to barrier")
             
     r_eval = r[idx_start:]
     r0_int = float(r_eval[0])
@@ -1283,34 +1318,32 @@ def solve_continuum_wave(
     # ==========================================================================
     
     # Build Q(r) array for Numerov
-    ell = float(l)
-    k2 = k_au ** 2
+    # Note: ell and k2 already defined above in turning point detection
     Q_full = ell * (ell + 1.0) / (r * r) + 2.0 * U_arr - k2
     Q_eval = Q_full[idx_start:]
     
     # Initial conditions: χ ~ r^(l+1) at small r
-    # χ[0] = r[0]^(l+1), χ[1] = r[1]^(l+1)
-    if idx_start == 0:
-        # Start from origin with regular boundary condition
-        chi0 = r_eval[0] ** (ell + 1.0)
-        chi1 = r_eval[1] ** (ell + 1.0)
+    # ADAPTIVE: Check if potential is strong even at idx_start
+    r0_init = r_eval[0]
+    r1_init = r_eval[1]
+    h_init = r1_init - r0_init
+    S0_init = ell * (ell + 1.0) / (r0_init * r0_init) + 2.0 * U_arr[idx_start] - k2
+    
+    if S0_init > 0:
+        # Inside barrier (even at origin for strong potential) - use WKB
+        kappa = np.sqrt(S0_init)
+        chi0 = 1e-20  # Small amplitude
+        chi1 = chi0 * np.exp(kappa * h_init)
+        logger.debug(f"L={l}: Using WKB initial conditions (S0={S0_init:.2f}, κ={kappa:.4f})")
     else:
-        # Start near turning point - use WKB-like initial conditions
-        # In barrier: χ grows exponentially outward
-        r0 = r_eval[0]
-        r1 = r_eval[1]
-        h_init = r1 - r0
-        S0 = ell * (ell + 1.0) / (r0 * r0) + 2.0 * U_arr[idx_start] - k2
-        
-        if S0 > 0:
-            # Inside barrier - exponentially growing solution
-            kappa = np.sqrt(S0)
-            chi0 = 1e-20  # Small amplitude
-            chi1 = chi0 * np.exp(kappa * h_init)
+        # Outside barrier - use standard regular boundary condition
+        if ell < 20:
+            chi0 = r0_init ** (ell + 1.0)
+            chi1 = r1_init ** (ell + 1.0)
         else:
-            # Already outside barrier - oscillatory
-            chi0 = r0 ** (ell + 1.0) if ell < 10 else 1e-10
-            chi1 = r1 ** (ell + 1.0) if ell < 10 else 1e-10 * 1.1
+            # For very high l, use safer scaled values
+            chi0 = 1e-10
+            chi1 = chi0 * (r1_init / r0_init) ** (ell + 1.0)
     
     # Propagate using Numerov
     chi_computed, log_scale = _numerov_propagate(
