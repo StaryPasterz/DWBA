@@ -23,6 +23,26 @@ from logging_config import get_logger
 # Initialize module logger
 logger = get_logger(__name__)
 
+# =============================================================================
+# KAHAN COMPENSATED SUMMATION
+# =============================================================================
+def _kahan_sum_complex_list(terms: list) -> complex:
+    """Kahan compensated sum for complex numbers with magnitude sorting."""
+    if not terms:
+        return 0j
+    sorted_terms = sorted(terms, key=lambda x: abs(x))
+    total_re = total_im = comp_re = comp_im = 0.0
+    for t in sorted_terms:
+        y_re = t.real - comp_re
+        sum_re = total_re + y_re
+        comp_re = (sum_re - total_re) - y_re
+        total_re = sum_re
+        y_im = t.imag - comp_im
+        sum_im = total_im + y_im
+        comp_im = (sum_im - total_im) - y_im
+        total_im = sum_im
+    return complex(total_re, total_im)
+
 @lru_cache(maxsize=2000)
 def _log_factorial(n: int) -> float:
     """Compute natural logarithm of n! safely."""

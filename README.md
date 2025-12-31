@@ -164,6 +164,11 @@ When prompted, enter:
 - **Y** (or Enter): Use all defaults unchanged
 - **n**: Edit any parameter individually
 
+**Oscillatory Method Selection**: When editing parameters, choose from:
+1. **legacy** - Clenshaw-Curtis quadrature (fastest)
+2. **advanced** - CC + Levin/Filon tail correction (balanced, default)
+3. **full_split** - Full I_in/I_out domain separation (most accurate)
+
 Outputs: `results_<run>_exc.json`, `results_<run>_ion.json` in project root. Excitation entries include angular grids (`theta_deg`) and both raw/calibrated DCS in a.u. for later plotting. Ionization entries include SDCS data and optional TDCS entries (`angles_deg`, `values`).
 
 ### Plotting Results

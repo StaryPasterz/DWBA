@@ -997,14 +997,22 @@ def generate_phase_nodes(
     r_start: float,
     r_end: float,
     k_total: float,
-    phase_increment: float = np.pi / 2
+    phase_increment: float = np.pi / 2,
+    eta_total: float = 0.0
 ) -> np.ndarray:
     """
     Generate grid points with constant phase increment.
     
-    Creates an adaptive grid where the phase φ = k_total × r changes by
-    exactly phase_increment between consecutive points. This ensures
-    optimal sampling of oscillatory integrands.
+    Creates an adaptive grid where the phase Φ(r) changes by exactly
+    phase_increment between consecutive points. This ensures optimal 
+    sampling of oscillatory integrands.
+    
+    For neutral targets (eta=0):
+        Φ(r) = k × r  →  Φ'(r) = k  →  constant spacing dr = ΔΦ/k
+        
+    For ionic targets (eta≠0):
+        Φ(r) = k×r + η×ln(2kr)  →  Φ'(r) = k + η/r  →  variable spacing
+        dr(r) = ΔΦ / (k + η/r)
     
     Parameters
     ----------
@@ -1016,6 +1024,9 @@ def generate_phase_nodes(
         Total wave number (k_i + k_f).
     phase_increment : float
         Phase change per step (default π/2).
+    eta_total : float
+        Sum of Sommerfeld parameters (η_i + η_f) for Coulomb correction.
+        Default 0.0 for neutral targets.
         
     Returns
     -------
@@ -1024,8 +1035,10 @@ def generate_phase_nodes(
         
     Notes
     -----
-    For φ(r_{j+1}) - φ(r_j) = const = Δφ:
-        r_{j+1} = r_j + Δφ / k_total
+    For Coulomb phase: Φ(r) = k·r + η·ln(2kr) - lπ/2 + σ_l + δ_l
+    The derivative is: Φ'(r) = k + η/r
+    
+    For constant phase increments: r_{j+1} = r_j + ΔΦ / Φ'(r_j)
     
     This is the recommendation from the instruction:
     "rozbij całkę na przedziały, na których faza robi stały przyrost"
@@ -1034,13 +1047,41 @@ def generate_phase_nodes(
         # Non-oscillatory: just use endpoints
         return np.array([r_start, r_end])
     
-    dr = phase_increment / k_total
-    n_points = int(np.ceil((r_end - r_start) / dr)) + 1
+    if abs(eta_total) < 1e-10:
+        # Neutral target: constant spacing
+        dr = phase_increment / k_total
+        n_points = int(np.ceil((r_end - r_start) / dr)) + 1
+        return np.linspace(r_start, r_end, n_points)
     
-    # Ensure we don't exceed r_end
-    r_nodes = np.linspace(r_start, r_end, n_points)
+    # === COULOMB CASE: Variable spacing ===
+    # Φ'(r) = k + η/r, so dr = ΔΦ / (k + η/r)
+    # Build nodes iteratively
+    nodes = [r_start]
+    r = r_start
     
-    return r_nodes
+    while r < r_end:
+        # Phase derivative at current r
+        phi_prime = k_total + eta_total / max(r, 1e-10)
+        
+        # Step size for constant phase increment
+        dr = phase_increment / abs(phi_prime)
+        
+        # Limit step size to prevent numerical issues
+        dr = min(dr, (r_end - r_start) / 10)
+        dr = max(dr, 1e-6)
+        
+        r_next = r + dr
+        if r_next >= r_end:
+            r_next = r_end
+        
+        nodes.append(r_next)
+        r = r_next
+        
+        # Safety: limit number of nodes
+        if len(nodes) > 10000:
+            break
+    
+    return np.array(nodes)
 
 
 def integrate_with_phase_nodes(
@@ -1670,7 +1711,8 @@ def oscillatory_kernel_integral_2d(
     k_i: float,
     k_f: float,
     idx_limit: int = -1,
-    method: str = "adaptive"
+    method: str = "adaptive",
+    eta_total: float = 0.0
 ) -> float:
     """
     Compute 2D radial integral with oscillatory densities.
@@ -1694,6 +1736,9 @@ def oscillatory_kernel_integral_2d(
     method : str
         "standard": Use simple dot products (fast, may alias).
         "adaptive": Use phase-adaptive integration (slower, accurate).
+    eta_total : float
+        Sum of Sommerfeld parameters (η_i + η_f) for Coulomb phase correction.
+        Default 0.0 for neutral targets.
         
     Returns
     -------

@@ -373,6 +373,9 @@ def radial_ME_all_L(
         # I = < rho1 | Kernel | rho2 >
         # For direct: rho1 = chi_f*chi_i (oscillatory), rho2 = u_f*u_i (bound, smooth)
         
+        # Check if this is excitation (bound final state) vs ionization (continuum final)
+        is_excitation = isinstance(bound_f, BoundOrbital)
+        
         if use_oscillatory_quadrature and k_total > 0.5:
             if oscillatory_method == "legacy":
                 # === LEGACY METHOD ===

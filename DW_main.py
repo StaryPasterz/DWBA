@@ -175,6 +175,27 @@ def prompt_use_defaults(categories: list = None) -> dict:
                     params[cat_name][key] = get_input_int(f"    {key}", default_val)
                 elif isinstance(default_val, float):
                     params[cat_name][key] = get_input_float(f"    {key}", default_val)
+                elif isinstance(default_val, str):
+                    # Special handling for oscillatory method selection
+                    if key == "method" and cat_name == "oscillatory":
+                        print(f"\n    Oscillatory method:")
+                        print("      1. legacy     - Clenshaw-Curtis (fastest)")
+                        print("      2. advanced   - CC + Levin/Filon tail (balanced)")
+                        print("      3. full_split - Full I_in/I_out separation (most accurate)")
+                        choice = input(f"    Select [1-3, default={default_val}]: ").strip()
+                        if choice == '1':
+                            params[cat_name][key] = "legacy"
+                        elif choice == '2':
+                            params[cat_name][key] = "advanced"
+                        elif choice == '3':
+                            params[cat_name][key] = "full_split"
+                        else:
+                            params[cat_name][key] = default_val
+                        print_info(f"Method: {params[cat_name][key]}")
+                    else:
+                        # Generic string input
+                        val = input(f"    {key} [{default_val}]: ").strip()
+                        params[cat_name][key] = val if val else default_val
         
         print_success("Parameters updated")
     else:
