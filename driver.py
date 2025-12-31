@@ -91,11 +91,31 @@ logger = get_logger(__name__)
 # =============================================================================
 # Can be set from DW_main.py before calculations. Used by all radial_ME calls.
 OSCILLATORY_CONFIG = {
-    "method": "advanced"  # "legacy" / "advanced" / "full_split"
+    "method": "advanced",
+    "CC_nodes": 5,
+    "phase_increment": 1.5708,
+    "min_grid_fraction": 0.1,
+    "k_threshold": 0.5,
+    "gpu_block_size": 8192
 }
 
+def set_oscillatory_config(config_dict: dict):
+    """Set the oscillatory integral configuration globally. Only logs if changes detected."""
+    changed = False
+    for k, v in config_dict.items():
+        if k in OSCILLATORY_CONFIG and OSCILLATORY_CONFIG[k] != v:
+            changed = True
+            break
+    
+    if changed:
+        OSCILLATORY_CONFIG.update(config_dict)
+        logger.info("Oscillatory configuration updated: %s", OSCILLATORY_CONFIG)
+    else:
+        # Just update quietly if no changes
+        OSCILLATORY_CONFIG.update(config_dict)
+
 def set_oscillatory_method(method: OscillatoryMethod):
-    """Set the oscillatory integral method globally."""
+    """Set only the oscillatory integral method globally (legacy support)."""
     OSCILLATORY_CONFIG["method"] = method
     logger.info("Oscillatory method set to: %s", method)
 
@@ -192,7 +212,10 @@ def _worker_partial_wave(
         # Integrals
         integrals = radial_ME_all_L(
             grid, V_core, U_i.U_of_r, orb_i, orb_f, chi_i, chi_f, chan.L_max_integrals,
-            oscillatory_method=OSCILLATORY_CONFIG["method"]
+            use_oscillatory_quadrature=True,
+            oscillatory_method=OSCILLATORY_CONFIG["method"],
+            CC_nodes=OSCILLATORY_CONFIG["CC_nodes"],
+            phase_increment=OSCILLATORY_CONFIG["phase_increment"]
         )
         
         # Distribute
@@ -469,7 +492,12 @@ def compute_total_excitation_cs(
         convergence_threshold = 1e-5
         nonmono_count = 0  # Track non-monotonic decay for instability detection
         
+        t0_sum = time.perf_counter()
         for l_i in range(L_max_proj + 1):
+            if l_i % 10 == 0 and l_i > 0:
+                elapsed = time.perf_counter() - t0_sum
+                eta = (elapsed / l_i) * (L_max_proj - l_i) if l_i > 0 else 0
+                logger.info("  Summing: l_i=%d/%d (Elapsed: %.1fs, ETA: %.1fs)", l_i, L_max_proj, elapsed, eta)
              # Logic similar to worker but sequential and utilizing GPU integrals where possible
              # To avoid code duplication, we could call a GPU-specific worker or inline here.
              # Inline is safer for accessing GPU context.
@@ -518,7 +546,11 @@ def compute_total_excitation_cs(
                 # --- GPU INTEGRALS ---
                 integrals = radial_ME_all_L_gpu(
                     grid, V_core, U_i.U_of_r, orb_i, orb_f, chi_i, chi_f, chan.L_max_integrals,
-                    oscillatory_method=OSCILLATORY_CONFIG["method"]
+                    use_oscillatory_quadrature=True,
+                    oscillatory_method=OSCILLATORY_CONFIG["method"],
+                    CC_nodes=OSCILLATORY_CONFIG["CC_nodes"],
+                    phase_increment=OSCILLATORY_CONFIG["phase_increment"],
+                    gpu_block_size=OSCILLATORY_CONFIG["gpu_block_size"]
                 )
                 
                 # Distribute (CPU - fast)

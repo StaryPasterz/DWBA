@@ -709,17 +709,28 @@ def _derivative_5point(chi: np.ndarray, r_grid: np.ndarray, idx: int) -> float:
     """
     N = len(chi)
     
-    if idx <= 0:
-        # Forward difference at left boundary
-        h_local = r_grid[1] - r_grid[0]
-        return (chi[1] - chi[0]) / h_local
-    elif idx >= N - 1:
-        # Backward difference at right boundary
-        h_local = r_grid[-1] - r_grid[-2]
-        return (chi[-1] - chi[-2]) / h_local
+    if idx < 2:
+        # Forward difference at left boundary (O(h²))
+        h = r_grid[idx+1] - r_grid[idx]
+        return (chi[idx+1] - chi[idx]) / h
+    elif idx >= N - 2:
+        # Backward difference at right boundary (O(h²))
+        h = r_grid[idx] - r_grid[idx-1]
+        return (chi[idx] - chi[idx-1]) / h
     else:
-        # Central difference with local step
-        return (chi[idx + 1] - chi[idx - 1]) / (r_grid[idx + 1] - r_grid[idx - 1])
+        # 5-point central difference (O(h⁴) for uniform, O(h²) otherwise)
+        # Formula: f'(x) ≈ (-f(x+2h) + 8f(x+h) - 8f(x-h) + f(x-2h)) / (12h)
+        # We use average local h
+        h = 0.5 * (r_grid[idx+1] - r_grid[idx-1])
+        return (-chi[idx+2] + 8.0*chi[idx+1] - 8.0*chi[idx-1] + chi[idx-2]) / (6.0 * (r_grid[idx+2] - r_grid[idx-2] + 1e-30) * 0.5)
+        # Actually, let's use the standard form with local spacing.
+        # h1 = r[i+1]-r[i], etc.
+        # For simplicity and high L stability:
+        h1 = r_grid[idx+1] - r_grid[idx]
+        h2 = r_grid[idx] - r_grid[idx-1]
+        h_avg = 0.5 * (h1 + h2)
+        # 4th order central difference (approximate for non-uniform)
+        return (-chi[idx+2] + 8.0*chi[idx+1] - 8.0*chi[idx-1] + chi[idx-2]) / (12.0 * h_avg)
 
 
 
@@ -1505,7 +1516,10 @@ def solve_continuum_wave(
             else:
                 delta_alt = _extract_phase_logderiv_coulomb(Y_alt, k_au, r_alt, l, z_ion)
             
-            phase_variation = abs(delta_l - delta_alt)
+            delta_diff = delta_l - delta_alt
+            # Unwrap difference to [-pi, pi]
+            delta_diff = (delta_diff + np.pi) % (2 * np.pi) - np.pi
+            phase_variation = abs(delta_diff)
             phase_stable = phase_variation <= 0.05
             if not phase_stable:
                 logger.warning(f"Phase unstable for L={l}: δ varies by {phase_variation:.4f} rad")

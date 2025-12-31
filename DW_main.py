@@ -41,7 +41,8 @@ from driver import (
     compute_total_excitation_cs,
     ExcitationChannelSpec,
     ev_to_au,
-    set_oscillatory_method
+    set_oscillatory_method,
+    set_oscillatory_config
 )
 from grid import (
     k_from_E_eV,
@@ -55,7 +56,7 @@ from ionization import (
 )
 from potential_core import CorePotentialParams
 import atom_library
-import plotter
+# import plotter  <-- Moved to local functions to avoid multiprocessing overhead
 from calibration import TongModel
 from logging_config import get_logger
 
@@ -100,6 +101,7 @@ DEFAULTS = {
         "phase_increment": 1.5708,    # π/2 radians per sub-interval
         "min_grid_fraction": 0.10,    # Minimum match point fraction
         "k_threshold": 0.5,           # k_total threshold for Filon
+        "gpu_block_size": 8192,       # GPU block size for memory-efficient dot products
     },
     
     # --- Energy Grid ---
@@ -137,31 +139,27 @@ def get_defaults_copy() -> dict:
 
 def prompt_use_defaults(categories: list = None) -> dict:
     """
-    Display defaults and ask user if they want to use them.
+    Ask user if they want to use defaults. Only displays parameters if requested or changed.
     Returns the (possibly modified) defaults dict.
-    
-    Parameters
-    ----------
-    categories : list, optional
-        List of category names to display (e.g., ['grid', 'excitation'])
-        If None, displays all categories.
     """
     print_subheader("Numerical Parameters")
     
-    if categories:
-        for cat in categories:
-            if cat in DEFAULTS:
-                display_defaults(cat)
-    else:
-        display_defaults()
+    # Compact prompt first
+    use_defaults_raw = input("  Use default parameters? [Y/n, d=show details]: ").strip().lower()
     
-    print()
-    use_defaults = input("  Use these defaults? [Y/n]: ").strip().lower()
+    if use_defaults_raw == 'd':
+        if categories:
+            for cat in categories:
+                if cat in DEFAULTS: display_defaults(cat)
+        else:
+            display_defaults()
+        use_defaults_raw = input("\n  Use these defaults? [Y/n]: ").strip().lower()
     
     params = get_defaults_copy()
     
-    if use_defaults == 'n':
+    if use_defaults_raw == 'n':
         print("\n  Edit parameters (press Enter to keep default):")
+        changed = False
         
         if categories:
             cats_to_edit = [c for c in categories if c in DEFAULTS]
@@ -171,37 +169,59 @@ def prompt_use_defaults(categories: list = None) -> dict:
         for cat_name in cats_to_edit:
             print(f"\n  ── {cat_name.upper()} ──")
             for key, default_val in DEFAULTS[cat_name].items():
+                old_val = params[cat_name][key]
                 if isinstance(default_val, int):
                     params[cat_name][key] = get_input_int(f"    {key}", default_val)
                 elif isinstance(default_val, float):
                     params[cat_name][key] = get_input_float(f"    {key}", default_val)
                 elif isinstance(default_val, str):
-                    # Special handling for oscillatory method selection
                     if key == "method" and cat_name == "oscillatory":
                         print(f"\n    Oscillatory method:")
                         print("      1. legacy     - Clenshaw-Curtis (fastest)")
                         print("      2. advanced   - CC + Levin/Filon tail (balanced)")
                         print("      3. full_split - Full I_in/I_out separation (most accurate)")
                         choice = input(f"    Select [1-3, default={default_val}]: ").strip()
-                        if choice == '1':
-                            params[cat_name][key] = "legacy"
-                        elif choice == '2':
-                            params[cat_name][key] = "advanced"
-                        elif choice == '3':
-                            params[cat_name][key] = "full_split"
-                        else:
-                            params[cat_name][key] = default_val
-                        print_info(f"Method: {params[cat_name][key]}")
+                        if choice == '1': params[cat_name][key] = "legacy"
+                        elif choice == '2': params[cat_name][key] = "advanced"
+                        elif choice == '3': params[cat_name][key] = "full_split"
+                        else: params[cat_name][key] = default_val
                     else:
-                        # Generic string input
                         val = input(f"    {key} [{default_val}]: ").strip()
                         params[cat_name][key] = val if val else default_val
+                
+                if params[cat_name][key] != old_val:
+                    changed = True
         
-        print_success("Parameters updated")
+        if changed:
+            print_success("Parameters updated")
+            # Show summary of updated parameters only
+            print("\n  Updated Parameters Summary:")
+            if categories:
+                for cat in categories:
+                    if cat in params:
+                        # Display only Categories that were requested
+                        display_params_custom(cat, params[cat])
+            else:
+                for cat_name, val_dict in params.items():
+                    display_params_custom(cat_name, val_dict)
+        else:
+            print_info("No changes made. Using defaults.")
     else:
-        print_info("Using default parameters")
+        # User chose 'y' or entered nothing
+        # We don't print anything here to keep the log clean as requested
+        pass
     
     return params
+
+def display_params_custom(cat_name, val_dict):
+    """Helper to display a specific set of parameters."""
+    print(f"  ┌─ {cat_name.upper()} ─────────────────────────────")
+    for key, val in val_dict.items():
+        if isinstance(val, float):
+            print(f"  │  {key:<22} = {val:.4g}")
+        else:
+            print(f"  │  {key:<22} = {val}")
+    print(f"  └{'─' * 40}")
 
 
 # =============================================================================
@@ -519,8 +539,8 @@ def run_scan_excitation(run_name):
     n_theta = params['excitation']['n_theta']
     pilot_E = params['excitation']['pilot_energy_eV']
     
-    # Set oscillatory method globally
-    set_oscillatory_method(params['oscillatory']['method'])
+    # Set oscillatory configuration globally
+    set_oscillatory_config(params['oscillatory'])
 
 
     spec = ExcitationChannelSpec(
@@ -630,9 +650,18 @@ def run_scan_excitation(run_name):
     r_max_optimal = max(200.0, min(r_max_needed, 1000.0))  # Clamp to [200, 1000]
     
     # Scale n_points with r_max to maintain grid density
-    n_points_base = 3000
+    # Increase base density to 20 pts/au (from 15) to help high-energy stability
+    n_points_base = 4000
     n_points_optimal = int(n_points_base * (r_max_optimal / 200.0))
-    n_points_optimal = min(n_points_optimal, 8000)  # Cap memory usage
+    
+    # Further increase for high pilot energy (high frequency waves)
+    # k ~ 8.6 at 1000 eV -> we want ~8000 pts for r_max=200
+    if pilot_E > 500:
+        n_points_optimal = max(n_points_optimal, 6000)
+    if pilot_E > 800:
+        n_points_optimal = max(n_points_optimal, 8000)
+        
+    n_points_optimal = min(n_points_optimal, 10000)  # Cap at 10k for memory
     
     print_info(f"Adaptive Grid: E_min={E_min_scan:.1f} eV, k_min={k_min:.2f} -> r_max={r_max_optimal:.0f}, n_points={n_points_optimal}")
     
@@ -815,8 +844,8 @@ def run_scan_ionization(run_name):
     L_max_proj = params['ionization']['L_max_projectile']
     n_energy_steps = params['ionization']['n_energy_steps']
     
-    # Set oscillatory method globally
-    set_oscillatory_method(params['oscillatory']['method'])
+    # Set oscillatory configuration globally
+    set_oscillatory_config(params['oscillatory'])
 
     spec = IonizationChannelSpec(
         l_i=li,
@@ -867,9 +896,14 @@ def run_scan_ionization(run_name):
     r_max_optimal = max(200.0, min(r_max_needed, 1000.0))  # Clamp to [200, 1000]
     
     # Scale n_points with r_max to maintain grid density
-    n_points_base = 3000
+    n_points_base = 4000
     n_points_optimal = int(n_points_base * (r_max_optimal / 200.0))
-    n_points_optimal = min(n_points_optimal, 8000)  # Cap memory usage
+    
+    # Further increase for high start energy
+    if E_min_scan > 500:
+        n_points_optimal = max(n_points_optimal, 8000)
+
+    n_points_optimal = min(n_points_optimal, 10000)  # Cap memory usage
     
     print_info(f"Adaptive Grid: E_min={E_min_scan:.1f} eV, k_min={k_min:.2f} -> r_max={r_max_optimal:.0f}, n_points={n_points_optimal}")
     
@@ -1000,6 +1034,7 @@ def run_visualization():
     print(f"Generating plot from '{selected_file}' with style '{style}'...")
     
     # Pass arguments to plotter
+    import plotter
     old_argv = sys.argv
     sys.argv = ["plotter.py", style, selected_file]
     try:
@@ -1069,6 +1104,7 @@ def run_dcs_visualization():
     
     print(f"Generating DCS plots from '{selected_file}'...")
     
+    import plotter
     old_argv = sys.argv
     sys.argv = ["plotter.py", "dcs", selected_file]
     try:

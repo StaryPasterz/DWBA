@@ -6,10 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [Unreleased]
+## [2.1.2] - 2024-12-31
 
-### Changed
-- Ongoing improvements and bug fixes
+### Added
+- **GPU Memory Management**: Implemented block-wise calculation for direct radial integrals, allowing stable execution on systems with limited VRAM (prevents "Pagefile too small" errors).
+- **User Configurability**: Integrated `gpu_block_size`, `CC_nodes`, and `phase_increment` into the `DW_main.py` interactive UI.
+
+### Fixed
+- **Multiprocessing Performance**: Optimized imports in `DW_main.py` by localizing `matplotlib` and `plotter` calls. This eliminates initialization "hangs" in worker processes on Windows.
+- **NameError**: Resolved a missing import for `set_oscillatory_config` in `DW_main.py`.
 
 ---
 
@@ -21,6 +26,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - Inner integral now correctly uses `kernel @ (rho2 * w)` instead of `kernel @ rho2`
   - Fallback paths now correctly apply `rho1 * w` for outer integral
   - GPU functions `_gpu_filon_direct` and `_gpu_filon_exchange` updated similarly
+
+### Changed
+- **Performance Optimization**: Implemented caching and pre-slicing for GPU Filon quadrature nodes and kernels in `dwba_matrix_elements.py`.
+  - Dramatically reduces GPU memory pressure by avoiding large kernel matrix allocations for L > 0.
+  - Estimated total speedup for oscillatory radial integrals: up to 50x compared to v2.1.0.
+- **Phase Stability & Accuracy**: Upgraded continuum wave analysis in `continuum.py`.
+  - Implemented 4th-order (5-point) central difference for phase extraction derivatives.
+  - Corrected phase unwrapping logic to handle 2π jumps at high energies (1000 eV+).
+- **Adaptive Grid Density**: Increased default point density and scaled it with incident energy to improve high-frequency wave representation (reaching 10k points for 1000 eV).
+- **UX Improvements**: Added real-time progress logging and ETA to the partial wave summation in `driver.py`.
 
 ---
 

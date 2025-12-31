@@ -36,6 +36,7 @@ All inputs/outputs in Hartree atomic units (a₀, Ha).
 
 from __future__ import annotations
 import numpy as np
+import gc
 from dataclasses import dataclass
 from typing import Dict, List, Union, Optional
 
@@ -121,7 +122,10 @@ def radial_ME_all_L(
     cont_f: ContinuumWave,
     L_max: int,
     use_oscillatory_quadrature: bool = True,
-    oscillatory_method: OscillatoryMethod = "advanced"
+    oscillatory_method: OscillatoryMethod = "advanced",
+    # Pass config or defaults
+    CC_nodes: int = 5,
+    phase_increment: float = 1.5708
 ) -> RadialDWBAIntegrals:
     """
     Compute radial DWBA integrals I_L for multipoles L = 0 to L_max.
@@ -404,7 +408,8 @@ def radial_ME_all_L(
                 I_in = oscillatory_kernel_integral_2d(
                     rho1_dir_uw[:idx_limit], rho2_dir_uw, 
                     kernel_L[:idx_limit, :], r[:idx_limit], k_i, k_f, idx_limit, 
-                    method="filon", w_grid=w
+                    method="filon", w_grid=w,
+                    n_nodes=CC_nodes, phase_increment=phase_increment
                 )
                 
                 # --- I_out: Pure oscillatory [r_m, r_max] via Levin/Filon ---
@@ -440,7 +445,8 @@ def radial_ME_all_L(
                 
                 # --- I_in: Use legacy CC quadrature for inner region ---
                 I_in = oscillatory_kernel_integral_2d(
-                    rho1_dir_uw, rho2_dir_uw, kernel_L, r, k_i, k_f, idx_limit, method="filon", w_grid=w
+                    rho1_dir_uw, rho2_dir_uw, kernel_L, r, k_i, k_f, idx_limit, method="filon", w_grid=w,
+                    n_nodes=CC_nodes, phase_increment=phase_increment
                 )
                 
                 # --- I_out: Outer tail integral on [r_m, r_max] ---
@@ -535,18 +541,18 @@ def radial_ME_all_L(
 # =============================================================================
 
 # Cached GPU CC weights (initialized on first use)
-_GPU_CC_INITIALIZED = False
+_GPU_CC_N = 0
 _GPU_CC_X_REF = None
 _GPU_CC_W_REF = None
 
-def _init_gpu_cc_weights():
-    """Initialize GPU CC reference weights (called once on first use)."""
-    global _GPU_CC_INITIALIZED, _GPU_CC_X_REF, _GPU_CC_W_REF
-    if _GPU_CC_INITIALIZED:
+def _init_gpu_cc_weights(n_nodes: int = 5):
+    """Initialize GPU CC reference weights (called on first use or if N changes)."""
+    global _GPU_CC_N, _GPU_CC_X_REF, _GPU_CC_W_REF
+    if _GPU_CC_N == n_nodes and _GPU_CC_X_REF is not None:
         return
     
     # Compute on CPU, transfer to GPU (same as oscillatory_integrals.py)
-    CC_N = 5
+    CC_N = n_nodes
     theta_ref = np.pi * np.arange(CC_N) / (CC_N - 1)
     x_ref = np.cos(theta_ref)
     
@@ -570,55 +576,28 @@ def _init_gpu_cc_weights():
     
     _GPU_CC_X_REF = cp.asarray(x_ref)
     _GPU_CC_W_REF = cp.asarray(w_ref)
-    _GPU_CC_INITIALIZED = True
+    _GPU_CC_N = CC_N
 
 
-def _gpu_filon_direct(rho1_uw, int_r2, r_gpu, w_gpu, k_total, phase_increment=np.pi/2):
+def _generate_gpu_filon_params(r_gpu, k_total, phase_increment=1.5708, n_nodes=5):
     """
-    GPU Filon quadrature for direct integral outer loop.
-    
-    Applies CC on phase-split intervals for the outer integral.
-    Inner integral (kernel @ rho2 * w) should already be computed with weights.
-    
-    Parameters
-    ----------
-    rho1_uw : cp.ndarray
-        Unweighted outer density (chi_f × chi_i).
-    int_r2 : cp.ndarray
-        Result of inner integral (kernel @ rho2 * w).
-    r_gpu : cp.ndarray
-        Radial grid on GPU.
-    w_gpu : cp.ndarray
-        Integration weights on GPU.
-    k_total : float
-        k_i + k_f for phase calculation.
-    phase_increment : float
-        Phase change per interval (default π/2).
-        
-    Returns
-    -------
-    result : float
-        Integral value.
+    Precompute grid-dependent parameters for GPU Filon quadrature.
     """
-    _init_gpu_cc_weights()
-    
+    _init_gpu_cc_weights(n_nodes)
+
     if k_total < 1e-6:
-        # Non-oscillatory: standard dot with weights for r₁
-        return float(cp.dot(rho1_uw * w_gpu, int_r2))
-    
+        return None
+
     r_start = float(r_gpu[0])
     r_end = float(r_gpu[-1])
-    
-    # Generate phase nodes on CPU
+
     dr = phase_increment / k_total
     n_intervals = max(1, int(np.ceil((r_end - r_start) / dr)))
     phase_nodes = np.linspace(r_start, r_end, n_intervals + 1)
     
-    # Skip if too few intervals
     if n_intervals < 2:
-        return float(cp.dot(rho1_uw * w_gpu, int_r2))
-    
-    # Get interval bounds
+        return None
+        
     a_arr = phase_nodes[:-1]
     b_arr = phase_nodes[1:]
     valid_mask = (b_arr - a_arr) > 1e-12
@@ -627,135 +606,136 @@ def _gpu_filon_direct(rho1_uw, int_r2, r_gpu, w_gpu, k_total, phase_increment=np
     n_valid = len(a_valid)
     
     if n_valid == 0:
-        return float(cp.dot(rho1_uw * w_gpu, int_r2))
-    
-    # Compute CC nodes for all intervals
-    # r_cc = 0.5 * (b - a) * (x_ref + 1) + a
+        return None
+
     half_width = 0.5 * (b_valid - a_valid)
     
     # Transfer to GPU
     a_gpu = cp.asarray(a_valid)
-    b_gpu = cp.asarray(b_valid)
+    # b_gpu unused except for half_width calculation which is done on CPU
     half_width_gpu = cp.asarray(half_width)
     
     # All CC points: shape (n_valid, CC_N)
     all_r = half_width_gpu[:, None] * (_GPU_CC_X_REF + 1) + a_gpu[:, None]
     all_r_flat = all_r.ravel()
     
-    # OPTIMIZED: Pure GPU interpolation (no CPU transfers)
-    rho1_cc = cp.interp(all_r_flat, r_gpu, rho1_uw).reshape(n_valid, 5)
-    int_r2_cc = cp.interp(all_r_flat, r_gpu, int_r2).reshape(n_valid, 5)
-    
-    # Compute integrand
-    integrand = rho1_cc * int_r2_cc
-    
-    # Weights: w_ref * (b-a)/2
+    # Weights
     weights_scaled = _GPU_CC_W_REF * half_width_gpu[:, None]
     
-    # Sum
-    result = float(cp.sum(integrand * weights_scaled))
-    
-    return result
-
-
-def _gpu_filon_exchange(kernel_L, rho1_uw, rho2_uw, r_gpu, w_gpu, k_total, phase_increment=np.pi/2):
-    """
-    GPU Filon quadrature for exchange integral (CC on both inner and outer).
-    
-    For exchange, both densities contain oscillatory components, so we apply
-    CC quadrature to both the inner (over r2) and outer (over r1) integrals.
-    
-    Parameters
-    ----------
-    kernel_L : cp.ndarray
-        2D kernel matrix K(r1, r2).
-    rho1_uw, rho2_uw : cp.ndarray
-        Unweighted densities.
-    r_gpu : cp.ndarray
-        Radial grid on GPU.
-    w_gpu : cp.ndarray
-        Integration weights on GPU.
-    k_total : float
-        k_i + k_f for phase calculation.
-    phase_increment : float
-        Phase change per interval.
-        
-    Returns
-    -------
-    result : float
-        Exchange integral value.
-    """
-    _init_gpu_cc_weights()
-    
+    # Precompute interpolation indices
     n_r = len(r_gpu)
-    
-    if k_total < 1e-6:
-        # Non-oscillatory: standard method with weights
-        int_r2 = cp.dot(kernel_L, rho2_uw * w_gpu)
-        return float(cp.dot(rho1_uw * w_gpu, int_r2))
-    
-    r_start = float(r_gpu[0])
-    r_end = float(r_gpu[-1])
-    
-    # Generate phase nodes
-    dr = phase_increment / k_total
-    n_intervals = max(1, int(np.ceil((r_end - r_start) / dr)))
-    phase_nodes = np.linspace(r_start, r_end, n_intervals + 1)
-    
-    if n_intervals < 2:
-        int_r2 = cp.dot(kernel_L, rho2_uw * w_gpu)
-        return float(cp.dot(rho1_uw * w_gpu, int_r2))
-    
-    a_arr = phase_nodes[:-1]
-    b_arr = phase_nodes[1:]
-    valid_mask = (b_arr - a_arr) > 1e-12
-    a_valid = a_arr[valid_mask]
-    b_valid = b_arr[valid_mask]
-    n_valid = len(a_valid)
-    
-    if n_valid == 0:
-        int_r2 = cp.dot(kernel_L, rho2_uw * w_gpu)
-        return float(cp.dot(rho1_uw * w_gpu, int_r2))
-    
-    half_width = 0.5 * (b_valid - a_valid)
-    half_width_gpu = cp.asarray(half_width)
-    a_gpu_arr = cp.asarray(a_valid)
-    
-    all_r = half_width_gpu[:, None] * (_GPU_CC_X_REF + 1) + a_gpu_arr[:, None]
-    all_r_flat = all_r.ravel()
-    
-    # OPTIMIZED: Pure GPU interpolation for rho2
-    rho2_cc = cp.interp(all_r_flat, r_gpu, rho2_uw).reshape(n_valid, 5)
-    
-    # OPTIMIZED: GPU kernel interpolation using searchsorted
     idx_right = cp.searchsorted(r_gpu, all_r_flat)
     idx_right = cp.clip(idx_right, 1, n_r - 1)
-    idx_left = idx_right - 1
     
+    # Pre-calculate interpolation weights for exchange kernels
+    idx_left = idx_right - 1
     r_left = r_gpu[idx_left]
     r_right = r_gpu[idx_right]
     weight_right = (all_r_flat - r_left) / (r_right - r_left + 1e-30)
     weight_left = 1.0 - weight_right
     
-    # kernel_at_cc: shape (n_r, n_cc_total)
-    kernel_at_cc = kernel_L[:, idx_left] * weight_left + kernel_L[:, idx_right] * weight_right
-    kernel_interp = kernel_at_cc.reshape(n_r, n_valid, 5)
+    return {
+        'n_valid': n_valid,
+        'all_r_flat': all_r_flat,
+        'weights_scaled': weights_scaled,
+        'idx_left': idx_left,
+        'idx_right': idx_right,
+        'w_left': weight_left,
+        'w_right': weight_right,
+        'n_nodes': n_nodes
+    }
+
+def _gpu_filon_direct(rho1_uw, int_r2, r_gpu, w_gpu, k_total, phase_increment=1.5708, n_nodes=5, precomputed=None):
+    """
+    GPU Filon quadrature for direct integral outer loop.
+    """
+    if k_total < 1e-6:
+        return float(cp.dot(rho1_uw * w_gpu, int_r2))
     
+    if precomputed is None:
+        params = _generate_gpu_filon_params(r_gpu, k_total, phase_increment, n_nodes)
+        if params is None:
+             return float(cp.dot(rho1_uw * w_gpu, int_r2))
+    else:
+        params = precomputed
+
+    n_valid = params['n_valid']
+    all_r_flat = params['all_r_flat']
+    weights_scaled = params['weights_scaled']
+    n_nodes = params['n_nodes']
+    # idx_right = params['idx_right'] # unused in direct if using cp.interp, but can be used for optimized interp
+    
+    # OPTIMIZED: Pure GPU interpolation
+    # Note: cp.interp is slow? We can use precomputed indices if we implement custom lerp
+    rho1_cc = cp.interp(all_r_flat, r_gpu, rho1_uw).reshape(n_valid, n_nodes)
+    int_r2_cc = cp.interp(all_r_flat, r_gpu, int_r2).reshape(n_valid, n_nodes)
+    
+    integrand = rho1_cc * int_r2_cc
+    
+    # Sum
+    result = float(cp.sum(integrand * weights_scaled))
+    return result
+
+
+
+def _gpu_filon_exchange(kernel_L, rho1_uw, rho2_uw, r_gpu, w_gpu, k_total, phase_increment=1.5708, n_nodes=5, precomputed=None):
+    """
+    GPU Filon quadrature for exchange integral (CC on both inner and outer).
+    """
+    if k_total < 1e-6:
+        int_r2 = cp.dot(kernel_L, rho2_uw * w_gpu)
+        return float(cp.dot(rho1_uw * w_gpu, int_r2))
+    
+    if precomputed is None:
+        params = _generate_gpu_filon_params(r_gpu, k_total, phase_increment, n_nodes)
+        if params is None:
+             int_r2 = cp.dot(kernel_L, rho2_uw * w_gpu)
+             return float(cp.dot(rho1_uw * w_gpu, int_r2))
+    else:
+        params = precomputed
+        
+    n_valid = params['n_valid']
+    all_r_flat = params['all_r_flat']
+    weights_scaled = params['weights_scaled']
+    idx_left = params['idx_left']
+    idx_right = params['idx_right']
+    weight_left = params['w_left']
+    weight_right = params['w_right']
+    n_nodes = params['n_nodes']
+    
+    n_r = len(r_gpu)
+    
+    # Kernel interpolation: reconstruct kernel at CC nodes
+    # We do this from either full kernel_L or sliced components
+    if isinstance(kernel_L, dict):
+        # Optimized path: use pre-sliced components
+        inv_gtr_at_cc = kernel_L['inv_gtr_at_cc']
+        log_ratio_at_cc = kernel_L['log_ratio_at_cc']
+        L = kernel_L['L']
+        if L == 0:
+            kernel_at_cc = inv_gtr_at_cc
+        else:
+            kernel_at_cc = inv_gtr_at_cc * cp.exp(L * log_ratio_at_cc)
+    else:
+        # Standard path: slice from full matrix
+        kernel_at_cc = kernel_L[:, idx_left] * weight_left + kernel_L[:, idx_right] * weight_right
+    kernel_interp = kernel_at_cc.reshape(n_r, n_valid, n_nodes)
+    # OPTIMIZED: Pure GPU interpolation for rho2
+    rho2_cc = cp.interp(all_r_flat, r_gpu, rho2_uw).reshape(n_valid, n_nodes)
+
+
     # Inner integral: for each r1, sum over CC nodes with weights
     inner_integrand = kernel_interp * rho2_cc[None, :, :]
     
-    # Weights for inner: w_ref * half_width
-    inner_weights = _GPU_CC_W_REF * half_width_gpu[:, None]
-    
     # Sum inner: (n_r,)
-    int_r2_cc = cp.sum(inner_integrand * inner_weights[None, :, :], axis=(1, 2))
+    int_r2_cc = cp.sum(inner_integrand * weights_scaled[None, :, :], axis=(1, 2))
     
     # OPTIMIZED: Pure GPU interpolation for outer integral
-    rho1_cc = cp.interp(all_r_flat, r_gpu, rho1_uw).reshape(n_valid, 5)
-    int_r2_outer = cp.interp(all_r_flat, r_gpu, int_r2_cc).reshape(n_valid, 5)
+    rho1_cc = cp.interp(all_r_flat, r_gpu, rho1_uw).reshape(n_valid, n_nodes)
+    int_r2_outer = cp.interp(all_r_flat, r_gpu, int_r2_cc).reshape(n_valid, n_nodes)
     
     outer_integrand = rho1_cc * int_r2_outer
-    result = float(cp.sum(outer_integrand * inner_weights))
+    result = float(cp.sum(outer_integrand * weights_scaled))
     
     return result
 
@@ -770,40 +750,14 @@ def radial_ME_all_L_gpu(
     cont_f: ContinuumWave,
     L_max: int,
     use_oscillatory_quadrature: bool = True,
-    oscillatory_method: OscillatoryMethod = "advanced"
+    oscillatory_method: OscillatoryMethod = "advanced",
+    # Additional parameters
+    CC_nodes: int = 5,
+    phase_increment: float = 1.5708,
+    gpu_block_size: int = 2048
 ) -> RadialDWBAIntegrals:
     """
     GPU Accelerated Version of radial_ME_all_L using CuPy.
-    
-    Uses GPU for broadcasting and heavy matrix-vector multiplications.
-    Includes support for oscillatory quadrature improvements:
-    - Match point domain splitting
-    - Analytical multipole tail for L >= 1
-    - Asymptotic region validation
-    - **Filon/CC quadrature** for oscillatory integrals
-    - **Advanced methods**: Levin/Filon with sinA×sinB decomposition (GPU accelerated)
-    
-    Parameters
-    ----------
-    grid : RadialGrid
-        Radial grid with integration weights.
-    V_core_array, U_i_array : np.ndarray
-        Core and distorting potentials.
-    bound_i, bound_f : BoundOrbital
-        Initial and final target states.
-    cont_i, cont_f : ContinuumWave
-        Incident and scattered projectile waves.
-    L_max : int
-        Maximum multipole order.
-    use_oscillatory_quadrature : bool
-        Enable oscillatory improvements including Filon/CC (default True).
-    oscillatory_method : {"legacy", "advanced", "full_split"}
-        Method for oscillatory integrals (same as CPU version).
-        
-    Returns
-    -------
-    RadialDWBAIntegrals
-        Container with I_L_direct and I_L_exchange.
     """
     if not HAS_CUPY:
         raise RuntimeError("radial_ME_all_L_gpu called but cupy is not installed.")
@@ -812,63 +766,35 @@ def radial_ME_all_L_gpu(
 
     r = grid.r
     N_grid = len(r)
-    
-    # ==========================================================================
-    # MATCH POINT DOMAIN SPLITTING (same as CPU version)
-    # ==========================================================================
     idx_limit = N_grid
+    
+    # Extract wave parameters for logic and tails
+    k_i = cont_i.k_au
+    k_f = cont_f.k_au
+    l_i = cont_i.l
+    l_f = cont_f.l
+    k_total = k_i + k_f
+
     if hasattr(cont_i, 'idx_match') and cont_i.idx_match > 0:
         idx_limit = min(idx_limit, cont_i.idx_match + 1)
     if hasattr(cont_f, 'idx_match') and cont_f.idx_match > 0:
         idx_limit = min(idx_limit, cont_f.idx_match + 1)
     
-    # Physics-based validation (same as CPU) - use turning point
-    k_i = cont_i.k_au
-    k_f = cont_f.k_au
-    l_i = cont_i.l
-    l_f = cont_f.l
-    
+    # Physics-based validation for match point
     k_eff = min(k_i, k_f) if min(k_i, k_f) > 0.1 else max(k_i, k_f)
-    l_max_wave = max(l_i, l_f)
-    
     if k_eff > 1e-3:
-        r_turn = (l_max_wave + 0.5) / k_eff
+        r_turn = (max(l_i, l_f) + 0.5) / k_eff
         idx_turn = np.searchsorted(r, r_turn)
         MIN_IDX = max(idx_turn + 20, N_grid // 10)
     else:
         MIN_IDX = N_grid // 10
     
     if idx_limit < MIN_IDX:
-        logger.debug(
-            "GPU: Match point idx=%d is before turning point. Extending to MIN_IDX=%d.",
-            idx_limit, MIN_IDX
-        )
         idx_limit = MIN_IDX
     
-    # ==========================================================================
-    # ASYMPTOTIC VALIDATION (same as CPU version)
-    # ==========================================================================
-    ASYMPTOTIC_THRESHOLD = 0.05  # Tightened to 5%
-    r_m_idx = max(0, idx_limit - 1)
-    U_at_rm = abs(U_i_array[r_m_idx])
-    kinetic_energy = 0.5 * k_i**2
+    r_match = r[idx_limit - 1] if idx_limit > 0 else r[-1]
     
-    if kinetic_energy > 1e-10:
-        ratio_asymp = U_at_rm / kinetic_energy
-        if ratio_asymp > ASYMPTOTIC_THRESHOLD:
-            # Try to find better match point
-            for try_idx in range(idx_limit, min(idx_limit + 100, N_grid)):
-                if abs(U_i_array[try_idx]) / kinetic_energy < ASYMPTOTIC_THRESHOLD:
-                    idx_limit = try_idx + 1
-                    break
-            else:
-                logger.warning(
-                    "GPU: Match point r_m=%.2f a₀ may not be in asymptotic region: "
-                    "|U(r_m)|/(k²/2) = %.2f > %.2f. Tail may be inaccurate.",
-                    r[r_m_idx], ratio_asymp, ASYMPTOTIC_THRESHOLD
-                )
-    
-    # Extract phase shift parameters for analytical tail (wave params already defined above)
+    # Extract phase shift parameters for analytical tail
     delta_i = cont_i.phase_shift if hasattr(cont_i, 'phase_shift') else 0.0
     delta_f = cont_f.phase_shift if hasattr(cont_f, 'phase_shift') else 0.0
     
@@ -877,8 +803,6 @@ def radial_ME_all_L_gpu(
     eta_f = cont_f.eta if hasattr(cont_f, 'eta') else 0.0
     sigma_i = cont_i.sigma_l if hasattr(cont_i, 'sigma_l') else 0.0
     sigma_f = cont_f.sigma_l if hasattr(cont_f, 'sigma_l') else 0.0
-    
-    r_match = r[idx_limit - 1] if idx_limit > 0 else r[-1]
     
     # 1. Transfer Data to GPU (limited to idx_limit for efficiency)
     r_lim = r[:idx_limit]
@@ -916,38 +840,110 @@ def radial_ME_all_L_gpu(
     k_total = k_i + k_f
 
     # 3. Kernel Construction on GPU
-    r_col = r_gpu[:, None]
-    r_row = r_gpu[None, :]
+    # If using Filon, we can avoid the full N*N matrix for kernel_L
+    # and compute int_r2_dir in blocks.
     
-    r_less = cp.minimum(r_col, r_row)
-    r_gtr = cp.maximum(r_col, r_row)
+    use_filon = use_oscillatory_quadrature and k_total > 0.5
     
-    eps = 1e-30
-    ratio = r_less / (r_gtr + eps)
-    ratio = cp.minimum(ratio, 1.0 - 1e-12)
-    inv_gtr = 1.0 / (r_gtr + eps)
-    log_ratio = cp.log(ratio + eps)
-    
+    if not use_filon:
+        r_col = r_gpu[:, None]
+        r_row = r_gpu[None, :]
+        inv_gtr = 1.0 / cp.maximum(r_col, r_row + 1e-30)
+        ratio = cp.minimum(r_col, r_row) * inv_gtr
+        ratio = cp.minimum(ratio, 1.0 - 1e-12)
+        log_ratio = cp.log(ratio + 1e-30)
+        del r_col, r_row
+        cp.get_default_memory_pool().free_all_blocks()
+    else:
+        # Filon mode: pre-calculate components ONLY for CC nodes
+        filon_params = _generate_gpu_filon_params(r_gpu, k_total, phase_increment, CC_nodes)
+        if filon_params:
+            idx_l, idx_r = filon_params['idx_left'], filon_params['idx_right']
+            w_l, w_r = filon_params['w_left'], filon_params['w_right']
+            
+            r_col = r_gpu[:, None]
+            r_cc_l = r_gpu[idx_l][None, :]
+            r_cc_r = r_gpu[idx_r][None, :]
+            
+            # inv_gtr_at_cc_l: (n_r, n_cc_total)
+            inv_gtr_cc_l = 1.0 / cp.maximum(r_col, r_cc_l + 1e-30)
+            log_ratio_cc_l = cp.log(cp.minimum(r_col, r_cc_l) * inv_gtr_cc_l + 1e-30)
+            
+            inv_gtr_cc_r = 1.0 / cp.maximum(r_col, r_cc_r + 1e-30)
+            log_ratio_cc_r = cp.log(cp.minimum(r_col, r_cc_r) * inv_gtr_cc_r + 1e-30)
+            
+            # Interpolate to CC nodes
+            inv_gtr_at_cc = inv_gtr_cc_l * w_l + inv_gtr_cc_r * w_r
+            log_ratio_at_cc = log_ratio_cc_l * w_l + log_ratio_cc_r * w_r
+            
+            kernel_at_cc_pre = {
+                'inv_gtr_at_cc': inv_gtr_at_cc,
+                'log_ratio_at_cc': log_ratio_at_cc
+            }
+            del r_col, r_cc_l, r_cc_r, inv_gtr_cc_l, inv_gtr_cc_r, log_ratio_cc_l, log_ratio_cc_r
+            gc.collect()
+            cp.get_default_memory_pool().free_all_blocks()
+        else:
+            use_filon = False # Fallback if params failed
+            r_col = r_gpu[:, None]
+            r_row = r_gpu[None, :]
+            inv_gtr = 1.0 / cp.maximum(r_col, r_row + 1e-30)
+            ratio = cp.minimum(r_col, r_row) * inv_gtr
+            ratio = cp.minimum(ratio, 1.0 - 1e-12)
+            log_ratio = cp.log(ratio + 1e-30)
+            del r_col, r_row
+            cp.get_default_memory_pool().free_all_blocks()
+
     I_L_dir: Dict[int, float] = {}
     I_L_exc: Dict[int, float] = {}
 
     for L in range(L_max + 1):
-        if L == 0:
-            kernel_L = inv_gtr
+        # Determine kernel_L (only if not using Filon efficiently)
+        kernel_L = None
+        if not use_filon:
+            if L == 0:
+                kernel_L = inv_gtr
+            else:
+                kernel_L = inv_gtr * cp.exp(L * log_ratio)
         else:
-            kernel_L = inv_gtr * cp.exp(L * log_ratio)
+            # In Filon mode, for direct integral legacy/full_split/advanced paths,
+            # we need int_r2_dir = kernel_L @ rho2_dir.
+            # We compute it in blocks to save memory if N_grid is large.
+            rho2_eff = rho2_dir_uw * w_gpu
+            int_r2_dir = cp.zeros(idx_limit, dtype=float)
+            
+            BLOCK_SIZE = gpu_block_size
+            r_col = r_gpu[:, None]
+            r_row = r_gpu[None, :]
+            for start in range(0, idx_limit, BLOCK_SIZE):
+                end = min(start + BLOCK_SIZE, idx_limit)
+                # Compute block of kernel_L
+                r_row_block = r_row[:, start:end]
+                inv_gtr_b = 1.0 / cp.maximum(r_col, r_row_block + 1e-30)
+                if L == 0:
+                    kb = inv_gtr_b
+                else:
+                    ratio_b = cp.minimum(r_col, r_row_block) * inv_gtr_b
+                    kb = inv_gtr_b * cp.exp(L * cp.log(cp.minimum(ratio_b, 1.0 - 1e-12) + 1e-30))
+                
+                int_r2_dir += cp.dot(kb, rho2_eff[start:end])
+                del kb, inv_gtr_b
+                if L > 0: del ratio_b
+            del r_col, r_row
+            cp.get_default_memory_pool().free_all_blocks()
+
         
         # --- Direct Integral on GPU ---
         is_excitation = isinstance(bound_f, BoundOrbital)
         
-        if use_oscillatory_quadrature and k_total > 0.5:
+        if use_filon:
+            # oscillatory_method: legacy, full_split, or advanced
+            # int_r2_dir was already computed block-wise above to save memory
+            I_in = _gpu_filon_direct(rho1_dir_uw, int_r2_dir, r_gpu, w_gpu, k_total, phase_increment, CC_nodes, precomputed=filon_params)
+            
             if oscillatory_method == "legacy":
-                # === LEGACY METHOD ===
-                # Use GPU Filon + CC - inner integral uses weights for r₂
-                int_r2_dir = cp.dot(kernel_L, rho2_dir_uw * w_gpu)
-                I_dir = _gpu_filon_direct(rho1_dir_uw, int_r2_dir, r_gpu, w_gpu, k_total)
-                
-                # Add analytical tail for L >= 1 (legacy only)
+                I_dir = I_in
+                # Add analytical tail if applicable
                 if L >= 1 and idx_limit < N_grid - 10 and is_excitation:
                     moment_L = float(cp.sum(w_gpu * (r_gpu ** L) * u_f_gpu * u_i_gpu))
                     if abs(moment_L) > 1e-12:
@@ -956,19 +952,8 @@ def radial_ME_all_L_gpu(
                             eta_i, eta_f, sigma_i, sigma_f
                         )
                         I_dir += tail_contrib
-            
-            elif oscillatory_method == "full_split":
-                # === FULL_SPLIT METHOD (GPU optimized) ===
-                # Same as CPU: CC oscillatory for I_in [0, r_m] + Levin/Filon for I_out
-                # 
-                # Per instruction: "rozbij całkę na przedziały, na których faza robi 
-                # stały przyrost, a na podprzedziałach użyj węzłów Clenshaw-Curtis"
-                
-                # I_in: GPU CC quadrature with weights for r₂
-                int_r2_dir = cp.dot(kernel_L, rho2_dir_uw * w_gpu)
-                I_in = _gpu_filon_direct(rho1_dir_uw, int_r2_dir, r_gpu, w_gpu, k_total)
-                
-                # I_out: CPU Levin/Filon for oscillatory tail (same as CPU)
+            else:
+                # full_split or advanced: both use Levin/Filon for tail
                 I_out = 0.0
                 if L >= 1 and idx_limit < N_grid - 10 and is_excitation:
                     moment_L = float(cp.sum(w_gpu * (r_gpu ** L) * u_f_gpu * u_i_gpu))
@@ -979,47 +964,17 @@ def radial_ME_all_L_gpu(
                             return envelope
                         
                         env_func = make_envelope(moment_L, L)
-                        
-                        # CPU Levin/Filon with sinA×sinB decomposition
                         I_out = dwba_outer_integral_1d(
                             env_func,
                             k_i, l_i, delta_i, eta_i, sigma_i,
                             k_f, l_f, delta_f, eta_f, sigma_f,
-                            r_match, float(r_gpu[-1].get()),
+                            r_match, float(grid.r[-1]),
                             delta_phi=np.pi / 4
                         )
-                
-                I_dir = I_in + I_out
-            
-            else:  # advanced
-                # === ADVANCED METHOD ===
-                # GPU CC for inner region with weights for r₂
-                int_r2_dir = cp.dot(kernel_L, rho2_dir_uw * w_gpu)
-                I_in = _gpu_filon_direct(rho1_dir_uw, int_r2_dir, r_gpu, w_gpu, k_total)
-                
-                # Outer tail via CPU (Levin/Filon more accurate)
-                I_out = 0.0
-                if L >= 1 and idx_limit < N_grid - 10 and is_excitation:
-                    moment_L = float(cp.sum(w_gpu * (r_gpu ** L) * u_f_gpu * u_i_gpu))
-                    if abs(moment_L) > 1e-12:
-                        def make_envelope(mL, Lval):
-                            def envelope(r_val):
-                                return mL / (r_val ** (Lval + 1)) if r_val > 1e-6 else 0.0
-                            return envelope
-                        
-                        env_func = make_envelope(moment_L, L)
-                        
-                        I_out = dwba_outer_integral_1d(
-                            env_func,
-                            k_i, l_i, delta_i, eta_i, sigma_i,
-                            k_f, l_f, delta_f, eta_f, sigma_f,
-                            r_match, float(r_gpu[-1].get()),
-                            delta_phi=np.pi / 4
-                        )
-                
                 I_dir = I_in + I_out
         else:
             # Standard method (weighted densities)
+            # kernel_L was computed if not use_filon
             int_r2 = cp.dot(kernel_L, rho2_dir_w)
             I_dir = float(cp.dot(rho1_dir_w, int_r2))
         
@@ -1035,7 +990,9 @@ def radial_ME_all_L_gpu(
         # --- Exchange Integral on GPU ---
         if use_oscillatory_quadrature and k_total > 0.5:
             # Use GPU Filon + CC for exchange (both inner and outer)
-            I_ex = _gpu_filon_exchange(kernel_L, rho1_ex_uw, rho2_ex_uw, r_gpu, w_gpu, k_total)
+            # Pass pre-sliced components instead of full matrix to save memory
+            k_spec = {**kernel_at_cc_pre, 'L': L}
+            I_ex = _gpu_filon_exchange(k_spec, rho1_ex_uw, rho2_ex_uw, r_gpu, w_gpu, k_total, phase_increment, CC_nodes, precomputed=filon_params)
         else:
             # Standard method
             int_r2_ex = cp.dot(kernel_L, rho2_ex_w)

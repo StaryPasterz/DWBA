@@ -23,13 +23,12 @@ Comprehensive Python suite for computing electron–atom excitation and ionizati
 - [References](#references)
 
 ## Features
-- DWBA excitation cross sections (total and differential) with static + optional polarization potentials; exchange via T-matrix.
-- DWBA ionization cross sections (TICS, SDCS, optional TDCS) using (2π)⁴ kinematic factor (Jones & Madison 2003), with auto-scaled L_max and cached scattered waves.
-- Empirical calibration (Tong model) for excitation, with per-energy normalization factors.
-- Plotting in multiple unit conventions (cm², a.u., article E/E\_thr, mixed).
-- Partial-wave convergence diagnostics and Born top-up (DCS scaled to match top-up TCS).
-- Potential fitting utility with Tong-Lin (2005) methodology.
-- GPU acceleration via CuPy (optional).
+- **GPU Acceleration**: Core radial matrix element calculations are GPU-accelerated via CuPy.
+- **Adaptive Memory Management**: Automatically slices and optimizes GPU kernel matrices to minimize VRAM usage for high partial waves (**user-configurable block size**).
+- **User-Configurable Parameters**: Directly modify grid, oscillatory, and memory parameters through the `DW_main.py` UI.
+- **Improved Phase Extraction**: Uses 4th-order (5-point) derivatives for high-energy continuum wavefunctions.
+- **Empirical Calibration**: Integrated Tong model for excitation cross-section normalization.
+- **Progress Reporting**: Real-time feedback and ETA for long-running partial wave summations.
 
 ## Repository Layout
 ```
