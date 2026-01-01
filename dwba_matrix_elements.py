@@ -780,17 +780,20 @@ def radial_ME_all_L_gpu(
     phase_increment: float = 1.5708,
     gpu_block_size: int = 2048,
     min_grid_fraction: float = 0.10,
-    k_threshold: float = 0.5
+    k_threshold: float = 0.5,
+    gpu_memory_mode: str = "auto",
+    gpu_memory_threshold: float = 0.7
 ) -> RadialDWBAIntegrals:
     """
     GPU Accelerated Version of radial_ME_all_L using CuPy.
 
-    Architecture (v2.2+):
+    Architecture (v2.3+):
     -------------------
-    1. **Block-wise Integration**: To prevent VRAM exhaustion on systems with 
-       large grids (e.g. N=10000), direct kernels are constructed and 
-       integrated in blocks (default size 8192). This maintains a constant 
-       peak memory footprint independent of total grid points.
+    1. **Hybrid Memory Strategy**: By default (gpu_memory_mode="auto"), checks available
+       GPU memory before deciding between full matrix (fast) or block-wise (safe).
+       - "full": Forces full N×N matrix construction (fastest, may cause OOM)
+       - "block": Forces block-wise construction (slower, constant memory)
+       - "auto": Uses memory check + exception fallback
     2. **Full-Grid Parity**: The inner integral (r2) for both direct and 
        exchange terms is computed over the full grid range [0, R_max], 
        ensuring mathematical parity with the CPU "Full-Split" implementation.
@@ -887,21 +890,47 @@ def radial_ME_all_L_gpu(
     overlap_tol = 1e-12
 
     # 3. Kernel Construction on GPU
-    # If using Filon, we can avoid the full N*N matrix for kernel_L
-    # and compute int_r2_dir in blocks.
+    # Strategy selection: "auto" checks memory, "full" forces matrix, "block" forces block-wise
     
     use_filon = use_oscillatory_quadrature and k_total > k_threshold
     
-    if not use_filon:
-        r_col = r_gpu[:, None]
-        r_row = r_gpu[None, :]
-        inv_gtr = 1.0 / cp.maximum(r_col, r_row + 1e-30)
-        ratio = cp.minimum(r_col, r_row) * inv_gtr
-        ratio = cp.minimum(ratio, 1.0 - 1e-12)
-        log_ratio = cp.log(ratio + 1e-30)
-        del r_col, r_row
-        cp.get_default_memory_pool().free_all_blocks()
-    else:
+    # Memory-based decision for matrix construction
+    use_block_wise = False
+    if gpu_memory_mode == "block":
+        use_block_wise = True
+    elif gpu_memory_mode == "full":
+        use_block_wise = False
+    else:  # "auto" - check GPU memory
+        try:
+            free_mem, total_mem = cp.cuda.Device().mem_info
+            # Estimate required memory: 3 matrices (inv_gtr, ratio, log_ratio) × idx_limit²
+            required_mem = idx_limit * idx_limit * 8 * 3
+            if required_mem > free_mem * gpu_memory_threshold:
+                logger.info("GPU memory limited (%.1f GB free, need %.1f GB). Using block-wise.",
+                           free_mem / 1e9, required_mem / 1e9)
+                use_block_wise = True
+        except Exception as e:
+            logger.debug("Could not check GPU memory: %s. Using block-wise as fallback.", e)
+            use_block_wise = True
+    
+    if not use_filon and not use_block_wise:
+        # FAST PATH: Build full kernel matrix once, reuse for all L
+        try:
+            r_col = r_gpu[:, None]
+            r_row = r_gpu[None, :]
+            inv_gtr = 1.0 / cp.maximum(r_col, r_row + 1e-30)
+            ratio = cp.minimum(r_col, r_row) * inv_gtr
+            ratio = cp.minimum(ratio, 1.0 - 1e-12)
+            log_ratio = cp.log(ratio + 1e-30)
+            del r_col, r_row
+            cp.get_default_memory_pool().free_all_blocks()
+            logger.debug("GPU: Using full matrix construction (fast path)")
+        except cp.cuda.memory.OutOfMemoryError:
+            logger.warning("GPU OOM during matrix construction. Falling back to block-wise.")
+            use_block_wise = True
+            cp.get_default_memory_pool().free_all_blocks()
+    
+    if use_filon or use_block_wise:
         # Filon mode: pre-calculate components ONLY for CC nodes
         filon_params = _generate_gpu_filon_params(r_gpu, k_total, phase_increment, CC_nodes)
         if filon_params:

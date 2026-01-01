@@ -35,6 +35,7 @@ import json
 import os
 import sys
 import glob
+import argparse
 from dataclasses import asdict
 
 from driver import (
@@ -102,6 +103,8 @@ DEFAULTS = {
         "min_grid_fraction": 0.10,    # Minimum match point fraction
         "k_threshold": 0.5,           # k_total threshold for Filon
         "gpu_block_size": 8192,       # GPU block size for memory-efficient dot products
+        "gpu_memory_mode": "auto",    # "auto" / "full" / "block" - GPU matrix strategy
+        "gpu_memory_threshold": 0.7,  # Max fraction of GPU memory to use (for auto mode)
     },
     
     # --- Energy Grid ---
@@ -185,6 +188,16 @@ def prompt_use_defaults(categories: list = None) -> dict:
                         elif choice == '2': params[cat_name][key] = "advanced"
                         elif choice == '3': params[cat_name][key] = "full_split"
                         else: params[cat_name][key] = default_val
+                    elif key == "gpu_memory_mode" and cat_name == "oscillatory":
+                        print(f"\n    GPU Memory Strategy:")
+                        print("      1. auto  - Check memory, fast if possible (recommended)")
+                        print("      2. full  - Force full matrix (fastest, may OOM)")
+                        print("      3. block - Force block-wise (slowest, safest)")
+                        choice = input(f"    Select [1-3, default={default_val}]: ").strip()
+                        if choice == '1': params[cat_name][key] = "auto"
+                        elif choice == '2': params[cat_name][key] = "full"
+                        elif choice == '3': params[cat_name][key] = "block"
+                        else: params[cat_name][key] = default_val
                     else:
                         val = input(f"    {key} [{default_val}]: ").strip()
                         params[cat_name][key] = val if val else default_val
@@ -201,14 +214,21 @@ def prompt_use_defaults(categories: list = None) -> dict:
                     if cat in params:
                         # Display only Categories that were requested
                         display_params_custom(cat, params[cat])
+                        # Log the configuration change
+                        logger.info("%s configuration: %s", cat.upper(), params[cat])
             else:
                 for cat_name, val_dict in params.items():
                     display_params_custom(cat_name, val_dict)
+                    logger.info("%s configuration: %s", cat_name.upper(), val_dict)
         else:
             print_info("No changes made. Using defaults.")
     else:
         # User chose 'y' or entered nothing
-        # We don't print anything here to keep the log clean as requested
+        # Log that defaults are being used (only once, concisely)
+        if categories:
+            for cat in categories:
+                if cat in params:
+                    logger.debug("%s configuration (default): %s", cat.upper(), params[cat])
         pass
     
     return params
@@ -1180,5 +1200,337 @@ def main():
         else:
             print("Invalid selection.")
 
+# =============================================================================
+# BATCH MODE EXECUTION
+# =============================================================================
+
+def run_from_config(config_path: str, verbose: bool = False) -> None:
+    """
+    Run DWBA calculation from a configuration file (batch mode).
+    
+    Parameters
+    ----------
+    config_path : str
+        Path to YAML configuration file.
+    verbose : bool
+        Enable verbose logging.
+    """
+    from config_loader import load_config, config_to_params_dict
+    
+    # Load and validate config
+    try:
+        config = load_config(config_path)
+    except Exception as e:
+        print(f"Error loading configuration: {e}")
+        sys.exit(1)
+    
+    run_name = config.run_name
+    print(f"\n{'═'*50}")
+    print(f"  BATCH MODE: {run_name}")
+    print(f"{'═'*50}")
+    print(f"  Config: {config_path}")
+    print(f"  Type: {config.calculation_type}")
+    print(f"  Target: {config.target.atom}")
+    print(f"{'═'*50}\n")
+    
+    # Set up parameters
+    params = config_to_params_dict(config)
+    
+    # Set oscillatory configuration
+    set_oscillatory_config(params['oscillatory'])
+    
+    # Get atom and core parameters
+    try:
+        atom_entry = atom_library.get_atom(config.target.atom)
+        core_params = atom_entry.core_params
+        # If Z is not in core_params (it usually is Zc), get from entry
+        # CorePotentialParams has Zc. AtomEntry has Z. They should match.
+    except (ValueError, KeyError):
+        if config.target.Z is not None:
+            # Custom atom
+            core_params = CorePotentialParams(
+                Zc=config.target.Z,
+                a1=0, a2=0, a3=0, a4=0, a5=0, a6=0
+            )
+        else:
+            print(f"Error: Atom '{config.target.atom}' not found and no custom Z provided.")
+            sys.exit(1)
+    
+    # Get states
+    ni = config.states.initial.n
+    li = config.states.initial.l
+    nf = config.states.final.n
+    lf = config.states.final.l
+    
+    # Build energy grid
+    if config.energy.type == "single":
+        energy_grid = [config.energy.start_eV]
+    elif config.energy.type == "linear":
+        step = config.energy.step_eV or 10.0
+        energy_grid = np.arange(config.energy.start_eV, config.energy.end_eV + step, step).tolist()
+    elif config.energy.type == "log":
+        energy_grid = generate_flexible_energy_grid(
+            config.energy.start_eV, 
+            config.energy.end_eV, 
+            config.energy.density
+        )
+    elif config.energy.type == "list":
+        energy_grid = config.energy.values or [config.energy.start_eV]
+    else:
+        energy_grid = [config.energy.start_eV]
+    
+    print(f"  Energy grid: {len(energy_grid)} points ({energy_grid[0]:.1f} - {energy_grid[-1]:.1f} eV)")
+    
+    # Run calculation
+    if config.calculation_type == "excitation":
+        # Compute threshold
+        from bound_states import solve_bound_states
+        from grid import make_r_grid
+        from potential_core import V_core_on_grid
+        
+        grid = make_r_grid(r_min=1e-5, r_max=params['grid']['r_max'], 
+                          n_points=params['grid']['n_points'])
+        V_core = V_core_on_grid(grid, core_params)
+        
+        states_i = solve_bound_states(grid, V_core, l=li, n_states_max=ni-li+1)
+        states_f = solve_bound_states(grid, V_core, l=lf, n_states_max=nf-lf+1)
+        
+        E_i_au = states_i[ni-li-1].energy_au if len(states_i) > ni-li-1 else 0
+        E_f_au = states_f[nf-lf-1].energy_au if len(states_f) > nf-lf-1 else 0
+        threshold_eV = (E_f_au - E_i_au) / ev_to_au(1.0)
+        
+        print(f"  Threshold: {threshold_eV:.2f} eV")
+        
+        # Build spec
+        spec = ExcitationChannelSpec(
+            l_i=li, l_f=lf,
+            n_index_i=ni-li, n_index_f=nf-lf,
+            N_equiv=2,
+            L_max_integrals=params['excitation']['L_max_integrals'],
+            L_target_i=li, L_target_f=lf,
+            L_max_projectile=params['excitation']['L_max_projectile']
+        )
+        
+        # Helper for transition class
+        delta_l = abs(lf - li)
+        t_class = "dipole" if delta_l == 1 else "non_dipole"
+
+        # Initialize calibrator correctly
+        calibrator = None
+        if config.output.calibrate:
+            try:
+                # E_f_au is the binding energy of the excited state (negative)
+                calibrator = TongModel(
+                    dE_target_eV=threshold_eV,
+                    epsilon_exc_au=E_f_au,
+                    transition_class=t_class
+                )
+                
+                # Run Pilot Calculation for Alpha Matching
+                pilot_E = params['excitation']['pilot_energy_eV']
+                print(f"  Running pilot at {pilot_E:.0f} eV for calibration...", end=" ", flush=True)
+                
+                pilot_res = compute_total_excitation_cs(
+                    pilot_E, spec, core_params,
+                    r_max=params['grid']['r_max'],
+                    n_points=params['grid']['n_points'],
+                    n_theta=params['excitation']['n_theta']
+                )
+                
+                alpha = calibrator.calibrate_alpha(pilot_E, pilot_res.sigma_total_cm2)
+                print(f"done. α = {alpha:.3f}")
+                
+            except Exception as e:
+                print(f"failed ({e}). Using default α=1.0")
+                if calibrator is None:
+                     # Fallback initialization if it failed before init
+                     calibrator = TongModel(threshold_eV, E_f_au, transition_class=t_class)
+
+        results = []
+        for i, E_eV in enumerate(energy_grid):
+            if E_eV <= threshold_eV:
+                print(f"  [{i+1}/{len(energy_grid)}] {E_eV:.2f} eV - Below threshold, skipping")
+                continue
+            
+            print(f"  [{i+1}/{len(energy_grid)}] {E_eV:.2f} eV...", end=" ", flush=True)
+            
+            try:
+                res = compute_total_excitation_cs(
+                    E_eV, spec, core_params,
+                    r_max=params['grid']['r_max'],
+                    n_points=params['grid']['n_points'],
+                    n_theta=params['excitation']['n_theta']
+                )
+                
+                # Apply calibration
+                calibrated_cm2 = res.sigma_total_cm2
+                C_tong = 1.0
+                if calibrator:
+                    C_tong = calibrator.get_calibration_factor(E_eV, res.sigma_total_cm2)
+                    calibrated_cm2 = res.sigma_total_cm2 * C_tong
+                
+                print(f"σ = {calibrated_cm2:.3e} cm² [C={C_tong:.3f}]")
+                
+                results.append({
+                    "E_eV": E_eV,
+                    "sigma_cm2": res.sigma_total_cm2,
+                    "sigma_calibrated_cm2": calibrated_cm2,
+                    "C_tong": C_tong
+                })
+                
+            except Exception as e:
+                print(f"Error: {e}")
+                logger.exception("Calculation failed at E=%.2f eV", E_eV)
+        
+        # Save results
+        output_file = f"results_{run_name}_exc.json"
+        save_results(output_file, {
+            "run_name": run_name,
+            "config_file": config_path,
+            "calculation_type": "excitation",
+            "target": config.target.atom,
+            "initial_state": {"n": ni, "l": li},
+            "final_state": {"n": nf, "l": lf},
+            "threshold_eV": threshold_eV,
+            "results": results
+        })
+        
+        print(f"\n  ✓ Results saved to: {output_file}")
+        
+    elif config.calculation_type == "ionization":
+        # Build ionization spec
+        ion_spec = IonizationChannelSpec(
+            l_initial=li,
+            n_initial_radial=ni - li,
+            l_eject_max=params['ionization']['l_eject_max'],
+            L_max=params['ionization']['L_max'],
+            L_max_projectile=params['ionization']['L_max_projectile'],
+            N_equiv=2
+        )
+        
+        # Get ionization threshold
+        from bound_states import solve_bound_states
+        from grid import make_r_grid
+        from potential_core import V_core_on_grid
+        
+        grid = make_r_grid(r_min=1e-5, r_max=params['grid']['r_max'], 
+                          n_points=params['grid']['n_points'])
+        V_core = V_core_on_grid(grid, core_params)
+        states = solve_bound_states(grid, V_core, l=li, n_states_max=ni-li+1)
+        E_bind_au = states[ni-li-1].energy_au if len(states) > ni-li-1 else -0.5
+        threshold_eV = abs(E_bind_au) / ev_to_au(1.0)
+        
+        print(f"  Ionization potential: {threshold_eV:.2f} eV")
+        
+        results = []
+        for i, E_eV in enumerate(energy_grid):
+            if E_eV <= threshold_eV:
+                print(f"  [{i+1}/{len(energy_grid)}] {E_eV:.2f} eV - Below threshold, skipping")
+                continue
+            
+            print(f"  [{i+1}/{len(energy_grid)}] {E_eV:.2f} eV...", end=" ", flush=True)
+            
+            try:
+                ion_res = compute_ionization_cs(
+                    E_eV, ion_spec, core_params,
+                    r_max=params['grid']['r_max'],
+                    n_points=params['grid']['n_points'],
+                    n_ej_steps=params['ionization']['n_energy_steps']
+                )
+                
+                print(f"σ = {ion_res.sigma_total_cm2:.3e} cm²")
+                
+                results.append({
+                    "E_eV": E_eV,
+                    "sigma_cm2": ion_res.sigma_total_cm2,
+                    "sigma_au": ion_res.sigma_total_au
+                })
+                
+            except Exception as e:
+                print(f"Error: {e}")
+                logger.exception("Calculation failed at E=%.2f eV", E_eV)
+        
+        # Save results
+        output_file = f"results_{run_name}_ion.json"
+        save_results(output_file, {
+            "run_name": run_name,
+            "config_file": config_path,
+            "calculation_type": "ionization",
+            "target": config.target.atom,
+            "initial_state": {"n": ni, "l": li},
+            "threshold_eV": threshold_eV,
+            "results": results
+        })
+        
+        print(f"\n  ✓ Results saved to: {output_file}")
+    
+    print(f"\n{'═'*50}")
+    print(f"  BATCH COMPLETE: {run_name}")
+    print(f"{'═'*50}\n")
+
+
+def save_results(filename: str, data: dict) -> None:
+    """Save or merge results to JSON file."""
+    if os.path.exists(filename):
+        with open(filename, 'r') as f:
+            existing = json.load(f)
+        # Merge results
+        if "results" in existing and "results" in data:
+            existing_energies = {r["E_eV"] for r in existing["results"]}
+            for r in data["results"]:
+                if r["E_eV"] not in existing_energies:
+                    existing["results"].append(r)
+            existing["results"].sort(key=lambda x: x["E_eV"])
+            data = existing
+    
+    with open(filename, 'w') as f:
+        json.dump(data, f, indent=2)
+
+
+def parse_cli_args():
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(
+        description="DWBA Calculation Suite",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python DW_main.py                       # Interactive mode
+  python DW_main.py -c config.yaml        # Batch mode with config file
+  python DW_main.py -c config.yaml -v     # Verbose batch mode
+  python DW_main.py --generate-config     # Generate template config
+        """
+    )
+    parser.add_argument("-c", "--config", type=str, metavar="FILE",
+                        help="Path to YAML config file for batch mode")
+    parser.add_argument("-v", "--verbose", action="store_true",
+                        help="Enable verbose logging")
+    parser.add_argument("--generate-config", action="store_true",
+                        help="Generate a template configuration file")
+    parser.add_argument("--config-type", choices=["excitation", "ionization"],
+                        default="excitation",
+                        help="Type of template to generate (default: excitation)")
+    parser.add_argument("-o", "--output", type=str, default="config_template.yaml",
+                        help="Output path for generated config (default: config_template.yaml)")
+    
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    main()
+    args = parse_cli_args()
+    
+    if args.verbose:
+        import logging
+        logging.getLogger().setLevel(logging.DEBUG)
+    
+    if args.generate_config:
+        from config_loader import generate_template_config
+        generate_template_config(args.output, args.config_type)
+        print(f"✓ Template configuration saved to: {args.output}")
+        sys.exit(0)
+    
+    if args.config:
+        # Batch mode
+        run_from_config(args.config, verbose=args.verbose)
+    else:
+        # Interactive mode
+        main()

@@ -96,7 +96,11 @@ OSCILLATORY_CONFIG = {
     "phase_increment": 1.5708,
     "min_grid_fraction": 0.1,
     "k_threshold": 0.5,
-    "gpu_block_size": 8192
+    "gpu_block_size": 8192,
+    # GPU memory strategy: "auto" (check memory), "full" (force full matrix), "block" (force block-wise)
+    "gpu_memory_mode": "auto",
+    # Memory threshold for auto mode: fraction of free GPU memory that matrix can use
+    "gpu_memory_threshold": 0.7
 }
 
 def set_oscillatory_config(config_dict: dict):
@@ -554,7 +558,9 @@ def compute_total_excitation_cs(
                     phase_increment=OSCILLATORY_CONFIG["phase_increment"],
                     gpu_block_size=OSCILLATORY_CONFIG["gpu_block_size"],
                     min_grid_fraction=OSCILLATORY_CONFIG["min_grid_fraction"],
-                    k_threshold=OSCILLATORY_CONFIG["k_threshold"]
+                    k_threshold=OSCILLATORY_CONFIG["k_threshold"],
+                    gpu_memory_mode=OSCILLATORY_CONFIG["gpu_memory_mode"],
+                    gpu_memory_threshold=OSCILLATORY_CONFIG["gpu_memory_threshold"]
                 )
                 
                 # Distribute (CPU - fast)

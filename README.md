@@ -111,6 +111,49 @@ Menu:
 5. Fit Potential (new atom)
 6. Change Run Name
 
+### Batch Mode (Config File)
+
+For automated calculations, use a YAML configuration file:
+
+```bash
+# Run with config file
+python DW_main.py -c config.yaml
+
+# Verbose mode
+python DW_main.py -c config.yaml -v
+
+# Generate template config
+python DW_main.py --generate-config -o my_config.yaml
+python DW_main.py --generate-config --config-type ionization -o ion_config.yaml
+```
+
+**Example Configuration** (`examples/config_excitation.yaml`):
+```yaml
+run_name: "H_1s2s_batch"
+
+calculation:
+  type: "excitation"
+
+target:
+  atom: "H"
+
+states:
+  initial: {n: 1, l: 0}
+  final: {n: 2, l: 0}
+
+energy:
+  type: "log"
+  start_eV: 10.2
+  end_eV: 300
+  density: 0.5
+
+oscillatory:
+  method: "advanced"
+  gpu_memory_mode: "auto"
+```
+
+See `examples/` directory for complete templates.
+
 ### Excitation Scan
 - Select target from `atoms.json` or enter custom parameters
 - Configure initial/final states (n, l)
@@ -158,6 +201,8 @@ All numerical defaults are organized by category and displayed before calculatio
   │  min_grid_fraction      = 0.1
   │  k_threshold            = 0.5
   │  gpu_block_size         = 8192
+  │  gpu_memory_mode        = "auto"      # "auto" / "full" / "block"
+  │  gpu_memory_threshold   = 0.7
   └────────────────────────────────────
 ```
 
@@ -169,6 +214,11 @@ When prompted, enter:
 1. **legacy** - Clenshaw-Curtis quadrature (fastest)
 2. **advanced** - CC + Levin/Filon tail correction (balanced, default)
 3. **full_split** - Full I_in/I_out domain separation (most accurate)
+
+**GPU Memory Strategy**: Controls how GPU kernel matrices are constructed:
+1. **auto** - Checks available GPU memory; uses full matrix if sufficient, otherwise block-wise (recommended)
+2. **full** - Forces full N×N matrix construction (fastest, may cause OOM on large grids)
+3. **block** - Forces block-wise construction (slowest, constant memory usage)
 
 Outputs: `results_<run>_exc.json`, `results_<run>_ion.json` in project root. Excitation entries include angular grids (`theta_deg`) and both raw/calibrated DCS in a.u. for later plotting. Ionization entries include SDCS data and optional TDCS entries (`angles_deg`, `values`).
 
