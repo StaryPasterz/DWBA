@@ -8,37 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
-### GPU Memory Optimization
+---
 
-#### Hybrid Memory Strategy
-**Files**: `driver.py`, `dwba_matrix_elements.py`
+### Edit_64 — `7227310` — 2026-01-01
 
-Implemented adaptive GPU memory management with three modes:
-
-| Mode | Description |
-|------|-------------|
-| `auto` | Checks available GPU memory; uses full matrix if sufficient, otherwise block-wise |
-| `full` | Forces full N×N matrix construction (fastest, may cause OOM on large grids) |
-| `block` | Forces block-wise construction (slower, constant memory usage) |
-
-Configuration in `driver.py`:
-```python
-OSCILLATORY_CONFIG = {
-    ...
-    "gpu_memory_mode": "auto",      # "auto", "full", or "block"
-    "gpu_memory_threshold": 0.7,    # Use up to 70% of free GPU memory
-    "gpu_block_size": 8192          # Block size for block-wise mode
-}
-```
-
-**Features**:
-- Automatic memory check before matrix allocation
-- OOM exception handling with automatic fallback
-- Preserved numerical accuracy in both modes
-
-### Configuration File Support (Batch Mode)
-
-#### New Module: `config_loader.py`
+#### Configuration File Support (Batch Mode)
 
 Enables automated batch calculations without interactive prompts using YAML configuration files.
 
@@ -52,30 +26,28 @@ Enables automated batch calculations without interactive prompts using YAML conf
 python DW_main.py -c config.yaml        # Batch mode
 python DW_main.py -c config.yaml -v     # Verbose batch mode
 python DW_main.py --generate-config     # Generate template
-python DW_main.py --help                # Show all options
-```
-
-**Configuration Format**:
-```yaml
-run_name: "H_1s2s_batch"
-calculation:
-  type: "excitation"
-target:
-  atom: "H"
-states:
-  initial: {n: 1, l: 0}
-  final: {n: 2, l: 0}
-energy:
-  type: "log"
-  start_eV: 10.2
-  end_eV: 300
 ```
 
 **Features**:
 - Full validation with clear error messages
-- Support for all calculation parameters
+- Support for all calculation parameters (grid, oscillatory, excitation, ionization)
+- Automatic Tong calibration with pilot calculation in batch mode
 - Automatic result merging for incremental runs
 - Progress output during batch execution
+
+#### GPU Memory Optimization — Hybrid Memory Strategy
+
+**Files**: `driver.py`, `dwba_matrix_elements.py`
+
+Implemented adaptive GPU memory management with three modes:
+
+| Mode | Description |
+|------|-------------|
+| `auto` | Checks available GPU memory; uses full matrix if sufficient, otherwise block-wise |
+| `full` | Forces full N×N matrix construction (fastest, may cause OOM) |
+| `block` | Forces block-wise construction (slower, constant memory usage) |
+
+Configuration parameters: `gpu_memory_mode`, `gpu_memory_threshold`
 
 ---
 
