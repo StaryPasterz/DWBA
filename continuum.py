@@ -685,13 +685,10 @@ def _fit_asymptotic_phase_coulomb(r_tail: np.ndarray, chi_tail: np.ndarray, l: i
 
 def _derivative_5point(chi: np.ndarray, r_grid: np.ndarray, idx: int) -> float:
     """
-    Derivative using central difference for NON-UNIFORM grid.
-    
-    For non-uniform grids, the 5-point formula requires weighted coefficients.
-    We use a simpler 3-point central difference with local step sizes, 
-    which is still O(h²) accurate and works for exponential grids.
-    
-    Formula: χ'(r_i) ≈ (χ[i+1] - χ[i-1]) / (r[i+1] - r[i-1])
+    Derivative using a local 5-point stencil on a non-uniform grid.
+
+    We compute finite-difference coefficients for the actual local spacing
+    (Fornberg algorithm). Falls back to fewer points near boundaries.
     
     Parameters
     ----------
@@ -708,29 +705,42 @@ def _derivative_5point(chi: np.ndarray, r_grid: np.ndarray, idx: int) -> float:
         Derivative χ'(r_idx).
     """
     N = len(chi)
-    
-    if idx < 2:
-        # Forward difference at left boundary (O(h²))
-        h = r_grid[idx+1] - r_grid[idx]
-        return (chi[idx+1] - chi[idx]) / h
-    elif idx >= N - 2:
-        # Backward difference at right boundary (O(h²))
-        h = r_grid[idx] - r_grid[idx-1]
-        return (chi[idx] - chi[idx-1]) / h
-    else:
-        # 5-point central difference (O(h⁴) for uniform, O(h²) otherwise)
-        # Formula: f'(x) ≈ (-f(x+2h) + 8f(x+h) - 8f(x-h) + f(x-2h)) / (12h)
-        # We use average local h
-        h = 0.5 * (r_grid[idx+1] - r_grid[idx-1])
-        return (-chi[idx+2] + 8.0*chi[idx+1] - 8.0*chi[idx-1] + chi[idx-2]) / (6.0 * (r_grid[idx+2] - r_grid[idx-2] + 1e-30) * 0.5)
-        # Actually, let's use the standard form with local spacing.
-        # h1 = r[i+1]-r[i], etc.
-        # For simplicity and high L stability:
-        h1 = r_grid[idx+1] - r_grid[idx]
-        h2 = r_grid[idx] - r_grid[idx-1]
-        h_avg = 0.5 * (h1 + h2)
-        # 4th order central difference (approximate for non-uniform)
-        return (-chi[idx+2] + 8.0*chi[idx+1] - 8.0*chi[idx-1] + chi[idx-2]) / (12.0 * h_avg)
+    if idx < 0 or idx >= N:
+        raise IndexError("idx out of range in _derivative_5point")
+
+    # Choose up to 5 points around idx (shift window near boundaries)
+    n_points = 5 if N >= 5 else N
+    start = min(max(idx - 2, 0), N - n_points)
+    idxs = np.arange(start, start + n_points)
+    x = r_grid[idxs]
+    x0 = r_grid[idx]
+
+    # Fornberg coefficients for first derivative at x0
+    # Reference: B. Fornberg, Math. Comp. 51, 1988.
+    m = 1
+    c = np.zeros((n_points, m + 1), dtype=float)
+    c[0, 0] = 1.0
+    c1 = 1.0
+    c4 = x[0] - x0
+    for i in range(1, n_points):
+        mn = min(i, m)
+        c2 = 1.0
+        c5 = c4
+        c4 = x[i] - x0
+        for j in range(i):
+            c3 = x[i] - x[j]
+            c2 *= c3
+            if j == i - 1:
+                for k in range(mn, 0, -1):
+                    c[i, k] = c1 * (k * c[i - 1, k - 1] - c5 * c[i - 1, k]) / c2
+                c[i, 0] = -c1 * c5 * c[i - 1, 0] / c2
+            for k in range(mn, 0, -1):
+                c[j, k] = (c4 * c[j, k] - k * c[j, k - 1]) / c3
+            c[j, 0] = c4 * c[j, 0] / c3
+        c1 = c2
+
+    coeffs = c[:, 1]
+    return float(np.dot(coeffs, chi[idxs]))
 
 
 

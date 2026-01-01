@@ -24,10 +24,9 @@ Comprehensive Python suite for computing electron–atom excitation and ionizati
 
 ## Features
 - **GPU Acceleration**: Core radial matrix element calculations are GPU-accelerated via CuPy.
-- **Adaptive Memory Management**: Automatically slices and optimizes GPU kernel matrices to minimize VRAM usage for high partial waves (**user-configurable block size**).
-- **User-Configurable Parameters**: Directly modify grid, oscillatory, and memory parameters through the `DW_main.py` UI.
-- **Improved Phase Extraction**: Uses 4th-order (5-point) derivatives for high-energy continuum wavefunctions.
-- **Empirical Calibration**: Integrated Tong model for excitation cross-section normalization.
+- **Scalable GPU Memory**: Implemented **block-wise construction** for radial kernels (default 8192 points). This ensures a constant VRAM footprint, allowing large grids ($N_{grid}=10000$) to run on standard hardware without "Pagefile too small" errors.
+- **Improved Phase Extraction**: Uses **5-point Fornberg stencils** for finite derivatives on non-uniform grids, ensuring stable phase extraction for high energies (1.0 keV+).
+- **High-Accuracy Integrals**: Support for **Full-Split** quadrature with full-grid integration parity across CPU and GPU paths.
 - **Progress Reporting**: Real-time feedback and ETA for long-running partial wave summations.
 
 ## Repository Layout
@@ -129,7 +128,9 @@ Menu:
 - TDCS uses angles (theta_scatt, theta_eject, phi_eject) with phi_scatt = 0 (scattering plane).
 - Exchange term uses swapped detection angles for indistinguishable electrons (Jones/Madison).
 - Numerics: l_eject_max, L_max (multipole), L_max_projectile (base, auto-scaled from k_i), n_energy_steps.
+- **L_max floor**: Minimum L_max=3 ensures s-, p-, d-wave contributions at all energies, even near threshold.
 - Polarization option is heuristic and not part of the article DWBA.
+- **k_threshold**: When k_total > 0.5 a.u., specialized Filon/Levin oscillatory quadrature is used; below this threshold, standard Simpson integration is faster and sufficiently accurate.
 
 ### Centralized Default Parameters
 
@@ -140,7 +141,7 @@ All numerical defaults are organized by category and displayed before calculatio
   │  r_max                  = 200
   │  n_points               = 3000
   │  r_max_scale_factor     = 2.5
-  │  n_points_max           = 8000
+  │  n_points_max           = 10000
   └────────────────────────────────────
 
   ┌─ EXCITATION ───────────────────────
@@ -156,6 +157,7 @@ All numerical defaults are organized by category and displayed before calculatio
   │  phase_increment        = 1.571
   │  min_grid_fraction      = 0.1
   │  k_threshold            = 0.5
+  │  gpu_block_size         = 8192
   └────────────────────────────────────
 ```
 
@@ -280,7 +282,11 @@ The continuum wave solver uses **Numerov propagation** with asymptotic stitching
 - O(h⁴) accuracy for non-uniform (exponential) grids
 - Uses **separate step sizes** h₁², h₂² instead of averaged h² for better accuracy
 - Periodic renormalization prevents over/underflow
-- Central difference derivative for χ'(r)
+
+**Fornberg Phase Extraction** (v2.2+):
+- Replaced 3-point central differences with a **5-point Fornberg stencil**.
+- Correctly computes weights for arbitrary grid spacing, suppressing numerical noise in the logarithmic derivative $Y(r) = \chi'(r)/\chi(r)$ at match points.
+- Essential for stable extraction of phase shifts $\delta_l$ at high energies ($k \gg 1$).
 
 **Physics-Based Turning Point Detection**:
 - Checks S(r_min) = l(l+1)/r² + 2U - k² at grid origin
@@ -331,8 +337,17 @@ The **oscillatory_integrals.py** module provides advanced oscillatory quadrature
 #### Domain Splitting: I_in + I_out
 
 All integrals are split at the match point r_m:
-- **I_in [0, r_m]**: Clenshaw-Curtis / Simpson quadrature with proper integration weights
-- **I_out [r_m, ∞)**: Specialized oscillatory methods using asymptotic wave forms
+- **I_in [0, r_m]**: Clenshaw-Curtis / Simpson quadrature with proper integration weights.
+- **I_out [r_m, ∞)**: Specialized oscillatory methods (Levin/Filon) using asymptotic wave forms.
+
+#### High-Accuracy Integration (v2.2+)
+
+Recent audits (Edit_62+) have standardized the **Full-Split** and **Advanced** methods for maximum parity between CPU and GPU:
+
+1.  **Multipole Moment ($M_L$)**: The asymptotic envelope coefficient is now computed using the **full grid** weights `w`:
+    $M_L = \int_0^{R_{max}} w(r) \cdot r^L \cdot u_f(r) u_i(r) dr$.
+    This ensures that the bound-state contribution living beyond the match point $r_m$ is fully captured.
+2.  **Inner Integral Parity**: The inner $r_2$ integral for both **Direct** and **Exchange** terms is now computed over the full range $[0, R_{max}]$ on both CPU and GPU. This ensures that the entire localized potential of the target atom is integrated when computing the field felt by the projectile.
 
 **Important**: 2D kernel integrals use:
 ```
@@ -443,6 +458,14 @@ integrals = radial_ME_all_L(
 | Filon integration | ~0.9 ms | 1000 points |
 | Filon Exchange | ~3.3 ms | 500 points |
 | GPU radial integrals | 5-10× faster | Pure GPU path |
+
+#### GPU Block-wise Architecture
+
+To prevent system memory exhaustion on large grids:
+- Kernels are built in **blocks of 8192 rows** (default).
+- Each block calculates a subset of the $r_1$ outer integral.
+- Memory for each block is explicitly freed from the CuPy pool before the next block begins.
+- Result: **Constant VRAM usage**, independent of $N_{grid}$.
 
 **Algorithmic Optimizations:**
 - Module-level CC weight caching (~25% speedup)

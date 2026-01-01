@@ -215,7 +215,9 @@ def _worker_partial_wave(
             use_oscillatory_quadrature=True,
             oscillatory_method=OSCILLATORY_CONFIG["method"],
             CC_nodes=OSCILLATORY_CONFIG["CC_nodes"],
-            phase_increment=OSCILLATORY_CONFIG["phase_increment"]
+            phase_increment=OSCILLATORY_CONFIG["phase_increment"],
+            min_grid_fraction=OSCILLATORY_CONFIG["min_grid_fraction"],
+            k_threshold=OSCILLATORY_CONFIG["k_threshold"]
         )
         
         # Distribute
@@ -550,7 +552,9 @@ def compute_total_excitation_cs(
                     oscillatory_method=OSCILLATORY_CONFIG["method"],
                     CC_nodes=OSCILLATORY_CONFIG["CC_nodes"],
                     phase_increment=OSCILLATORY_CONFIG["phase_increment"],
-                    gpu_block_size=OSCILLATORY_CONFIG["gpu_block_size"]
+                    gpu_block_size=OSCILLATORY_CONFIG["gpu_block_size"],
+                    min_grid_fraction=OSCILLATORY_CONFIG["min_grid_fraction"],
+                    k_threshold=OSCILLATORY_CONFIG["k_threshold"]
                 )
                 
                 # Distribute (CPU - fast)

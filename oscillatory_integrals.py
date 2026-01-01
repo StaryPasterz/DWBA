@@ -76,6 +76,24 @@ else:
 
 _CC_W_REF = (2.0 / (_CC_N - 1)) * (1 - 2 * _weight_sums)  # Weights on [-1, 1]
 
+# Cache CC reference nodes/weights by node count
+_CC_CACHE = {_CC_N: (_CC_X_REF, _CC_W_REF)}
+
+
+def _get_cc_ref(n_nodes: int) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Return Chebyshev nodes/weights on [-1, 1] for Clenshaw-Curtis quadrature.
+    Uses a small cache keyed by n_nodes for speed.
+    """
+    if n_nodes < 2:
+        raise ValueError("Clenshaw-Curtis requires n_nodes >= 2.")
+    cached = _CC_CACHE.get(n_nodes)
+    if cached is not None:
+        return cached
+    nodes, weights = clenshaw_curtis_nodes(n_nodes, -1.0, 1.0)
+    _CC_CACHE[n_nodes] = (nodes, weights)
+    return nodes, weights
+
 
 # =============================================================================
 # NUMERICAL STABILITY UTILITIES
@@ -1711,7 +1729,10 @@ def oscillatory_kernel_integral_2d(
     k_i: float,
     k_f: float,
     idx_limit: int = -1,
+    idx_limit_r2: Optional[int] = None,
     method: str = "adaptive",
+    n_nodes: int = 5,
+    phase_increment: float = np.pi / 2,
     eta_total: float = 0.0,
     w_grid: Optional[np.ndarray] = None
 ) -> float:
@@ -1737,11 +1758,18 @@ def oscillatory_kernel_integral_2d(
     k_i, k_f : float
         Wave numbers for phase diagnostic.
     idx_limit : int
-        Integration limit index.
+        Integration limit index for r1.
+    idx_limit_r2 : int, optional
+        Integration limit index for r2. If None, uses idx_limit.
     method : str
         "standard": Use simple dot products (fast, may alias).
         "adaptive": Use phase-adaptive integration (slower, accurate).
         "filon": Use Filon/Clenshaw-Curtis for oscillatory r₁ integral.
+        "filon_exchange": Filon/CC on both inner and outer integrals.
+    n_nodes : int
+        Number of CC nodes per phase interval (default 5).
+    phase_increment : float
+        Phase increment per sub-interval (default π/2).
     eta_total : float
         Sum of Sommerfeld parameters (η_i + η_f) for Coulomb phase correction.
     w_grid : np.ndarray, optional
@@ -1755,26 +1783,31 @@ def oscillatory_kernel_integral_2d(
     """
     if idx_limit < 0:
         idx_limit = len(r)
+    if idx_limit_r2 is None or idx_limit_r2 < 0:
+        idx_limit_r2 = len(r)
     
     # ==========================================================================
     # SAFEGUARDS: Input Validation
     # ==========================================================================
-    if idx_limit < 2:
+    if idx_limit < 2 or idx_limit_r2 < 2:
         logger.warning("oscillatory_kernel_integral_2d: idx_limit < 2, returning 0")
         return 0.0
     
     rho1_lim = rho1[:idx_limit].copy()
-    rho2_lim = rho2[:idx_limit].copy()
-    kernel_lim = kernel[:idx_limit, :idx_limit]
-    r_lim = r[:idx_limit]
+    rho2_lim = rho2[:idx_limit_r2].copy()
+    kernel_lim = kernel[:idx_limit, :idx_limit_r2]
+    r1_lim = r[:idx_limit]
+    r2_lim = r[:idx_limit_r2]
     
     # Integration weights for proper ∫dr integration
     # CRITICAL FIX: Without weights, np.dot gives sum, not integral!
     if w_grid is not None:
-        w_lim = w_grid[:idx_limit].copy()
+        w1_lim = w_grid[:idx_limit].copy()
+        w2_lim = w_grid[:idx_limit_r2].copy()
     else:
         # Fallback: unit weights (discrete sum - should be avoided!)
-        w_lim = np.ones(idx_limit)
+        w1_lim = np.ones(idx_limit)
+        w2_lim = np.ones(idx_limit_r2)
     
     # Check for NaN/Inf in inputs
     if not np.all(np.isfinite(rho1_lim)) or not np.all(np.isfinite(rho2_lim)):
@@ -1785,9 +1818,9 @@ def oscillatory_kernel_integral_2d(
     if method == "standard":
         # Fast method with proper integration weights
         # Inner integral: ∫ K(r₁,r₂) × ρ₂(r₂) dr₂
-        int_r2 = np.dot(kernel_lim, rho2_lim * w_lim)
-        # Outer integral: ∫ ρ₁(r₁) × int_r2(r₁) dr₁  
-        result = np.dot(rho1_lim * w_lim, int_r2)
+        int_r2 = np.dot(kernel_lim, rho2_lim * w2_lim)
+        # Outer integral: ∫ ρ₁(r₁) × int_r2(r₁) dr₁
+        result = np.dot(rho1_lim * w1_lim, int_r2)
         
         # SAFEGUARD: Check result
         if not np.isfinite(result):
@@ -1798,12 +1831,12 @@ def oscillatory_kernel_integral_2d(
     elif method == "adaptive":
         # Phase-aware integration for outer integral
         k_total = k_i + k_f
-        max_phase, is_ok, prob_idx = check_phase_sampling(r_lim, k_total)
+        max_phase, is_ok, prob_idx = check_phase_sampling(r1_lim, k_total)
         
         if is_ok:
             # Standard is OK - fully vectorized with weights
-            int_r2 = np.dot(kernel_lim, rho2_lim * w_lim)
-            result = np.dot(rho1_lim * w_lim, int_r2)
+            int_r2 = np.dot(kernel_lim, rho2_lim * w2_lim)
+            result = np.dot(rho1_lim * w1_lim, int_r2)
             
             if not np.isfinite(result):
                 logger.warning("oscillatory_kernel_integral_2d: Non-finite result (is_ok path), returning 0")
@@ -1811,15 +1844,15 @@ def oscillatory_kernel_integral_2d(
             return float(result)
         
         # Log phase undersampling details
-        if prob_idx >= 0 and prob_idx < len(r_lim):
+        if prob_idx >= 0 and prob_idx < len(r1_lim):
             logger.debug(
                 "Phase-adaptive integration: k_total=%.2f, max_phase=%.2f rad at r=%.1f",
-                k_total, max_phase, r_lim[prob_idx]
+                k_total, max_phase, r1_lim[prob_idx]
             )
         
         # Need adaptive treatment for outer integral
         # Inner integral uses weights for r2
-        int_r2 = np.dot(kernel_lim, rho2_lim * w_lim)
+        int_r2 = np.dot(kernel_lim, rho2_lim * w2_lim)
         
         # SAFEGUARD: Check inner integral result
         if not np.all(np.isfinite(int_r2)):
@@ -1830,8 +1863,7 @@ def oscillatory_kernel_integral_2d(
         # Phase check is for diagnostics; integration uses proper weights.
         # ==========================================================================
         
-        # Phase check is still useful for diagnostics
-        dr = np.diff(r_lim)
+        dr = np.diff(r1_lim)
         phase_per_step = k_total * dr
         max_phase_threshold = np.pi / 4
         
@@ -1844,7 +1876,7 @@ def oscillatory_kernel_integral_2d(
             )
         
         # Outer integral with proper weights for r1
-        result = float(np.dot(rho1_lim * w_lim, int_r2))
+        result = float(np.dot(rho1_lim * w1_lim, int_r2))
         
         # SAFEGUARD: Final check
         if not np.isfinite(result):
@@ -1861,7 +1893,7 @@ def oscillatory_kernel_integral_2d(
         # przyrost, a na podprzedziałach użyj węzłów Clenshaw-Curtis"
         #
         # Strategy:
-        # 1. Inner integral (r2): WEIGHTED sum (smooth bound states) - uses w_lim
+        # 1. Inner integral (r2): WEIGHTED sum (smooth bound states) - uses w2_lim
         # 2. Outer integral (r1): Phase-split with CC on sub-intervals
         # ==========================================================================
         
@@ -1869,27 +1901,27 @@ def oscillatory_kernel_integral_2d(
         
         # Inner integral: uses integration weights for proper ∫dr₂
         # int_r2[i] = Σ_j kernel[i,j] × rho2[j] × w[j]
-        int_r2 = np.dot(kernel_lim, rho2_lim * w_lim)
+        int_r2 = np.dot(kernel_lim, rho2_lim * w2_lim)
         
         if not np.all(np.isfinite(int_r2)):
             logger.warning("oscillatory_kernel_integral_2d (filon): NaN/Inf in inner integral")
             int_r2 = np.nan_to_num(int_r2, nan=0.0, posinf=0.0, neginf=0.0)
         
         # Phase-based interval splitting
-        PHASE_INCREMENT = np.pi / 2  # Δφ = π/2 per sub-interval
+        PHASE_INCREMENT = phase_increment
         
         if k_total < 1e-6:
             # Non-oscillatory: standard integration with weights for r₁
-            result = float(np.dot(rho1_lim * w_lim, int_r2))
+            result = float(np.dot(rho1_lim * w1_lim, int_r2))
         else:
             # Generate phase nodes
-            r_start, r_end = r_lim[0], r_lim[-1]
+            r_start, r_end = r1_lim[0], r1_lim[-1]
             phase_nodes = generate_phase_nodes(r_start, r_end, k_total, PHASE_INCREMENT)
             n_intervals = len(phase_nodes) - 1
             
             if n_intervals < 1:
                 # Fallback to standard with weights
-                result = float(np.dot(rho1_lim * w_lim, int_r2))
+                result = float(np.dot(rho1_lim * w1_lim, int_r2))
             else:
                 # =================================================================
                 # VECTORIZED Clenshaw-Curtis integration over phase intervals
@@ -1908,28 +1940,29 @@ def oscillatory_kernel_integral_2d(
                 n_valid = len(a_valid)
                 
                 if n_valid == 0:
-                    result = float(np.dot(rho1_lim * w_lim, int_r2))
+                    result = float(np.dot(rho1_lim * w1_lim, int_r2))
                 else:
-                    # All CC points: shape (n_valid, _CC_N)
+                    # All CC points: shape (n_valid, n_nodes)
                     # r = 0.5 * (b - a) * (x_ref + 1) + a
+                    x_ref, w_ref = _get_cc_ref(n_nodes)
                     half_width = 0.5 * (b_valid - a_valid)  # (n_valid,)
-                    all_r = half_width[:, np.newaxis] * (_CC_X_REF + 1) + a_valid[:, np.newaxis]
+                    all_r = half_width[:, np.newaxis] * (x_ref + 1) + a_valid[:, np.newaxis]
                     
                     # Flatten for interpolation
                     all_r_flat = all_r.ravel()
                     
                     # Interpolate rho1 and int_r2
-                    rho1_interp = np.interp(all_r_flat, r_lim, rho1_lim)
-                    int_r2_interp = np.interp(all_r_flat, r_lim, int_r2)
+                    rho1_interp = np.interp(all_r_flat, r1_lim, rho1_lim)
+                    int_r2_interp = np.interp(all_r_flat, r1_lim, int_r2)
                     
                     # Compute integrand
                     integrand = rho1_interp * int_r2_interp
                     
-                    # Reshape to (n_valid, _CC_N)
-                    integrand = integrand.reshape(n_valid, _CC_N)
+                    # Reshape to (n_valid, n_nodes)
+                    integrand = integrand.reshape(n_valid, n_nodes)
                     
                     # Weights for each interval: w_ref * (b-a)/2
-                    weights_scaled = _CC_W_REF * half_width[:, np.newaxis]  # (n_valid, _CC_N)
+                    weights_scaled = w_ref * half_width[:, np.newaxis]  # (n_valid, n_nodes)
                     
                     # Sum: weighted sum over nodes, then sum over intervals
                     result = float(np.sum(integrand * weights_scaled))
@@ -1955,23 +1988,22 @@ def oscillatory_kernel_integral_2d(
         # ==========================================================================
         
         k_total = k_i + k_f
-        PHASE_INCREMENT = np.pi / 2
-        CC_NODES = 5
+        PHASE_INCREMENT = phase_increment
         
         if k_total < 1e-6:
             # Non-oscillatory: standard integration with weights
-            int_r2 = np.dot(kernel_lim, rho2_lim * w_lim)
-            result = float(np.dot(rho1_lim * w_lim, int_r2))
+            int_r2 = np.dot(kernel_lim, rho2_lim * w2_lim)
+            result = float(np.dot(rho1_lim * w1_lim, int_r2))
         else:
             # Generate phase nodes
-            r_start, r_end = r_lim[0], r_lim[-1]
+            r_start, r_end = r1_lim[0], r1_lim[-1]
             phase_nodes = generate_phase_nodes(r_start, r_end, k_total, PHASE_INCREMENT)
             n_intervals = len(phase_nodes) - 1
             
             if n_intervals < 1:
                 # Fallback to standard with weights
-                int_r2 = np.dot(kernel_lim, rho2_lim * w_lim)
-                result = float(np.dot(rho1_lim * w_lim, int_r2))
+                int_r2 = np.dot(kernel_lim, rho2_lim * w2_lim)
+                result = float(np.dot(rho1_lim * w1_lim, int_r2))
             else:
                 # Use cached reference CC nodes and weights from module level
                 
@@ -1984,11 +2016,12 @@ def oscillatory_kernel_integral_2d(
                 n_valid = len(a_valid)
                 
                 if n_valid == 0:
-                    int_r2 = np.dot(kernel_lim, rho2_lim * w_lim)
-                    result = float(np.dot(rho1_lim * w_lim, int_r2))
+                    int_r2 = np.dot(kernel_lim, rho2_lim * w2_lim)
+                    result = float(np.dot(rho1_lim * w1_lim, int_r2))
                 else:
                     half_width = 0.5 * (b_valid - a_valid)
-                    all_r = half_width[:, np.newaxis] * (_CC_X_REF + 1) + a_valid[:, np.newaxis]
+                    x_ref, w_ref = _get_cc_ref(n_nodes)
+                    all_r = half_width[:, np.newaxis] * (x_ref + 1) + a_valid[:, np.newaxis]
                     all_r_flat = all_r.ravel()
                     
                     # =========================================================
@@ -1997,24 +2030,24 @@ def oscillatory_kernel_integral_2d(
                     # For each r1, compute ∫ K(r1, r2) × rho2(r2) dr2 using CC
                     # 
                     # Interpolate kernel and rho2 at CC nodes
-                    rho2_interp = np.interp(all_r_flat, r_lim, rho2_lim)
-                    rho2_cc = rho2_interp.reshape(n_valid, CC_NODES)
+                    rho2_interp = np.interp(all_r_flat, r2_lim, rho2_lim)
+                    rho2_cc = rho2_interp.reshape(n_valid, n_nodes)
                     
                     # For kernel, we need K(r1, r2_cc) for each r1
                     # kernel_lim has shape (n_r1, n_r2)
                     # We need to interpolate along the r2 axis for each r1
-                    n_r1 = len(r_lim)
+                    n_r1 = len(r1_lim)
                     n_r2_cc = len(all_r_flat)
                     
                     # VECTORIZED kernel interpolation using linear indexing
                     # Find interpolation indices and weights
-                    idx_right = np.searchsorted(r_lim, all_r_flat)
-                    idx_right = np.clip(idx_right, 1, len(r_lim) - 1)
+                    idx_right = np.searchsorted(r2_lim, all_r_flat)
+                    idx_right = np.clip(idx_right, 1, len(r2_lim) - 1)
                     idx_left = idx_right - 1
                     
                     # Interpolation weights
-                    r_left = r_lim[idx_left]
-                    r_right = r_lim[idx_right]
+                    r_left = r2_lim[idx_left]
+                    r_right = r2_lim[idx_right]
                     weight_right = (all_r_flat - r_left) / (r_right - r_left + 1e-30)
                     weight_left = 1.0 - weight_right
                     
@@ -2023,15 +2056,15 @@ def oscillatory_kernel_integral_2d(
                     kernel_right = kernel_lim[:, idx_right]  # (n_r1, n_r2_cc)
                     kernel_at_cc = kernel_left * weight_left + kernel_right * weight_right
                     
-                    # Reshape to (n_r1, n_valid, _CC_N)
-                    kernel_interp = kernel_at_cc.reshape(n_r1, n_valid, _CC_N)
+                    # Reshape to (n_r1, n_valid, n_nodes)
+                    kernel_interp = kernel_at_cc.reshape(n_r1, n_valid, n_nodes)
                     
                     # Integrand for inner: kernel(r1, r2) * rho2(r2)
-                    # Shape: kernel_interp (n_r1, n_valid, CC_NODES) * rho2_cc (n_valid, CC_NODES)
+                    # Shape: kernel_interp (n_r1, n_valid, n_nodes) * rho2_cc (n_valid, n_nodes)
                     inner_integrand = kernel_interp * rho2_cc[np.newaxis, :, :]
                     
                     # Weights: _CC_W_REF * half_width for each interval
-                    weights_2d = _CC_W_REF * half_width[:, np.newaxis]  # (n_valid, _CC_N)
+                    weights_2d = w_ref * half_width[:, np.newaxis]  # (n_valid, n_nodes)
                     
                     # Sum over CC nodes and intervals to get int_r2(r1)
                     # Result shape: (n_r1,)
@@ -2041,12 +2074,12 @@ def oscillatory_kernel_integral_2d(
                     # OUTER INTEGRAL with CC
                     # =========================================================
                     # Interpolate rho1 and int_r2_cc at CC nodes
-                    rho1_interp = np.interp(all_r_flat, r_lim, rho1_lim)
-                    int_r2_outer = np.interp(all_r_flat, r_lim, int_r2_cc)
+                    rho1_interp = np.interp(all_r_flat, r1_lim, rho1_lim)
+                    int_r2_outer = np.interp(all_r_flat, r1_lim, int_r2_cc)
                     
                     # Compute outer integrand
                     outer_integrand = rho1_interp * int_r2_outer
-                    outer_integrand = outer_integrand.reshape(n_valid, CC_NODES)
+                    outer_integrand = outer_integrand.reshape(n_valid, n_nodes)
                     
                     # Sum with weights
                     result = float(np.sum(outer_integrand * weights_2d))

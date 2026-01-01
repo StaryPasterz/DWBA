@@ -149,7 +149,7 @@ class IonizationResult:
 
 
 def _auto_L_max(k_i_au: float, L_requested: int, r_max: float = 200.0,
-                L_cap: int = 100) -> int:
+                L_cap: int = 100, L_floor: int = 3) -> int:
     """
     Auto-scale projectile L_max using classical turning point physics.
 
@@ -166,11 +166,15 @@ def _auto_L_max(k_i_au: float, L_requested: int, r_max: float = 200.0,
         Maximum radius of computational grid.
     L_cap : int
         Hard upper limit.
+    L_floor : int
+        Minimum L_max to ensure s-, p-, and d-wave contributions are included.
+        This prevents L_max=0 at very low energies near threshold.
+        Default: 3 (includes l=0,1,2,3 partial waves).
         
     Returns
     -------
     int
-        Safe L_max respecting turning point constraint.
+        Safe L_max respecting turning point constraint and minimum floor.
     """
     # Physics-based turning point limit
     L_turning = compute_safe_L_max(k_i_au, r_max, safety_factor=2.5)
@@ -183,7 +187,9 @@ def _auto_L_max(k_i_au: float, L_requested: int, r_max: float = 200.0,
     L_max_proj = min(L_max_proj, L_turning)
     L_max_proj = min(L_max_proj, L_cap)
     
-    return max(L_max_proj, 0)
+    # Ensure minimum floor for low-energy threshold behavior
+    # At very low energies, k → 0, but we still need at least L_floor partial waves
+    return max(L_max_proj, L_floor)
 
 
 # ============================================================================
