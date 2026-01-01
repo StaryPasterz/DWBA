@@ -94,6 +94,47 @@ def check_cupy_runtime() -> bool:
         print(f"[Warning] GPU initialization failed: {e}")
         return False
 
+
+def _compute_optimal_block_size(n_grid: int, gpu_memory_threshold: float = 0.7) -> int:
+    """
+    Compute optimal block size based on available GPU memory.
+    
+    Strategy: Each block requires n_grid × block_size × 8 bytes per matrix.
+    During block computation we need ~4 intermediate matrices.
+    
+    Parameters
+    ----------
+    n_grid : int
+        Number of grid points (rows in block matrix).
+    gpu_memory_threshold : float
+        Fraction of free GPU memory to use (default 0.7).
+        
+    Returns
+    -------
+    int
+        Optimal block size that fits in available memory, clamped to [512, 16384].
+    """
+    if not HAS_CUPY:
+        return 2048
+    
+    try:
+        free_mem, total_mem = cp.cuda.Device().mem_info
+        usable_mem = free_mem * gpu_memory_threshold
+        
+        # Each block: (n_grid, block_size) matrix × 8 bytes × 4 matrices
+        bytes_per_column = n_grid * 8 * 4
+        max_block = int(usable_mem / bytes_per_column) if bytes_per_column > 0 else 8192
+        
+        # Clamp to reasonable range [512, 16384], align to 512
+        block = max(512, min(max_block, 16384))
+        block = (block // 512) * 512
+        
+        logger.debug("GPU auto-tune: free=%.1f GB, computed block_size=%d", free_mem / 1e9, block)
+        return block
+    except Exception as e:
+        logger.debug("GPU memory query failed: %s. Using default block size.", e)
+        return 2048  # Safe fallback
+
 @dataclass(frozen=True)
 class RadialDWBAIntegrals:
     """
@@ -778,7 +819,7 @@ def radial_ME_all_L_gpu(
     # Additional parameters
     CC_nodes: int = 5,
     phase_increment: float = 1.5708,
-    gpu_block_size: int = 2048,
+    gpu_block_size: int = 0,  # 0 = auto-tune based on VRAM
     min_grid_fraction: float = 0.10,
     k_threshold: float = 0.5,
     gpu_memory_mode: str = "auto",
@@ -787,14 +828,16 @@ def radial_ME_all_L_gpu(
     """
     GPU Accelerated Version of radial_ME_all_L using CuPy.
 
-    Architecture (v2.3+):
+    Architecture (v2.4+):
     -------------------
     1. **Hybrid Memory Strategy**: By default (gpu_memory_mode="auto"), checks available
        GPU memory before deciding between full matrix (fast) or block-wise (safe).
        - "full": Forces full N×N matrix construction (fastest, may cause OOM)
        - "block": Forces block-wise construction (slower, constant memory)
        - "auto": Uses memory check + exception fallback
-    2. **Full-Grid Parity**: The inner integral (r2) for both direct and 
+    2. **Auto-tuning Block Size**: When gpu_block_size=0, computes optimal block size
+       based on available GPU memory. Set explicit value to override.
+    3. **Full-Grid Parity**: The inner integral (r2) for both direct and 
        exchange terms is computed over the full grid range [0, R_max], 
        ensuring mathematical parity with the CPU "Full-Split" implementation.
     3. **Multipole Moments**: Asymptotic coefficients M_L are computed using 
@@ -915,6 +958,10 @@ def radial_ME_all_L_gpu(
     
     if not use_filon and not use_block_wise:
         # FAST PATH: Build full kernel matrix once, reuse for all L
+        # Free memory pool before large allocation
+        cp.get_default_memory_pool().free_all_blocks()
+        gc.collect()
+        
         try:
             r_col = r_gpu[:, None]
             r_row = r_gpu[None, :]
@@ -988,7 +1035,8 @@ def radial_ME_all_L_gpu(
             rho2_eff_full = (u_f_full_gpu * u_i_full_gpu) * w_full_gpu
             int_r2_dir = cp.zeros(idx_limit, dtype=float)
             
-            BLOCK_SIZE = gpu_block_size
+            # Auto-tune block size or use explicit value
+            BLOCK_SIZE = gpu_block_size if gpu_block_size > 0 else _compute_optimal_block_size(idx_limit, gpu_memory_threshold)
             r_col = r_gpu[:, None]
             r_row_full = r_full_gpu[None, :]
             for start in range(0, N_grid, BLOCK_SIZE):

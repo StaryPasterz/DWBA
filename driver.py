@@ -96,10 +96,11 @@ OSCILLATORY_CONFIG = {
     "phase_increment": 1.5708,
     "min_grid_fraction": 0.1,
     "k_threshold": 0.5,
-    "gpu_block_size": 8192,
+    # GPU block size: 0 = auto-tune based on VRAM, >0 = explicit size
+    "gpu_block_size": 0,
     # GPU memory strategy: "auto" (check memory), "full" (force full matrix), "block" (force block-wise)
     "gpu_memory_mode": "auto",
-    # Memory threshold for auto mode: fraction of free GPU memory that matrix can use
+    # Memory threshold for auto mode: fraction of free GPU memory to use
     "gpu_memory_threshold": 0.7
 }
 

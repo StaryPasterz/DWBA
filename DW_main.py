@@ -463,6 +463,71 @@ def save_results(filename, new_data_dict):
         json.dump(current, f, indent=2)
     print(f"\n[INFO] Results saved to {filename}")
 
+
+# --- Configuration File Discovery ---
+
+def discover_config_files() -> list:
+    """
+    Find all .yaml config files in current directory and examples/.
+    Excludes template files.
+    """
+    configs = glob.glob("*.yaml") + glob.glob("examples/*.yaml")
+    # Filter out templates
+    configs = [c for c in configs if "template" not in c.lower()]
+    return sorted(configs)
+
+
+def prompt_use_config_file(calc_type: str = "excitation") -> str | None:
+    """
+    Ask user if they want to use an existing config file.
+    
+    Parameters
+    ----------
+    calc_type : str
+        "excitation" or "ionization" - filters relevant configs
+        
+    Returns
+    -------
+    str or None
+        Path to selected config file, or None to continue interactively.
+    """
+    from config_loader import load_config
+    
+    configs = discover_config_files()
+    if not configs:
+        return None
+    
+    # Load and filter configs (single load per file)
+    valid_configs = []  # List of (path, config_object)
+    for cfg_path in configs:
+        try:
+            config = load_config(cfg_path)
+            if config.calculation_type == calc_type:
+                valid_configs.append((cfg_path, config))
+        except Exception as e:
+            logger.debug("Failed to load config %s: %s", cfg_path, e)
+            # Don't include invalid configs
+    
+    if not valid_configs:
+        return None
+    
+    # Clean UI display
+    print_subheader("Configuration Files")
+    for i, (path, cfg) in enumerate(valid_configs, 1):
+        # Compact display: path and key info
+        state_info = f"{cfg.states.initial.n}{['s','p','d','f'][min(cfg.states.initial.l, 3)]}"
+        if calc_type == "excitation":
+            state_info += f"→{cfg.states.final.n}{['s','p','d','f'][min(cfg.states.final.l, 3)]}"
+        print(f"  {i}. {cfg.run_name} ({cfg.target.atom} {state_info}) - {path}")
+    print(f"  {len(valid_configs)+1}. Configure interactively")
+    
+    choice = input(f"\n  Select [1-{len(valid_configs)+1}, default={len(valid_configs)+1}]: ").strip()
+    
+    if choice.isdigit() and 1 <= int(choice) <= len(valid_configs):
+        return valid_configs[int(choice)-1][0]
+    
+    return None
+
 def check_file_exists_warning(filename):
     """
     Warn the user if the output file already exists.
@@ -489,6 +554,15 @@ def run_scan_excitation(run_name):
         return
 
     print_header("EXCITATION CALCULATION")
+    
+    # --- Check for existing config files ---
+    config_path = prompt_use_config_file("excitation")
+    if config_path:
+        print_info(f"Using config file: {config_path}")
+        run_from_config(config_path, verbose=False)
+        return
+    
+    # --- Continue with interactive mode ---
     atom_entry = select_target()
     Z = atom_entry.Z
       
@@ -799,6 +873,15 @@ def run_scan_ionization(run_name):
         return
 
     print("\n=== IONIZATION CALCULATION ===")
+    
+    # --- Check for existing config files ---
+    config_path = prompt_use_config_file("ionization")
+    if config_path:
+        print_info(f"Using config file: {config_path}")
+        run_from_config(config_path, verbose=False)
+        return
+    
+    # --- Continue with interactive mode ---
     atom_entry = select_target()
     Z = atom_entry.Z
     print(f"Selected Target: {atom_entry.name} (Z={Z})")
@@ -1283,23 +1366,7 @@ def run_from_config(config_path: str, verbose: bool = False) -> None:
     
     # Run calculation
     if config.calculation_type == "excitation":
-        # Compute threshold
-        from bound_states import solve_bound_states
-        from grid import make_r_grid
-        from potential_core import V_core_on_grid
-        
-        grid = make_r_grid(r_min=1e-5, r_max=params['grid']['r_max'], 
-                          n_points=params['grid']['n_points'])
-        V_core = V_core_on_grid(grid, core_params)
-        
-        states_i = solve_bound_states(grid, V_core, l=li, n_states_max=ni-li+1)
-        states_f = solve_bound_states(grid, V_core, l=lf, n_states_max=nf-lf+1)
-        
-        E_i_au = states_i[ni-li-1].energy_au if len(states_i) > ni-li-1 else 0
-        E_f_au = states_f[nf-lf-1].energy_au if len(states_f) > nf-lf-1 else 0
-        threshold_eV = (E_f_au - E_i_au) / ev_to_au(1.0)
-        
-        print(f"  Threshold: {threshold_eV:.2f} eV")
+        from driver import prepare_target, compute_excitation_cs_precalc
         
         # Build spec
         spec = ExcitationChannelSpec(
@@ -1311,180 +1378,253 @@ def run_from_config(config_path: str, verbose: bool = False) -> None:
             L_max_projectile=params['excitation']['L_max_projectile']
         )
         
-        # Helper for transition class
+        # --- Pre-calculate static target properties (single grid/bound-state computation) ---
+        print("  Pre-calculating static target properties...", end=" ", flush=True)
+        use_pol = (config.physics_model == "polarization")
+        
+        prep = prepare_target(
+            chan=spec,
+            core_params=core_params,
+            use_polarization=use_pol,
+            r_max=params['grid']['r_max'],
+            n_points=params['grid']['n_points']
+        )
+        print("done")
+        
+        # Get threshold and binding energies from prep (no duplicate calculation)
+        threshold_eV = prep.dE_target_eV
+        E_f_au = prep.orb_f.energy_au  # For TongModel
+        
+        print(f"  Threshold: {threshold_eV:.2f} eV")
+        
+        # Transition class for calibration
         delta_l = abs(lf - li)
         t_class = "dipole" if delta_l == 1 else "non_dipole"
+        
+        # Filter energies below threshold
+        energies = [E for E in energy_grid if E > threshold_eV]
+        if not energies:
+            print_error("All energies are below threshold!")
+            return
+            
+        print(f"  Grid: {len(energies)} points above threshold")
 
-        # Initialize calibrator correctly
-        calibrator = None
+        # --- Initialize calibrator ---
+        alpha = 1.0
+        tong_model = TongModel(threshold_eV, E_f_au, transition_class=t_class)
+        
         if config.output.calibrate:
+            # Run Pilot Calculation for Alpha Matching
+            pilot_E = params['excitation']['pilot_energy_eV']
+            print(f"  Running pilot at {pilot_E:.0f} eV for calibration...", end=" ", flush=True)
+            
             try:
-                # E_f_au is the binding energy of the excited state (negative)
-                calibrator = TongModel(
-                    dE_target_eV=threshold_eV,
-                    epsilon_exc_au=E_f_au,
-                    transition_class=t_class
-                )
-                
-                # Run Pilot Calculation for Alpha Matching
-                pilot_E = params['excitation']['pilot_energy_eV']
-                print(f"  Running pilot at {pilot_E:.0f} eV for calibration...", end=" ", flush=True)
-                
-                pilot_res = compute_total_excitation_cs(
-                    pilot_E, spec, core_params,
-                    r_max=params['grid']['r_max'],
-                    n_points=params['grid']['n_points'],
-                    n_theta=params['excitation']['n_theta']
-                )
-                
-                alpha = calibrator.calibrate_alpha(pilot_E, pilot_res.sigma_total_cm2)
+                pilot_res = compute_excitation_cs_precalc(pilot_E, prep, n_theta=params['excitation']['n_theta'])
+                alpha = tong_model.calibrate_alpha(pilot_E, pilot_res.sigma_total_cm2)
                 print(f"done. α = {alpha:.3f}")
-                
             except Exception as e:
                 print(f"failed ({e}). Using default α=1.0")
-                if calibrator is None:
-                     # Fallback initialization if it failed before init
-                     calibrator = TongModel(threshold_eV, E_f_au, transition_class=t_class)
 
+        # --- Build metadata (same as interactive) ---
+        n_theta = params['excitation']['n_theta']
+        run_meta = {
+            "model": "static+polarization" if use_pol else "static",
+            "use_polarization": use_pol,
+            "grid": {
+                "r_min": float(prep.grid.r[0]),
+                "r_max": float(prep.grid.r[-1]),
+                "n_points": len(prep.grid.r),
+            },
+            "numerics": {
+                "L_max_integrals": spec.L_max_integrals,
+                "L_max_projectile_base": spec.L_max_projectile,
+                "n_theta": n_theta,
+            },
+            "calibration": {
+                "alpha": alpha,
+                "transition_class": t_class,
+                "pilot_energy_eV": params['excitation']['pilot_energy_eV'],
+                "threshold_eV": threshold_eV,
+            },
+        }
+
+        # --- Build result key (same format as interactive) ---
+        key = f"{config.target.atom}_{ni}{['s','p','d','f','g','h'][li]}-{nf}{['s','p','d','f','g','h'][lf]}"
+        filename = f"results_{run_name}_exc.json"
+
+        # --- Main calculation loop (same as interactive) ---
+        print_subheader(f"Calculation: {len(energies)} points")
+        print("  " + "-" * 45)
+        print(f"  {'Energy':>10}  │  {'Cross Section':>15}")
+        print("  " + "-" * 45)
+        
         results = []
-        for i, E_eV in enumerate(energy_grid):
-            if E_eV <= threshold_eV:
-                print(f"  [{i+1}/{len(energy_grid)}] {E_eV:.2f} eV - Below threshold, skipping")
-                continue
-            
-            print(f"  [{i+1}/{len(energy_grid)}] {E_eV:.2f} eV...", end=" ", flush=True)
-            
-            try:
-                res = compute_total_excitation_cs(
-                    E_eV, spec, core_params,
-                    r_max=params['grid']['r_max'],
-                    n_points=params['grid']['n_points'],
-                    n_theta=params['excitation']['n_theta']
-                )
-                
-                # Apply calibration
-                calibrated_cm2 = res.sigma_total_cm2
-                C_tong = 1.0
-                if calibrator:
-                    C_tong = calibrator.get_calibration_factor(E_eV, res.sigma_total_cm2)
-                    calibrated_cm2 = res.sigma_total_cm2 * C_tong
-                
-                print(f"σ = {calibrated_cm2:.3e} cm² [C={C_tong:.3f}]")
-                
-                results.append({
-                    "E_eV": E_eV,
-                    "sigma_cm2": res.sigma_total_cm2,
-                    "sigma_calibrated_cm2": calibrated_cm2,
-                    "C_tong": C_tong
-                })
-                
-            except Exception as e:
-                print(f"Error: {e}")
-                logger.exception("Calculation failed at E=%.2f eV", E_eV)
-        
-        # Save results
-        output_file = f"results_{run_name}_exc.json"
-        save_results(output_file, {
-            "run_name": run_name,
-            "config_file": config_path,
-            "calculation_type": "excitation",
-            "target": config.target.atom,
-            "initial_state": {"n": ni, "l": li},
-            "final_state": {"n": nf, "l": lf},
-            "threshold_eV": threshold_eV,
-            "results": results
-        })
-        
-        print(f"\n  ✓ Results saved to: {output_file}")
+        try:
+            for E in energies:
+                try:
+                    res = compute_excitation_cs_precalc(E, prep, n_theta=n_theta)
+                    
+                    # Calibration factor
+                    try:
+                        tong_sigma = tong_model.calculate_sigma_cm2(E)
+                        cal_factor = 1.0
+                        if res.sigma_total_cm2 > 0 and tong_model.is_calibrated:
+                            cal_factor = tong_sigma / res.sigma_total_cm2
+                    except Exception:
+                        tong_sigma = 0.0
+                        cal_factor = 1.0
+                    
+                    print_result(E, res.sigma_total_cm2, extra=f"[C(E)={cal_factor:.3f}]")
+                    
+                    # DCS data (if available)
+                    dcs_raw_au = None
+                    dcs_cal_au = None
+                    theta_deg = None
+                    if res.dcs_au is not None and res.theta_deg is not None:
+                        theta_deg = res.theta_deg.tolist() if hasattr(res.theta_deg, "tolist") else list(res.theta_deg)
+                        dcs_raw_au = res.dcs_au.tolist() if hasattr(res.dcs_au, "tolist") else list(res.dcs_au)
+                        dcs_cal_au = (res.dcs_au * cal_factor).tolist()
+
+                    # Result entry (IDENTICAL format to interactive)
+                    results.append({
+                        "energy_eV": E,
+                        "sigma_au": res.sigma_total_au,
+                        "sigma_cm2": res.sigma_total_cm2,
+                        "sigma_mtong_cm2": tong_sigma,
+                        "calibration_alpha": alpha,
+                        "calibration_factor": cal_factor,
+                        "theta_deg": theta_deg,
+                        "dcs_au_raw": dcs_raw_au,
+                        "dcs_au_calibrated": dcs_cal_au,
+                        "partial_waves": res.partial_waves,
+                        "meta": run_meta
+                    })
+                    
+                except Exception as e:
+                    print_error(f"{E:.2f} eV: {e}")
+
+        except KeyboardInterrupt:
+            print()
+            print_warning(f"Interrupted - saving {len(results)} points...")
+            save_results(filename, {key: results})
+            print_success("Partial results saved")
+            return
+
+        print("  " + "-" * 45)
+        save_results(filename, {key: results})
+        print_success(f"Complete: {len(results)} points saved")
         
     elif config.calculation_type == "ionization":
         # Build ionization spec
         ion_spec = IonizationChannelSpec(
-            l_initial=li,
-            n_initial_radial=ni - li,
+            l_i=li,
+            n_index_i=ni - li,
+            N_equiv=1,
             l_eject_max=params['ionization']['l_eject_max'],
             L_max=params['ionization']['L_max'],
-            L_max_projectile=params['ionization']['L_max_projectile'],
-            N_equiv=2
+            L_i_total=li,
+            L_max_projectile=params['ionization']['L_max_projectile']
         )
         
-        # Get ionization threshold
+        # Get ionization threshold (reuse grid from prepare_target pattern)
         from bound_states import solve_bound_states
         from grid import make_r_grid
         from potential_core import V_core_on_grid
+        from driver import prepare_target
         
-        grid = make_r_grid(r_min=1e-5, r_max=params['grid']['r_max'], 
-                          n_points=params['grid']['n_points'])
-        V_core = V_core_on_grid(grid, core_params)
-        states = solve_bound_states(grid, V_core, l=li, n_states_max=ni-li+1)
-        E_bind_au = states[ni-li-1].energy_au if len(states) > ni-li-1 else -0.5
+        # Pre-calculate target properties
+        print("  Pre-calculating static target properties...", end=" ", flush=True)
+        use_pol = (config.physics_model == "polarization")
+        
+        # Create a dummy excitation spec for prepare_target
+        tmp_chan = ExcitationChannelSpec(
+            l_i=li, l_f=li+1 if li < 3 else li, 
+            n_index_i=ni-li, n_index_f=ni-li+1,
+            N_equiv=1, L_max_integrals=10, 
+            L_target_i=li, L_target_f=li+1 if li < 3 else li
+        )
+        
+        prep = prepare_target(
+            chan=tmp_chan,
+            core_params=core_params,
+            use_polarization=use_pol,
+            r_max=params['grid']['r_max'],
+            n_points=params['grid']['n_points']
+        )
+        print("done")
+        
+        # Get threshold from prep
+        E_bind_au = prep.orb_i.energy_au
         threshold_eV = abs(E_bind_au) / ev_to_au(1.0)
         
         print(f"  Ionization potential: {threshold_eV:.2f} eV")
         
+        # Filter energies
+        energies = [E for E in energy_grid if E > threshold_eV]
+        if not energies:
+            print_error("All energies are below ionization threshold!")
+            return
+        
+        print(f"  Grid: {len(energies)} points above threshold")
+        
+        # Build result key (same format as interactive)
+        key = f"Ionization_Z{core_params.Zc:.0f}_{config.target.atom}_n{ni}l{li}"
+        filename = f"results_{run_name}_ion.json"
+        
+        # Main calculation loop
+        print_subheader(f"Calculation: {len(energies)} points")
+        print("  " + "-" * 45)
+        print(f"  {'Energy':>10}  │  {'Cross Section':>15}")
+        print("  " + "-" * 45)
+        
         results = []
-        for i, E_eV in enumerate(energy_grid):
-            if E_eV <= threshold_eV:
-                print(f"  [{i+1}/{len(energy_grid)}] {E_eV:.2f} eV - Below threshold, skipping")
-                continue
-            
-            print(f"  [{i+1}/{len(energy_grid)}] {E_eV:.2f} eV...", end=" ", flush=True)
-            
-            try:
-                ion_res = compute_ionization_cs(
-                    E_eV, ion_spec, core_params,
-                    r_max=params['grid']['r_max'],
-                    n_points=params['grid']['n_points'],
-                    n_ej_steps=params['ionization']['n_energy_steps']
-                )
-                
-                print(f"σ = {ion_res.sigma_total_cm2:.3e} cm²")
-                
-                results.append({
-                    "E_eV": E_eV,
-                    "sigma_cm2": ion_res.sigma_total_cm2,
-                    "sigma_au": ion_res.sigma_total_au
-                })
-                
-            except Exception as e:
-                print(f"Error: {e}")
-                logger.exception("Calculation failed at E=%.2f eV", E_eV)
-        
-        # Save results
-        output_file = f"results_{run_name}_ion.json"
-        save_results(output_file, {
-            "run_name": run_name,
-            "config_file": config_path,
-            "calculation_type": "ionization",
-            "target": config.target.atom,
-            "initial_state": {"n": ni, "l": li},
-            "threshold_eV": threshold_eV,
-            "results": results
-        })
-        
-        print(f"\n  ✓ Results saved to: {output_file}")
+        try:
+            for E in energies:
+                try:
+                    ion_res = compute_ionization_cs(
+                        E, ion_spec, core_params,
+                        r_max=params['grid']['r_max'],
+                        n_points=params['grid']['n_points'],
+                        use_polarization=use_pol,
+                        n_energy_steps=params['ionization']['n_energy_steps'],
+                        _precalc_grid=prep.grid,
+                        _precalc_V_core=prep.V_core,
+                        _precalc_orb_i=prep.orb_i
+                    )
+                    
+                    print_result(E, ion_res.sigma_total_cm2)
+                    
+                    # Result entry (IDENTICAL format to interactive)
+                    results.append({
+                        "energy_eV": E,
+                        "sigma_au": ion_res.sigma_total_au,
+                        "sigma_cm2": ion_res.sigma_total_cm2,
+                        "IP_eV": ion_res.IP_eV,
+                        "sdcs": ion_res.sdcs_data,
+                        "tdcs": ion_res.tdcs_data,
+                        "partial_waves": ion_res.partial_waves,
+                        "meta": ion_res.metadata or {}
+                    })
+                    
+                except Exception as e:
+                    print_error(f"{E:.2f} eV: {e}")
+                    logger.exception("Calculation failed at E=%.2f eV", E)
+
+        except KeyboardInterrupt:
+            print()
+            print_warning(f"Interrupted - saving {len(results)} points...")
+            save_results(filename, {key: results})
+            print_success("Partial results saved")
+            return
+
+        print("  " + "-" * 45)
+        save_results(filename, {key: results})
+        print_success(f"Complete: {len(results)} points saved")
     
     print(f"\n{'═'*50}")
     print(f"  BATCH COMPLETE: {run_name}")
     print(f"{'═'*50}\n")
 
-
-def save_results(filename: str, data: dict) -> None:
-    """Save or merge results to JSON file."""
-    if os.path.exists(filename):
-        with open(filename, 'r') as f:
-            existing = json.load(f)
-        # Merge results
-        if "results" in existing and "results" in data:
-            existing_energies = {r["E_eV"] for r in existing["results"]}
-            for r in data["results"]:
-                if r["E_eV"] not in existing_energies:
-                    existing["results"].append(r)
-            existing["results"].sort(key=lambda x: x["E_eV"])
-            data = existing
-    
-    with open(filename, 'w') as f:
-        json.dump(data, f, indent=2)
 
 
 def parse_cli_args():

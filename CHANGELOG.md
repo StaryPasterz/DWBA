@@ -8,6 +8,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Batch/Interactive Unification — Refinement
+
+**Files**: `DW_main.py`
+
+**Code Quality Improvements**:
+- `prompt_use_config_file`: Single load per config file, proper error logging, invalid configs excluded
+- Cleaner config selection UI: `run_name (Atom state) - path`  
+- Both excitation and ionization batch now use `prepare_target` optimization
+- **Excitation**: Eliminated duplicate grid/bound-state calculations — threshold extracted from `prep.dE_target_eV`
+- **Ionization**: Uses `prep.orb_i` for threshold, identical JSON format with `energy_eV`, `IP_eV`, `sdcs`, `tdcs`, `partial_waves`, `meta`
+- Keyboard interrupt saves partial results in both modes
+
+### GPU Memory Auto-tuning
+
+**Files**: `dwba_matrix_elements.py`, `driver.py`
+
+- **Auto-tuning block size**: `gpu_block_size=0` (new default) computes optimal size based on available VRAM
+- Explicit value overrides auto-tune (e.g., `gpu_block_size=4096`)
+- Memory pool cleanup (`cp.get_default_memory_pool().free_all_blocks()`) before large kernel allocations
+- `_compute_optimal_block_size()`: Estimates max block that fits in `threshold × free_mem`
+
 ---
 
 ### Edit_64 — `7227310` — 2026-01-01

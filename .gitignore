@@ -4,6 +4,6 @@ __pycache__/
 .vscode/
 .idea/
 *.png
-results_*.json
-scan_results.json
-*.yaml
+#results_*.json
+#scan_results.json
+#*.yaml

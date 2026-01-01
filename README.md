@@ -154,6 +154,8 @@ oscillatory:
 
 See `examples/` directory for complete templates.
 
+**Config File Discovery**: When starting an excitation or ionization calculation interactively, the program will prompt to use existing `.yaml` config files if found.
+
 ### Excitation Scan
 - Select target from `atoms.json` or enter custom parameters
 - Configure initial/final states (n, l)
@@ -213,11 +215,11 @@ When prompted, enter:
 **Oscillatory Method Selection**: When editing parameters, choose from:
 1. **legacy** - Clenshaw-Curtis quadrature (fastest)
 2. **advanced** - CC + Levin/Filon tail correction (balanced, default)
-3. **full_split** - Full I_in/I_out domain separation (most accurate)
+3. **full_split** - I_in with standard quadrature on [0, r_m], I_out via oscillatory tail (most accurate)
 
 **GPU Memory Strategy**: Controls how GPU kernel matrices are constructed:
 1. **auto** - Checks available GPU memory; uses full matrix if sufficient, otherwise block-wise (recommended)
-2. **full** - Forces full N×N matrix construction (fastest, may cause OOM on large grids)
+2. **full** - Forces full N×N matrix construction (fastest; falls back to block-wise on OOM)
 3. **block** - Forces block-wise construction (slowest, constant memory usage)
 
 Outputs: `results_<run>_exc.json`, `results_<run>_ion.json` in project root. Excitation entries include angular grids (`theta_deg`) and both raw/calibrated DCS in a.u. for later plotting. Ionization entries include SDCS data and optional TDCS entries (`angles_deg`, `values`).

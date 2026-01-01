@@ -1,0 +1,54 @@
+# DWBA Excitation Calculation Configuration
+# Example: Hydrogen 1s → 2s excitation
+
+run_name: "H_1s2s_example"
+
+calculation:
+  type: "excitation"
+
+target:
+  atom: "H"           # Hydrogen - pure Coulomb potential
+
+states:
+  initial:
+    n: 1
+    l: 0              # 1s state
+  final:
+    n: 2
+    l: 0              # 2s state
+
+physics:
+  model: "static"     # Static DWBA (recommended)
+
+energy:
+  type: "log"         # Logarithmic grid (dense near threshold)
+  start_eV: 10.2      # Just above threshold (10.2 eV for H 1s→2s)
+  end_eV: 300.0       # Upper energy limit
+  density: 0.5        # Grid density (0.5 = sparser, 1.0 = normal)
+
+grid:
+  r_max: 200
+  n_points: 3000
+  r_max_scale_factor: 2.5
+  n_points_max: 8000
+
+excitation:
+  L_max_integrals: 15
+  L_max_projectile: 5
+  n_theta: 200
+  pilot_energy_eV: 1000
+
+oscillatory:
+  method: "advanced"
+  CC_nodes: 5
+  phase_increment: 1.5708
+  min_grid_fraction: 0.1
+  k_threshold: 0.5
+  gpu_block_size: 8192
+  gpu_memory_mode: "auto"
+  gpu_memory_threshold: 0.7
+
+output:
+  save_dcs: true
+  save_partial: true
+  calibrate: true
