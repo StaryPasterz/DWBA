@@ -98,6 +98,7 @@ class OscillatoryConfig:
     gpu_block_size: Union[int, str] = "auto"  # "auto" or explicit int
     gpu_memory_mode: Literal["auto", "full", "block"] = "auto"
     gpu_memory_threshold: float = 0.7
+    n_workers: Union[int, str] = "auto"  # "auto" or explicit int count
 
 @dataclass
 class OutputConfig:
@@ -304,7 +305,8 @@ def load_config(path: Union[str, Path]) -> DWBAConfig:
             k_threshold=osc.get('k_threshold', 0.5),
             gpu_block_size=_parse_gpu_block_size(osc.get('gpu_block_size', 'auto')),
             gpu_memory_mode=osc.get('gpu_memory_mode', 'auto'),
-            gpu_memory_threshold=osc.get('gpu_memory_threshold', 0.7)
+            gpu_memory_threshold=osc.get('gpu_memory_threshold', 0.7),
+            n_workers=osc.get('n_workers', 'auto')
         )
     
     # Output
@@ -418,6 +420,7 @@ def config_to_params_dict(config: DWBAConfig) -> Dict[str, Dict[str, Any]]:
             'gpu_block_size': config.oscillatory.gpu_block_size,
             'gpu_memory_mode': config.oscillatory.gpu_memory_mode,
             'gpu_memory_threshold': config.oscillatory.gpu_memory_threshold,
+            'n_workers': config.oscillatory.n_workers,
         },
     }
 
@@ -486,6 +489,7 @@ oscillatory:
   gpu_block_size: \"auto\"        # \"auto\" = auto-tune, int = explicit size
   gpu_memory_mode: "auto"     # "auto", "full", "block"
   gpu_memory_threshold: 0.7
+  n_workers: "auto"           # "auto" = auto-detect (up to 8 CPUs), int = explicit count
 
 output:
   save_dcs: true

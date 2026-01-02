@@ -8,14 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
-### Output Directory Structure — Clean Repository
+### Edit_69 — Output Organization & Tooling Improvements (`a0ec9a8`)
+
+Major refactoring of output file organization and enhancement of analysis tools.
+
+#### Output Directory Structure
 
 **Files**: `output_utils.py` (NEW), `DW_main.py`, `plotter.py`, `partial_wave_plotter.py`
 
-All output files (JSON results, PNG plots) now saved to the `results/` directory:
-- `results/results_{run_name}_exc.json` — Excitation cross sections
-- `results/results_{run_name}_ion.json` — Ionization cross sections
-- `results/plot_*.png` — All generated plots
+All output files now saved to dedicated directories:
+- `results/` — Calculation results (JSON) and plots (PNG)
+- `fited_potentials/` — Fitted potential plots
 
 **New Module**: `output_utils.py`
 - `get_results_dir()` — Returns results/ path, creates if needed
@@ -26,27 +29,93 @@ All output files (JSON results, PNG plots) now saved to the `results/` directory
 
 **Backward Compatibility**: `load_results()` checks both `results/` and root directory.
 
----
+#### Partial Wave Analysis Tool Rewrite
 
-### Wigner Symbol Cache Scaling
+**Files**: `partial_wave_plotter.py`
+
+- **Interactive file selection** — Menu displays available result files from `results/`
+- **Run/transition selection** — Choose which transition to analyze
+- **Configurable L_max** — Set how many partial waves to display
+- **L_90% convergence analysis** — Shows L value at which sum reaches 90% of total
+- **New plot: L_90% vs Energy** — Convergence requirements vs energy
+- **Summary statistics** — Energy range, max L, σ_total
+
+#### Visualization Functions Update
+
+**Files**: `DW_main.py`
+
+- `run_visualization()` and `run_dcs_visualization()` now search `results/` directory
+- Use `find_result_files()` for consistent file discovery
+- Output path display: `results/results_{run}_exc.json`
+
+#### Fit Potential Output
+
+**Files**: `fit_potential.py`
+
+- Plots saved to `fited_potentials/fit_{atom_name}.png`
+- Directory created automatically
+- Added logging
+
+#### Wigner Symbol Cache Scaling
 
 **Files**: `dwba_coupling.py`
 
-Improved Wigner 3j/6j and Clebsch-Gordan coefficient caching:
-- Default cache size increased from 10k → 50k entries
-- New `scale_wigner_cache(L_max)` function for dynamic scaling:
-  - L_max ≤ 20: 50,000 entries
-  - L_max 21–50: 200,000 entries
-  - L_max 51–100: 500,000 entries
-  - L_max > 100: 1,000,000 entries
-- `clear_wigner_caches()` for memory management
-- `get_wigner_cache_stats()` for performance diagnostics
+- Default cache size: 10k → 50k entries
+- `scale_wigner_cache(L_max)` for dynamic scaling (up to 1M entries for L_max > 100)
+- `clear_wigner_caches()` and `get_wigner_cache_stats()` utilities
 
-### GPU Cleanup Fix
+---
+
+### Edit_70 — GPU/Multiprocessing Optimization
+
+Major improvements to GPU and CPU multiprocessing configuration and consistency.
+
+#### Configurable CPU Worker Count
+
+**Files**: `driver.py`, `ionization.py`, `config_loader.py`
+
+New `n_workers` configuration parameter:
+- `n_workers: "auto"` — Auto-detect (uses `min(cpu_count, 8)`)
+- `n_workers: N` — Explicit count (capped at cpu_count)
+
+**New Helper**: `get_worker_count()` in `driver.py`
+- Returns configured or auto-detected worker count
+- Used by both excitation and ionization CPU paths
+
+#### Ionization GPU Config Passthrough
+
+**Files**: `ionization.py`
+
+- GPU calls now receive full `OSCILLATORY_CONFIG` parameters
+- Includes: method, CC_nodes, phase_increment, k_threshold, gpu_memory_mode
+- CPU CPU path also uses consistent config
+- Worker count uses `get_worker_count()` instead of `os.cpu_count()`
+
+#### Fixed CPU Worker Count
+
+**Files**: `driver.py`
+
+- Removed hardcoded `max_workers = 4`
+- Now uses `get_worker_count()` from global config
+- Batch size scales with worker count
+
+#### Configuration Updates
+
+**Files**: `examples/config_excitation.yaml`, `examples/config_ionization.yaml`
+
+Added `n_workers` to oscillatory section in example configs:
+```yaml
+oscillatory:
+  n_workers: "auto"  # "auto" = auto-detect (up to 8 CPUs), >0 = explicit count
+```
+
+---
+
+#### GPU Cleanup Fix
 
 **Files**: `dwba_matrix_elements.py`
 
-Fixed `NameError` in GPU cleanup code (line 1252) that attempted to delete non-existent `ratio` variable. Added proper existence checks for all GPU arrays before deletion.
+Fixed `NameError` in GPU cleanup code — added existence checks for GPU arrays before deletion.
 
 ---
 

@@ -1086,7 +1086,12 @@ def radial_ME_all_L_gpu(
     I_L_exc: Dict[int, float] = {}
 
     # Block size for block-wise computation (only used if needed)
-    BLOCK_SIZE = gpu_block_size if gpu_block_size > 0 else _compute_optimal_block_size(idx_limit, gpu_memory_threshold)
+    # Handle string "auto" or int values
+    try:
+        block_size_int = int(gpu_block_size) if gpu_block_size != "auto" else 0
+    except (ValueError, TypeError):
+        block_size_int = 0
+    BLOCK_SIZE = block_size_int if block_size_int > 0 else _compute_optimal_block_size(idx_limit, gpu_memory_threshold)
     
     # Precompute rho2_eff_full ONCE before L-loop (optimization: was computed per-L)
     rho2_eff_full = (u_f_full_gpu * u_i_full_gpu) * w_full_gpu if use_filon else None

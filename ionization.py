@@ -78,8 +78,8 @@ from bound_states import (
     solve_bound_states,
     BoundOrbital,
 )
-# Reuse precompute logic from driver (assumed available/compatible)
-from driver import precompute_continuum_waves
+# Reuse precompute logic and config from driver
+from driver import precompute_continuum_waves, OSCILLATORY_CONFIG, get_worker_count
 from continuum import (
     solve_continuum_wave,
     ContinuumWave,
@@ -385,14 +385,29 @@ def _compute_sdcs_at_energy(
                         grid, V_core, U_inc_obj.U_of_r,
                         bound_i=orb_i, bound_f=chi_eject, 
                         cont_i=chi_i, cont_f=chi_scatt_wave,
-                        L_max=chan.L_max
+                        L_max=chan.L_max,
+                        use_oscillatory_quadrature=True,
+                        oscillatory_method=OSCILLATORY_CONFIG["method"],
+                        CC_nodes=OSCILLATORY_CONFIG["CC_nodes"],
+                        phase_increment=OSCILLATORY_CONFIG["phase_increment"],
+                        gpu_block_size=OSCILLATORY_CONFIG["gpu_block_size"],
+                        min_grid_fraction=OSCILLATORY_CONFIG["min_grid_fraction"],
+                        k_threshold=OSCILLATORY_CONFIG["k_threshold"],
+                        gpu_memory_mode=OSCILLATORY_CONFIG["gpu_memory_mode"],
+                        gpu_memory_threshold=OSCILLATORY_CONFIG["gpu_memory_threshold"]
                     )
                 else:
                     integrals = radial_ME_all_L(
                         grid, V_core, U_inc_obj.U_of_r,
                         bound_i=orb_i, bound_f=chi_eject, 
                         cont_i=chi_i, cont_f=chi_scatt_wave,
-                        L_max=chan.L_max
+                        L_max=chan.L_max,
+                        use_oscillatory_quadrature=True,
+                        oscillatory_method=OSCILLATORY_CONFIG["method"],
+                        CC_nodes=OSCILLATORY_CONFIG["CC_nodes"],
+                        phase_increment=OSCILLATORY_CONFIG["phase_increment"],
+                        min_grid_fraction=OSCILLATORY_CONFIG["min_grid_fraction"],
+                        k_threshold=OSCILLATORY_CONFIG["k_threshold"]
                     )
 
                 # Accumulate angle-integrated coefficients over magnetic substates
@@ -782,7 +797,7 @@ def compute_ionization_cs(
     else:
         # CPU path: Parallel execution across energy points
         if n_workers is None:
-            n_workers = os.cpu_count() or 1
+            n_workers = get_worker_count()  # Use global config
         
         logger.info("Mode: CPU Parallel (Workers=%d)", n_workers)
         

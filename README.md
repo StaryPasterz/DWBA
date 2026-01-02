@@ -111,10 +111,19 @@ python DW_main.py
 Menu:
 1. Excitation Cross Sections
 2. Ionization Cross Sections
-3. Generate Plots
-4. Partial Wave Analysis
-5. Fit Potential (new atom)
-6. Change Run Name
+3. Total Cross Sections Plots
+4. Angular DCS Plots
+5. Partial Wave Analysis
+6. Fit Potential (new atom)
+7. Change Run Name
+
+### Output Directory Structure
+
+All output files are organized in dedicated directories:
+- `results/` — Calculation results (JSON) and plots (PNG)
+- `fited_potentials/` — Fitted potential plots from potential fitting tool
+
+The directories are created automatically on first use.
 
 ### Batch Mode (Config File)
 
@@ -182,6 +191,31 @@ See `examples/` directory for complete templates.
 - Polarization option is heuristic and not part of the article DWBA.
 - **k_threshold**: When k_total > 0.5 a.u., specialized Filon/Levin oscillatory quadrature is used; below this threshold, standard Simpson integration is faster and sufficiently accurate.
 
+### Plotting Results
+
+Generate plots from calculation results:
+```bash
+python plotter.py [style] [results_file.json]
+```
+
+Styles: `std` (eV/cm²), `atomic` (Ha/a₀²), `article` (E/E_thr), `ev_au`, `dcs`
+
+### Partial Wave Analysis (`partial_wave_plotter.py`)
+
+Interactive tool for analyzing partial wave contributions:
+```bash
+python partial_wave_plotter.py
+```
+
+Features:
+- **File selection** — Choose from available result files in `results/`
+- **Convergence analysis** — Cumulative sum vs L across energies
+- **L_90% indicator** — Shows L value at which sum reaches 90% of total
+- **Energy dependence** — Partial cross sections σ_L(E) for selected waves
+- **Distribution plots** — Bar chart of contributions at specific energy
+- **Summary statistics** — Energy range, max L, total cross sections
+
+
 ### Centralized Default Parameters
 
 All numerical defaults are organized by category and displayed before calculation:
@@ -210,6 +244,7 @@ All numerical defaults are organized by category and displayed before calculatio
   │  gpu_block_size         = auto
   │  gpu_memory_mode        = "auto"
   │  gpu_memory_threshold   = 0.7
+  │  n_workers              = auto
   └────────────────────────────────────
 ```
 
@@ -272,6 +307,9 @@ When prompted, enter:
 | | | • **full**: Force full matrix construction (fastest, may OOM) |
 | | | • **block**: Force block-wise (slowest, constant memory) |
 | `gpu_memory_threshold` | 0.7 | Maximum fraction of free GPU memory to use for matrix allocation. |
+| `n_workers` | "auto" | CPU worker count for multiprocessing: |
+| | | • **auto**: Auto-detect (`min(cpu_count, 8)`) |
+| | | • **N**: Explicit count (capped at cpu_count) |
 
 ### GPU Computation Modes
 

@@ -101,7 +101,9 @@ OSCILLATORY_CONFIG = {
     # GPU memory strategy: "auto" (check memory), "full" (force full matrix), "block" (force block-wise)
     "gpu_memory_mode": "auto",
     # Memory threshold for auto mode: fraction of free GPU memory to use
-    "gpu_memory_threshold": 0.7
+    "gpu_memory_threshold": 0.7,
+    # CPU worker count: "auto" = auto-detect (min(cpu_count, 8)), int > 0 = explicit count
+    "n_workers": "auto"
 }
 
 def set_oscillatory_config(config_dict: dict):
@@ -122,6 +124,34 @@ def set_oscillatory_method(method: OscillatoryMethod):
     OSCILLATORY_CONFIG["method"] = method
     logger.info("Oscillatory method set to: %s", method)
 
+
+def get_worker_count() -> int:
+    """
+    Get number of CPU workers from config, with auto-detection.
+    
+    Returns
+    -------
+    int
+        Number of workers: 
+        - If n_workers is "auto" or 0: min(cpu_count, 8) for balanced performance
+        - If n_workers > 0: exact value (capped at cpu_count)
+    """
+    n_workers_raw = OSCILLATORY_CONFIG.get("n_workers", "auto")
+    cpu_count = os.cpu_count() or 4
+    
+    # Handle "auto" string or 0 as auto-detect
+    if n_workers_raw == "auto" or n_workers_raw == 0:
+        return min(cpu_count, 8)
+    
+    # Explicit int value
+    try:
+        n_workers = int(n_workers_raw)
+        if n_workers > 0:
+            return min(n_workers, cpu_count)
+        else:
+            return min(cpu_count, 8)
+    except (ValueError, TypeError):
+        return min(cpu_count, 8)
 
 
 @dataclass(frozen=True)
@@ -688,15 +718,15 @@ def compute_total_excitation_cs(
         
         # Strategy: Submit batches of 10 l_i. Check after each batch.
         import multiprocessing
-        # Limit workers to prevent memory exhaustion
-        max_workers = 4 
-        if max_workers is None: max_workers = 1
+        # Use configured worker count (auto-detected or explicit)
+        max_workers = get_worker_count()
+        logger.debug("Using %d CPU workers", max_workers)
         
         sigma_accumulated = 0.0
         consecutive_small_changes = 0
         convergence_threshold = 1e-5
         
-        # Batch size
+        # Batch size proportional to workers
         batch_size = max(max_workers * 2, 10)
         
         current_l = 0

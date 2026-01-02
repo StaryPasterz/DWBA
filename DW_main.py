@@ -111,6 +111,7 @@ DEFAULTS = {
         "gpu_block_size": "auto",     # "auto" = auto-tune based on VRAM, int = explicit size
         "gpu_memory_mode": "auto",    # "auto" / "full" / "block" - GPU matrix strategy
         "gpu_memory_threshold": 0.7,  # Max fraction of GPU memory to use (for auto mode)
+        "n_workers": "auto",          # "auto" = auto-detect (up to 8 CPUs), int = explicit count
     },
     
     # --- Energy Grid ---
