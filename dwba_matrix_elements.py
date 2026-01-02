@@ -1247,9 +1247,16 @@ def radial_ME_all_L_gpu(
                 
         I_L_exc[L] = I_ex
         
-    # Cleanup big arrays (only exist in non-Filon mode)
-    if not use_filon:
-        del inv_gtr, ratio, log_ratio
+    # Cleanup big arrays (only if they exist and weren't already deleted)
+    # Note: These may have been deleted earlier in block-wise paths
+    if 'inv_gtr' in locals() and inv_gtr is not None:
+        del inv_gtr
+    if 'log_ratio' in locals() and log_ratio is not None:
+        del log_ratio
+    if 'filon_inv_gtr' in locals() and filon_inv_gtr is not None:
+        del filon_inv_gtr
+    if 'filon_log_ratio' in locals() and filon_log_ratio is not None:
+        del filon_log_ratio
     cp.get_default_memory_pool().free_all_blocks()
 
     return RadialDWBAIntegrals(I_L_direct=I_L_dir, I_L_exchange=I_L_exc)

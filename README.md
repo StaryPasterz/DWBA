@@ -45,14 +45,19 @@ DW_antigravity_v2/
 ├── calibration.py          # Tong model implementation
 ├── potential_core.py       # SAE core potential V(r)
 ├── grid.py                 # Radial grid and quadrature
+├── output_utils.py         # Centralized output path management
 ├── atom_library.py         # Atom database interface
 ├── atoms.json              # SAE parameters for atoms/ions
 ├── nist_data.json          # NIST reference energies
 ├── fit_potential.py        # Potential parameter fitting tool
 ├── plotter.py              # Result plotting utility
+├── partial_wave_plotter.py # Partial wave analysis plotter
 ├── logging_config.py       # Centralized logging
 ├── debug.py                # Health checks and diagnostics
 ├── article.md              # Reference paper (theory)
+├── results/                # All output files (auto-created)
+│   ├── results_*.json      # Calculation results
+│   └── plot_*.png          # Generated plots
 └── README.md               # This file
 ```
 

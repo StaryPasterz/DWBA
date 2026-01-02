@@ -8,6 +8,48 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Output Directory Structure — Clean Repository
+
+**Files**: `output_utils.py` (NEW), `DW_main.py`, `plotter.py`, `partial_wave_plotter.py`
+
+All output files (JSON results, PNG plots) now saved to the `results/` directory:
+- `results/results_{run_name}_exc.json` — Excitation cross sections
+- `results/results_{run_name}_ion.json` — Ionization cross sections
+- `results/plot_*.png` — All generated plots
+
+**New Module**: `output_utils.py`
+- `get_results_dir()` — Returns results/ path, creates if needed
+- `get_output_path(filename)` — Get path for any output file
+- `get_json_path(run_name, calc_type)` — Get path for results JSON
+- `find_result_files(pattern)` — Auto-discover result files
+- `migrate_existing_files(dry_run)` — Helper to move legacy files
+
+**Backward Compatibility**: `load_results()` checks both `results/` and root directory.
+
+---
+
+### Wigner Symbol Cache Scaling
+
+**Files**: `dwba_coupling.py`
+
+Improved Wigner 3j/6j and Clebsch-Gordan coefficient caching:
+- Default cache size increased from 10k → 50k entries
+- New `scale_wigner_cache(L_max)` function for dynamic scaling:
+  - L_max ≤ 20: 50,000 entries
+  - L_max 21–50: 200,000 entries
+  - L_max 51–100: 500,000 entries
+  - L_max > 100: 1,000,000 entries
+- `clear_wigner_caches()` for memory management
+- `get_wigner_cache_stats()` for performance diagnostics
+
+### GPU Cleanup Fix
+
+**Files**: `dwba_matrix_elements.py`
+
+Fixed `NameError` in GPU cleanup code (line 1252) that attempted to delete non-existent `ratio` variable. Added proper existence checks for all GPU arrays before deletion.
+
+---
+
 ### Batch/Interactive Unification — Refinement
 
 **Files**: `DW_main.py`

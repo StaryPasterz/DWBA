@@ -1,12 +1,20 @@
 # plotter.py
 #
 # Universal DWBA Results Plotter.
-# Reads scan_results.json and generates high-quality plots.
+# Reads results JSON from results/ directory and generates high-quality plots.
 #
 # Features:
 #   - Styles (std/atomic/article)
 #   - Left Axis: Cross Sections (DWBA & DWBA+Tong)
 #   - Right Axis: Calibration/Normalization Factor (Twin Axis)
+#   - All plots saved to results/ directory
+#
+# Usage:
+#   python plotter.py [style] [input_file]
+#   
+#   Examples:
+#     python plotter.py std results/results_H2s_exc.json
+#     python plotter.py dcs results/results_He+2p_exc.json
 #
 
 import matplotlib.pyplot as plt
@@ -15,20 +23,33 @@ import numpy as np
 import sys
 import math
 import os
+from pathlib import Path
 
-RESULTS_FILE = "scan_results.json"
+from output_utils import get_output_path, get_results_dir, find_result_files
 
 # Constants
 AU_TO_EV = 27.211386245988
 A0_SQ_CM2 = 2.8002852e-17
 PI_A0_SQ_CM2 = np.pi * A0_SQ_CM2
 
+
 def load_data(filename):
-    if not os.path.exists(filename):
-        print(f"File {filename} not found.")
-        return {}
-    with open(filename, "r") as f:
+    """Load data from JSON file, checking results/ directory first."""
+    filepath = Path(filename)
+    
+    # If file doesn't exist, try results/ directory
+    if not filepath.exists():
+        results_path = get_results_dir() / filepath.name
+        if results_path.exists():
+            filepath = results_path
+        else:
+            print(f"File {filename} not found.")
+            print(f"Also checked: {results_path}")
+            return {}
+    
+    with open(filepath, "r") as f:
         return json.load(f)
+
 
 def get_style_config(style_name):
     # Returns (conv_E, conv_S, xlabel, ylabel, suffix)
@@ -58,15 +79,27 @@ def get_style_config(style_name):
         sig_conv = lambda s: s
         return ev_conv, sig_conv, "Incident Energy [eV]", r"Cross Section [$cm^2$]", "_std"
 
+
 def main():
     style = 'std'
-    input_file = RESULTS_FILE
+    input_file = None
     
     # Parse arguments: [script, style, input_file]
     if len(sys.argv) > 1:
         style = sys.argv[1]
     if len(sys.argv) > 2:
         input_file = sys.argv[2]
+    
+    # Auto-discover input file if not specified
+    if input_file is None:
+        result_files = find_result_files("results_*.json")
+        if result_files:
+            input_file = str(result_files[-1])  # Use most recent
+            print(f"Auto-selected: {input_file}")
+        else:
+            print("No results files found in results/ directory.")
+            print("Usage: python plotter.py [style] [input_file]")
+            return
     
     print(f"Generating plots with style: {style}")
     print(f"Reading from: {input_file}")
@@ -122,7 +155,7 @@ def main():
                             filtered.append(entry)
                     if filtered:
                         dcs_entries = filtered
-                except:
+                except ValueError:
                     pass  # Use all if parsing fails
             
             # Use colormap for different energies
@@ -256,7 +289,7 @@ def main():
         
     plt.tight_layout()
     
-    # Derive output filename
+    # Derive output filename and save to results/ directory
     # e.g. results_run1_exc.json -> plot_run1_exc_std.png
     base = os.path.splitext(os.path.basename(input_file))[0]
     
@@ -267,8 +300,10 @@ def main():
         base = f"plot_{base}"
         
     out_name = f"{base}{suffix}.png"
-    plt.savefig(out_name, dpi=150)
-    print(f"Saved {out_name}")
+    out_path = get_output_path(out_name)
+    plt.savefig(out_path, dpi=150)
+    print(f"Saved {out_path}")
+
 
 if __name__ == "__main__":
     main()

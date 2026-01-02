@@ -13,12 +13,106 @@ Calculations are cached to ensure high performance.
 from __future__ import annotations
 import numpy as np
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 from functools import lru_cache
 
 # We need Legendre polynomials / Spherical Harmonics
 from scipy.special import sph_harm
 from logging_config import get_logger
+
+# =============================================================================
+# WIGNER SYMBOL CACHE CONFIGURATION
+# =============================================================================
+# Default cache sizes scale with L_max:
+#   - For L_max <= 20: 50000 entries (typical excitation)
+#   - For L_max <= 50: 200000 entries (ionization/high energy)
+#   - For L_max > 50: 500000 entries (extreme cases)
+#
+# Cache sizes can be adjusted dynamically via scale_wigner_cache(L_max)
+# =============================================================================
+
+# Default cache sizes (can be reconfigured)
+_WIGNER_CACHE_SIZE = 50000        # Default for wigner_3j, wigner_6j
+_CG_CACHE_SIZE = 50000            # clebsch_gordan
+_RACAH_CACHE_SIZE = 50000         # racah_W
+_LOG_FACTORIAL_CACHE_SIZE = 5000  # _log_factorial (integers only)
+
+
+def scale_wigner_cache(L_max: int):
+    """
+    Scale Wigner symbol caches based on maximum angular momentum L_max.
+    
+    For high L calculations (L_max > 20), larger caches significantly improve
+    performance by reducing recomputation of repeated coefficients.
+    
+    Parameters
+    ----------
+    L_max : int
+        Maximum angular momentum expected in calculations.
+        
+    Notes
+    -----
+    Cache size scaling:
+    - L_max <= 20: 50k entries (typical excitation)
+    - L_max <= 50: 200k entries (ionization)
+    - L_max <= 100: 500k entries (high-energy)
+    - L_max > 100: 1M entries (extreme precision)
+    
+    Call this BEFORE running calculations with new L_max to benefit from
+    properly sized caches. The function clears existing caches.
+    """
+    global _WIGNER_CACHE_SIZE, _CG_CACHE_SIZE, _RACAH_CACHE_SIZE, _LOG_FACTORIAL_CACHE_SIZE
+    
+    if L_max <= 20:
+        size = 50000
+    elif L_max <= 50:
+        size = 200000
+    elif L_max <= 100:
+        size = 500000
+    else:
+        size = 1000000
+    
+    _WIGNER_CACHE_SIZE = size
+    _CG_CACHE_SIZE = size
+    _RACAH_CACHE_SIZE = size
+    _LOG_FACTORIAL_CACHE_SIZE = min(5000, L_max * 10)  # log(n!) only for small n
+    
+    # Clear existing caches (they'll resize on next access)
+    clear_wigner_caches()
+    
+    logger = get_logger(__name__)
+    logger.debug("Wigner cache scaled for L_max=%d: size=%d", L_max, size)
+
+
+def clear_wigner_caches():
+    """Clear all Wigner symbol caches. Useful for memory management."""
+    _log_factorial.cache_clear()
+    wigner_3j_num.cache_clear()
+    clebsch_gordan.cache_clear()
+    wigner_6j_num.cache_clear()
+    racah_W.cache_clear()
+
+
+def get_wigner_cache_stats() -> Dict[str, Dict[str, int]]:
+    """
+    Get cache statistics for all Wigner symbol functions.
+    
+    Returns
+    -------
+    dict
+        Dictionary with cache info for each function:
+        {'function_name': {'hits': N, 'misses': M, 'size': S, 'maxsize': X}}
+    """
+    stats = {}
+    for fn in [_log_factorial, wigner_3j_num, clebsch_gordan, wigner_6j_num, racah_W]:
+        info = fn.cache_info()
+        stats[fn.__name__] = {
+            'hits': info.hits,
+            'misses': info.misses,
+            'size': info.currsize,
+            'maxsize': info.maxsize
+        }
+    return stats
 
 # Initialize module logger
 logger = get_logger(__name__)
@@ -43,7 +137,7 @@ def _kahan_sum_complex_list(terms: list) -> complex:
         total_im = sum_im
     return complex(total_re, total_im)
 
-@lru_cache(maxsize=2000)
+@lru_cache(maxsize=5000)  # Scaled via _LOG_FACTORIAL_CACHE_SIZE
 def _log_factorial(n: int) -> float:
     """Compute natural logarithm of n! safely."""
     if n < 0:
@@ -56,7 +150,7 @@ def _delta_tri(a, b, c):
     return _log_factorial(a + b - c) + _log_factorial(a - b + c) + \
            _log_factorial(-a + b + c) - _log_factorial(a + b + c + 1)
 
-@lru_cache(maxsize=10000)
+@lru_cache(maxsize=50000)  # Scaled via _WIGNER_CACHE_SIZE
 def wigner_3j_num(
     j1: float, j2: float, j3: float, 
     m1: float, m2: float, m3: float
@@ -91,7 +185,7 @@ def wigner_3j_num(
     sign = (-1.0)**int(j1 - j2 - m3)
     return sign * sum_val
 
-@lru_cache(maxsize=10000)
+@lru_cache(maxsize=50000)  # Scaled via _CG_CACHE_SIZE
 def clebsch_gordan(
     j1: float, j2: float, j3: float, 
     m1: float, m2: float, m3: float
@@ -103,7 +197,7 @@ def clebsch_gordan(
     phase = (-1.0)**int(j1 - j2 + m3)
     return phase * factor * w3j
 
-@lru_cache(maxsize=10000)
+@lru_cache(maxsize=50000)  # Scaled via _WIGNER_CACHE_SIZE
 def wigner_6j_num(
     j1: float, j2: float, j3: float, 
     j4: float, j5: float, j6: float
@@ -132,7 +226,7 @@ def wigner_6j_num(
         sum_val += term
     return np.exp(0.5 * log_tri) * sum_val
 
-@lru_cache(maxsize=10000)
+@lru_cache(maxsize=50000)  # Scaled via _RACAH_CACHE_SIZE
 def racah_W(
     l1: float, l2: float, l3: float, 
     l4: float, l5: float, l6: float

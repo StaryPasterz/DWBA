@@ -15,7 +15,12 @@ Main Features
 
 Output
 ------
-Results are saved to JSON files: 'results_[RUN_NAME]_[exc|ion].json'
+All results and plots are saved to the `results/` directory:
+    results/results_[RUN_NAME]_exc.json - Excitation cross sections
+    results/results_[RUN_NAME]_ion.json - Ionization cross sections
+    results/plot_*.png - Generated visualization plots
+
+The results/ directory is created automatically if it doesn't exist.
 
 Usage
 -----
@@ -59,6 +64,7 @@ from potential_core import CorePotentialParams
 import atom_library
 # import plotter  <-- Moved to local functions to avoid multiprocessing overhead
 from calibration import TongModel
+from output_utils import get_results_dir, get_output_path, get_json_path, find_result_files
 from logging_config import get_logger
 
 # Initialize logger for debug messages
@@ -445,26 +451,66 @@ def get_energy_list_interactive():
 def load_results(filename):
     """
     Load existing results from a JSON file.
+    
+    Checks both results/ directory and root for backward compatibility.
     Returns an empty dict if file does not exist or is corrupt.
+    
+    Parameters
+    ----------
+    filename : str
+        Filename (may or may not include 'results/' prefix).
     """
+    from pathlib import Path
+    
+    # Normalize filename (remove any existing results/ prefix)
+    base_name = Path(filename).name
+    
+    # Check results/ directory first (preferred location)
+    results_path = get_results_dir() / base_name
+    if results_path.exists():
+        try:
+            with open(results_path, "r") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    
+    # Fallback: check root directory for backward compatibility
     if os.path.exists(filename):
         try:
             with open(filename, "r") as f:
                 return json.load(f)
-        except:
+        except Exception:
             return {}
+    
     return {}
 
 def save_results(filename, new_data_dict):
     """
-    Update and save results to JSON.
+    Update and save results to JSON in the results/ directory.
+    
     Merges new_data_dict into existing data (by key) to prevent data loss.
+    Creates the results/ directory if it doesn't exist.
+    
+    Parameters
+    ----------
+    filename : str
+        Filename (will be saved to results/ directory).
+    new_data_dict : dict
+        New data to merge into existing results.
     """
-    current = load_results(filename)
+    from pathlib import Path
+    
+    # Ensure we save to results/ directory
+    base_name = Path(filename).name
+    output_path = get_output_path(base_name)
+    
+    # Load existing data (checks both locations)
+    current = load_results(base_name)
     current.update(new_data_dict)
-    with open(filename, "w") as f:
+    
+    with open(output_path, "w") as f:
         json.dump(current, f, indent=2)
-    print(f"\n[INFO] Results saved to {filename}")
+    print(f"\n[INFO] Results saved to {output_path}")
 
 
 # --- Configuration File Discovery ---
@@ -1098,10 +1144,10 @@ def run_scan_ionization(run_name):
 def run_visualization():
     print("\n=== PLOT GENERATION ===")
     
-    # List JSON files
-    files = glob.glob("*.json")
+    # List JSON files from results/ and root (backward compatibility)
+    files = find_result_files("results_*.json")
     if not files:
-        print("No .json result files found in current directory.")
+        print("No result files found in results/ directory.")
         return
         
     print("Available Result Files:")
@@ -1118,7 +1164,7 @@ def run_visualization():
     if choice_idx < 0 or choice_idx >= len(files):
         return
         
-    selected_file = files[choice_idx]
+    selected_file = str(files[choice_idx])  # Convert Path to string
     
     print("\nSelect Style:")
     print("1. Standard (eV / cm^2)")
@@ -1155,9 +1201,10 @@ def run_visualization():
 def run_dcs_visualization():
     print("\n=== ANGULAR DCS PLOT GENERATION ===")
     
-    files = glob.glob("*.json")
+    # List JSON files from results/ and root (backward compatibility)
+    files = find_result_files("results_*.json")
     if not files:
-        print("No .json result files found in current directory.")
+        print("No result files found in results/ directory.")
         return
         
     print("Available Result Files:")
@@ -1174,7 +1221,7 @@ def run_dcs_visualization():
     if choice_idx < 0 or choice_idx >= len(files):
         return
         
-    selected_file = files[choice_idx]
+    selected_file = str(files[choice_idx])  # Convert Path to string
     
     # Load file to show available energies
     try:
@@ -1234,7 +1281,7 @@ def main():
         run_name = "default"
     
     print_info(f"Run: {run_name}")
-    print_info(f"Output: results_{run_name}_exc.json / _ion.json")
+    print_info(f"Output: results/results_{run_name}_exc.json / _ion.json")
 
     while True:
         print_subheader(f"Main Menu  │  Run: {run_name}")

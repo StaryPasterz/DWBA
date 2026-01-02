@@ -496,6 +496,7 @@ def main():
     # Optional plot
     try:
         import matplotlib.pyplot as plt
+        from pathlib import Path
         
         V = V_core_on_grid(grid, CorePotentialParams(Zc, *best_params))
         r = grid.r
@@ -523,11 +524,17 @@ def main():
         plt.grid(True)
         
         plt.tight_layout()
-        plt.savefig(f"fit_{name}.png", dpi=150)
-        print(f"[INFO] Plot saved: fit_{name}.png")
         
-    except Exception:
-        pass
+        # Save to fited_potentials/ directory
+        output_dir = Path("fited_potentials")
+        output_dir.mkdir(exist_ok=True)
+        output_path = output_dir / f"fit_{name}.png"
+        plt.savefig(output_path, dpi=150)
+        logger.info("Plot saved: %s", output_path)
+        print(f"[INFO] Plot saved: {output_path}")
+        
+    except Exception as e:
+        logger.debug("Plot generation failed: %s", e)
 
 
 if __name__ == "__main__":
