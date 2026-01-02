@@ -197,13 +197,13 @@ All numerical defaults are organized by category and displayed before calculatio
   └────────────────────────────────────
 
   ┌─ OSCILLATORY ──────────────────────
-  │  oscillatory_method     = "advanced"  # "legacy" / "advanced" / "full_split"
+  │  method                 = "advanced"
   │  CC_nodes               = 5
   │  phase_increment        = 1.571
   │  min_grid_fraction      = 0.1
   │  k_threshold            = 0.5
-  │  gpu_block_size         = 8192
-  │  gpu_memory_mode        = "auto"      # "auto" / "full" / "block"
+  │  gpu_block_size         = auto
+  │  gpu_memory_mode        = "auto"
   │  gpu_memory_threshold   = 0.7
   └────────────────────────────────────
 ```
@@ -211,16 +211,77 @@ All numerical defaults are organized by category and displayed before calculatio
 When prompted, enter:
 - **Y** (or Enter): Use all defaults unchanged
 - **n**: Edit any parameter individually
+- **d**: Display parameter details before deciding
 
-**Oscillatory Method Selection**: When editing parameters, choose from:
-1. **legacy** - Clenshaw-Curtis quadrature (fastest)
-2. **advanced** - CC + Levin/Filon tail correction (balanced, default)
-3. **full_split** - I_in with standard quadrature on [0, r_m], I_out via oscillatory tail (most accurate)
+---
 
-**GPU Memory Strategy**: Controls how GPU kernel matrices are constructed:
-1. **auto** - Checks available GPU memory; uses full matrix if sufficient, otherwise block-wise (recommended)
-2. **full** - Forces full N×N matrix construction (fastest; falls back to block-wise on OOM)
-3. **block** - Forces block-wise construction (slowest, constant memory usage)
+## Parameter Reference
+
+### Grid Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `r_max` | 200 a.u. | Maximum radius of radial grid. Automatically scaled based on projectile wavelength. |
+| `n_points` | 3000 | Base number of radial grid points. Uses exponential spacing for efficiency. |
+| `r_max_scale_factor` | 2.5 | Multiplier for adaptive r_max scaling: `r_max = factor × max(classical_turning_point, wavelength)` |
+| `n_points_max` | 10000 | Maximum allowed grid points (limits memory usage for high-energy calculations). |
+
+### Excitation Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `L_max_integrals` | 15 | Maximum multipole order L for radial Coulomb integrals. Higher values improve accuracy for monopole/dipole/quadrupole coupling. Convergence is typically achieved at L=10-20. |
+| `L_max_projectile` | 5 | Maximum angular momentum for projectile partial waves (initial/final). Automatically increased based on classical turning point at runtime. |
+| `n_theta` | 200 | Number of scattering angle points for DCS calculation (0°-180°). |
+| `pilot_energy_eV` | 1000 | Reference energy for pre-calculating convergence parameters. |
+
+### Ionization Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `l_eject_max` | 3 | Maximum angular momentum of ejected electron (0=s, 1=p, 2=d, 3=f). |
+| `L_max` | 15 | Maximum multipole order for ionization integrals. |
+| `L_max_projectile` | 50 | Maximum projectile angular momentum (ionization requires more partial waves). |
+| `n_energy_steps` | 10 | Number of ejected electron energy points for SDCS integration. |
+
+### Oscillatory Integral Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `method` | "advanced" | Oscillatory quadrature method: |
+| | | • **legacy**: Clenshaw-Curtis only (fastest, less accurate at high k) |
+| | | • **advanced**: CC + Levin/Filon tail correction (balanced, recommended) |
+| | | • **full_split**: Full I_in/I_out separation with oscillatory tails (most accurate) |
+| `CC_nodes` | 5 | Clenshaw-Curtis nodes per oscillation interval. Higher = more accurate but slower. |
+| `phase_increment` | π/2 | Phase increment for sub-interval division in oscillatory integrals. |
+| `min_grid_fraction` | 0.1 | Minimum match point as fraction of grid: `r_m ≥ 0.1 × r_max`. |
+| `k_threshold` | 0.5 | Total momentum threshold for Filon quadrature: if `k_i + k_f > threshold`, use Filon. |
+
+### GPU Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `gpu_block_size` | auto (0) | GPU block size for matrix operations. `auto` computes optimal size based on VRAM. Explicit value (e.g., 4096) overrides. |
+| `gpu_memory_mode` | "auto" | GPU memory strategy: |
+| | | • **auto**: Check VRAM, use full matrix if possible, else block-wise (recommended) |
+| | | • **full**: Force full matrix construction (fastest, may OOM) |
+| | | • **block**: Force block-wise (slowest, constant memory) |
+| `gpu_memory_threshold` | 0.7 | Maximum fraction of free GPU memory to use for matrix allocation. |
+
+### GPU Computation Modes
+
+When using Filon quadrature with GPU acceleration, three computation modes are available:
+
+1. **Filon/full-matrix** — Extended kernel matrix `(idx_limit × N_grid)` fits in VRAM. Single `cp.dot()` for entire integration. *Fastest.*
+
+2. **Filon/hybrid** — Standard matrix `(idx_limit × idx_limit)` built, tail computed block-wise. Falls back when extended matrix doesn't fit.
+
+3. **Filon/block-wise** — No prebuilt matrix, all computations block-by-block. Used when memory is very limited.
+
+The mode is logged once at the start of GPU calculations:
+```
+GPU mode: Filon/full-matrix
+```
 
 Outputs: `results_<run>_exc.json`, `results_<run>_ion.json` in project root. Excitation entries include angular grids (`theta_deg`) and both raw/calibrated DCS in a.u. for later plotting. Ionization entries include SDCS data and optional TDCS entries (`angles_deg`, `values`).
 

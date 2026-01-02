@@ -956,9 +956,20 @@ def radial_ME_all_L_gpu(
             logger.debug("Could not check GPU memory: %s. Using block-wise as fallback.", e)
             use_block_wise = True
     
-    if not use_filon and not use_block_wise:
-        # FAST PATH: Build full kernel matrix once, reuse for all L
-        # Free memory pool before large allocation
+    # -------------------------------------------------------------------------
+    # Kernel Matrix Construction
+    # -------------------------------------------------------------------------
+    # Strategy:
+    # - use_filon: controls quadrature method (Filon for oscillatory integrals)
+    # - use_block_wise: controls memory strategy (independent of use_filon!)
+    # When VRAM permits, build full matrix and use it for BOTH standard and Filon paths.
+    
+    full_matrix_built = False
+    inv_gtr = None
+    log_ratio = None
+    
+    if not use_block_wise:
+        # Try to build full kernel matrix (works for BOTH Filon and standard)
         cp.get_default_memory_pool().free_all_blocks()
         gc.collect()
         
@@ -969,18 +980,59 @@ def radial_ME_all_L_gpu(
             ratio = cp.minimum(r_col, r_row) * inv_gtr
             ratio = cp.minimum(ratio, 1.0 - 1e-12)
             log_ratio = cp.log(ratio + 1e-30)
-            del r_col, r_row
+            del r_col, r_row, ratio
             cp.get_default_memory_pool().free_all_blocks()
-            logger.debug("GPU: Using full matrix construction (fast path)")
-        except cp.cuda.memory.OutOfMemoryError:
-            logger.warning("GPU OOM during matrix construction. Falling back to block-wise.")
-            use_block_wise = True
-            cp.get_default_memory_pool().free_all_blocks()
+            full_matrix_built = True
+            logger.debug("GPU: Standard matrix built (%d×%d)", idx_limit, idx_limit)
+        except Exception as e:
+            # Catch OutOfMemoryError and Windows pagefile errors
+            err_str = str(e).lower()
+            if "memory" in err_str or "pagefile" in err_str or "out of memory" in err_str:
+                logger.warning("GPU memory error: %s. Falling back to block-wise.", e)
+                use_block_wise = True
+                full_matrix_built = False
+                cp.get_default_memory_pool().free_all_blocks()
+                gc.collect()
+            else:
+                raise
     
-    if use_filon or use_block_wise:
-        # Filon mode: pre-calculate components ONLY for CC nodes
+    # For Filon, build extended matrix (idx_limit × N_grid) if memory permits
+    # This allows full cp.dot() for int_r2_dir without block-wise loop
+    filon_kernel_built = False
+    filon_inv_gtr = None
+    filon_log_ratio = None
+    
+    if use_filon and not use_block_wise:
+        cp.get_default_memory_pool().free_all_blocks()
+        gc.collect()
+        
+        try:
+            r_col = r_gpu[:, None]  # (idx_limit, 1)
+            r_row_full = r_full_gpu[None, :]  # (1, N_grid)
+            filon_inv_gtr = 1.0 / cp.maximum(r_col, r_row_full + 1e-30)
+            filon_ratio = cp.minimum(r_col, r_row_full) * filon_inv_gtr
+            filon_ratio = cp.minimum(filon_ratio, 1.0 - 1e-12)
+            filon_log_ratio = cp.log(filon_ratio + 1e-30)
+            del r_col, r_row_full, filon_ratio
+            cp.get_default_memory_pool().free_all_blocks()
+            filon_kernel_built = True
+            logger.debug("GPU: Filon extended matrix built (%d×%d)", idx_limit, N_grid)
+        except Exception as e:
+            err_str = str(e).lower()
+            if "memory" in err_str or "pagefile" in err_str or "out of memory" in err_str:
+                logger.info("GPU: Filon extended matrix too large, using hybrid mode")
+                filon_kernel_built = False
+                cp.get_default_memory_pool().free_all_blocks()
+                gc.collect()
+            else:
+                raise
+    
+    # Filon params for oscillatory quadrature (only if use_filon)
+    filon_params = None
+    if use_filon:
         filon_params = _generate_gpu_filon_params(r_gpu, k_total, phase_increment, CC_nodes)
         if filon_params:
+            # Precompute CC node kernels for Filon
             idx_l, idx_r = filon_params['idx_left'], filon_params['idx_right']
             w_l, w_r = filon_params['w_left'], filon_params['w_right']
             
@@ -988,14 +1040,12 @@ def radial_ME_all_L_gpu(
             r_cc_l = r_gpu[idx_l][None, :]
             r_cc_r = r_gpu[idx_r][None, :]
             
-            # inv_gtr_at_cc_l: (n_r, n_cc_total)
             inv_gtr_cc_l = 1.0 / cp.maximum(r_col, r_cc_l + 1e-30)
             log_ratio_cc_l = cp.log(cp.minimum(r_col, r_cc_l) * inv_gtr_cc_l + 1e-30)
             
             inv_gtr_cc_r = 1.0 / cp.maximum(r_col, r_cc_r + 1e-30)
             log_ratio_cc_r = cp.log(cp.minimum(r_col, r_cc_r) * inv_gtr_cc_r + 1e-30)
             
-            # Interpolate to CC nodes
             inv_gtr_at_cc = inv_gtr_cc_l * w_l + inv_gtr_cc_r * w_r
             log_ratio_at_cc = log_ratio_cc_l * w_l + log_ratio_cc_r * w_r
             
@@ -1007,54 +1057,112 @@ def radial_ME_all_L_gpu(
             gc.collect()
             cp.get_default_memory_pool().free_all_blocks()
         else:
-            use_filon = False # Fallback if params failed
-            r_col = r_gpu[:, None]
-            r_row = r_gpu[None, :]
-            inv_gtr = 1.0 / cp.maximum(r_col, r_row + 1e-30)
-            ratio = cp.minimum(r_col, r_row) * inv_gtr
-            ratio = cp.minimum(ratio, 1.0 - 1e-12)
-            log_ratio = cp.log(ratio + 1e-30)
-            del r_col, r_row
-            cp.get_default_memory_pool().free_all_blocks()
-
+            use_filon = False  # Fallback if params generation failed
+    
+    # Log final computation mode after all matrix construction
+    if use_filon:
+        if filon_kernel_built:
+            mode_str = "Filon/full-matrix"
+        elif full_matrix_built:
+            mode_str = "Filon/hybrid"
+        else:
+            mode_str = "Filon/block-wise"
+    else:
+        mode_str = "standard/full-matrix" if full_matrix_built else "standard/block-wise"
+    
+    # Deduplicate log: only log if mode changed from last call (ignore grid/L_max changes)
+    if not hasattr(radial_ME_all_L_gpu, '_last_mode') or radial_ME_all_L_gpu._last_mode != mode_str:
+        logger.info("GPU mode: %s", mode_str)
+        radial_ME_all_L_gpu._last_mode = mode_str
+    
     I_L_dir: Dict[int, float] = {}
     I_L_exc: Dict[int, float] = {}
 
+    # Block size for block-wise computation (only used if needed)
+    BLOCK_SIZE = gpu_block_size if gpu_block_size > 0 else _compute_optimal_block_size(idx_limit, gpu_memory_threshold)
+
     for L in range(L_max + 1):
-        # Determine kernel_L (only if not using Filon efficiently)
         kernel_L = None
-        if not use_filon:
+        int_r2_dir = None  # For Filon mode
+        
+        if full_matrix_built:
+            # FAST PATH: use prebuilt full matrix
             if L == 0:
                 kernel_L = inv_gtr
             else:
                 kernel_L = inv_gtr * cp.exp(L * log_ratio)
-        else:
-            # In Filon mode, for direct integral legacy/full_split/advanced paths,
-            # we need int_r2_dir = \u222b K(r1, r2) \u00d7 rho2_dir(r2) dr2.
-            # MATCH CPU: r2 goes up to N_grid (full grid)
-            rho2_eff_full = (u_f_full_gpu * u_i_full_gpu) * w_full_gpu
-            int_r2_dir = cp.zeros(idx_limit, dtype=float)
             
-            # Auto-tune block size or use explicit value
-            BLOCK_SIZE = gpu_block_size if gpu_block_size > 0 else _compute_optimal_block_size(idx_limit, gpu_memory_threshold)
-            r_col = r_gpu[:, None]
-            r_row_full = r_full_gpu[None, :]
-            for start in range(0, N_grid, BLOCK_SIZE):
-                end = min(start + BLOCK_SIZE, N_grid)
-                # Compute block of kernel_L
-                inv_gtr_b = 1.0 / cp.maximum(r_col, r_row_full[:, start:end] + 1e-30)
-                if L == 0:
-                    kb = inv_gtr_b
-                else:
-                    ratio_b = cp.minimum(r_col, r_row_full[:, start:end]) * inv_gtr_b
-                    kb = inv_gtr_b * cp.exp(L * cp.log(cp.minimum(ratio_b, 1.0 - 1e-12) + 1e-30))
+            # For Filon mode, compute int_r2_dir:
+            # FAST: If filon_kernel_built, use full (idx_limit × N_grid) matrix
+            # HYBRID: If only full_matrix_built, use (idx_limit × idx_limit) + block-wise tail
+            if use_filon:
+                rho2_eff_full = (u_f_full_gpu * u_i_full_gpu) * w_full_gpu
                 
-                int_r2_dir += cp.dot(kb, rho2_eff_full[start:end])
-                del kb, inv_gtr_b
-                # if L > 0: del ratio_b # handled by scope actually
-            
-            del r_col, r_row_full
-            cp.get_default_memory_pool().free_all_blocks()
+                if filon_kernel_built:
+                    # FULL MATRIX PATH: Single cp.dot() for entire grid
+                    if L == 0:
+                        filon_kernel_L = filon_inv_gtr
+                    else:
+                        filon_kernel_L = filon_inv_gtr * cp.exp(L * filon_log_ratio)
+                    int_r2_dir = cp.dot(filon_kernel_L, rho2_eff_full)
+                    del filon_kernel_L
+                else:
+                    # HYBRID PATH: Use standard matrix for head + block-wise for tail
+                    int_r2_dir = cp.dot(kernel_L, rho2_eff_full[:idx_limit])
+                    
+                    if N_grid > idx_limit:
+                        r_col = r_gpu[:, None]
+                        r_row_tail = r_full_gpu[idx_limit:][None, :]
+                        tail_size = N_grid - idx_limit
+                        
+                        for start in range(0, tail_size, BLOCK_SIZE):
+                            end = min(start + BLOCK_SIZE, tail_size)
+                            r_block = r_row_tail[:, start:end]
+                            inv_gtr_b = 1.0 / cp.maximum(r_col, r_block + 1e-30)
+                            if L == 0:
+                                kb = inv_gtr_b
+                            else:
+                                ratio_b = cp.minimum(r_col, r_block) * inv_gtr_b
+                                kb = inv_gtr_b * cp.exp(L * cp.log(cp.minimum(ratio_b, 1.0 - 1e-12) + 1e-30))
+                            int_r2_dir += cp.dot(kb, rho2_eff_full[idx_limit + start:idx_limit + end])
+                            del kb, inv_gtr_b
+                        del r_col, r_row_tail
+                        cp.get_default_memory_pool().free_all_blocks()
+        else:
+            # SLOW PATH: block-wise computation (no prebuilt matrix)
+            if use_filon:
+                # Compute int_r2_dir block-wise
+                rho2_eff_full = (u_f_full_gpu * u_i_full_gpu) * w_full_gpu
+                int_r2_dir = cp.zeros(idx_limit, dtype=float)
+                r_col = r_gpu[:, None]
+                r_row_full = r_full_gpu[None, :]
+                for start in range(0, N_grid, BLOCK_SIZE):
+                    end = min(start + BLOCK_SIZE, N_grid)
+                    inv_gtr_b = 1.0 / cp.maximum(r_col, r_row_full[:, start:end] + 1e-30)
+                    if L == 0:
+                        kb = inv_gtr_b
+                    else:
+                        ratio_b = cp.minimum(r_col, r_row_full[:, start:end]) * inv_gtr_b
+                        kb = inv_gtr_b * cp.exp(L * cp.log(cp.minimum(ratio_b, 1.0 - 1e-12) + 1e-30))
+                    int_r2_dir += cp.dot(kb, rho2_eff_full[start:end])
+                    del kb, inv_gtr_b
+                del r_col, r_row_full
+                cp.get_default_memory_pool().free_all_blocks()
+            else:
+                # Standard path without prebuilt matrix - compute kernel block-wise
+                # This case should be rare (low memory + low k)
+                r_col = r_gpu[:, None]
+                r_row = r_gpu[None, :]
+                if L == 0:
+                    kernel_L = 1.0 / cp.maximum(r_col, r_row + 1e-30)
+                else:
+                    inv_gtr_temp = 1.0 / cp.maximum(r_col, r_row + 1e-30)
+                    ratio_temp = cp.minimum(r_col, r_row) * inv_gtr_temp
+                    ratio_temp = cp.minimum(ratio_temp, 1.0 - 1e-12)
+                    kernel_L = inv_gtr_temp * cp.exp(L * cp.log(ratio_temp + 1e-30))
+                    del inv_gtr_temp, ratio_temp
+                del r_col, r_row
+                cp.get_default_memory_pool().free_all_blocks()
 
         
         # --- Direct Integral on GPU ---

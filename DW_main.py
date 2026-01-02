@@ -102,7 +102,7 @@ DEFAULTS = {
         "phase_increment": 1.5708,    # π/2 radians per sub-interval
         "min_grid_fraction": 0.10,    # Minimum match point fraction
         "k_threshold": 0.5,           # k_total threshold for Filon
-        "gpu_block_size": 8192,       # GPU block size for memory-efficient dot products
+        "gpu_block_size": 0,          # 0 = auto-tune based on VRAM, >0 = explicit size
         "gpu_memory_mode": "auto",    # "auto" / "full" / "block" - GPU matrix strategy
         "gpu_memory_threshold": 0.7,  # Max fraction of GPU memory to use (for auto mode)
     },
@@ -127,7 +127,10 @@ def display_defaults(category: str = None):
     for cat_name, params in categories.items():
         print(f"  ┌─ {cat_name.upper()} ─────────────────────────────")
         for key, val in params.items():
-            if isinstance(val, float):
+            # Special display for gpu_block_size: 0 means auto
+            if key == "gpu_block_size" and val == 0:
+                print(f"  │  {key:<22} = auto")
+            elif isinstance(val, float):
                 print(f"  │  {key:<22} = {val:.4g}")
             else:
                 print(f"  │  {key:<22} = {val}")
@@ -573,7 +576,7 @@ def run_scan_excitation(run_name):
     
     print("  Final State:")
     nf = get_input_int("    n", ni + 1)
-    lf = get_input_int("    l", li + 1 if li==0 else li-1)
+    lf = get_input_int("    l", li)  # Default: same l (e.g., 1s→2s)
     
     # --- VALIDATION ---
     if li >= ni:

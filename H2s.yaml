@@ -47,7 +47,7 @@ oscillatory:
   phase_increment: 1.5708     # π/2
   min_grid_fraction: 0.1
   k_threshold: 0.5
-  gpu_block_size: 8192
+  gpu_block_size: 0            # 0 = auto-tune based on VRAM
   gpu_memory_mode: "auto"     # "auto", "full", "block"
   gpu_memory_threshold: 0.7
 

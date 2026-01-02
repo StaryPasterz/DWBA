@@ -105,19 +105,17 @@ OSCILLATORY_CONFIG = {
 }
 
 def set_oscillatory_config(config_dict: dict):
-    """Set the oscillatory integral configuration globally. Only logs if changes detected."""
-    changed = False
+    """Set the oscillatory integral configuration globally. Only logs actual changes."""
+    changes = {}
     for k, v in config_dict.items():
         if k in OSCILLATORY_CONFIG and OSCILLATORY_CONFIG[k] != v:
-            changed = True
-            break
+            changes[k] = (OSCILLATORY_CONFIG[k], v)
     
-    if changed:
-        OSCILLATORY_CONFIG.update(config_dict)
-        logger.info("Oscillatory configuration updated: %s", OSCILLATORY_CONFIG)
-    else:
-        # Just update quietly if no changes
-        OSCILLATORY_CONFIG.update(config_dict)
+    OSCILLATORY_CONFIG.update(config_dict)
+    
+    if changes:
+        change_str = ", ".join(f"{k}: {old}→{new}" for k, (old, new) in changes.items())
+        logger.info("Config changed: %s", change_str)
 
 def set_oscillatory_method(method: OscillatoryMethod):
     """Set only the oscillatory integral method globally (legacy support)."""

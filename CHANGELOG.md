@@ -29,6 +29,50 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Memory pool cleanup (`cp.get_default_memory_pool().free_all_blocks()`) before large kernel allocations
 - `_compute_optimal_block_size()`: Estimates max block that fits in `threshold × free_mem`
 
+### GPU Path Logic Fix — Performance Optimization
+
+**Files**: `dwba_matrix_elements.py`
+
+**Critical Fixes**:
+- **Decoupled Filon from block-wise**: `use_filon` and `use_block_wise` are now independent decisions
+- When VRAM permits, full matrix is built and used by BOTH Filon and standard paths
+- Added `full_matrix_built` flag to track matrix availability
+- Fixed potential crash when `use_block_wise=True` + `!use_filon` (missing `inv_gtr`)
+- Catches Windows pagefile errors (`"pagefile"`, `"out of memory"` strings)
+
+**Performance Impact**:
+| Scenario | Before | After |
+|----------|--------|-------|
+| `k>k_thr`, VRAM OK | Block-wise (slow) | Full matrix + Filon (fast) |
+| `k>k_thr`, VRAM low | Block-wise | Block-wise (same) |
+
+### Hybrid Filon Integration — Major Performance Boost
+
+**Files**: `dwba_matrix_elements.py`, `config_loader.py`, `DW_main.py`, `*.yaml`
+
+**Optimization Strategy — Three Modes**:
+1. **Filon/full-matrix**: Extended matrix `(idx_limit × N_grid)` built, single `cp.dot()` (fastest)
+2. **Filon/hybrid**: Standard matrix `(idx_limit × idx_limit)` + block-wise for tail (fallback)
+3. **Filon/block-wise**: No prebuilt matrix, all block-wise (low memory)
+
+**Config Fixes**:
+- `gpu_block_size` changed to `0` (auto-tune) in:
+  - `DW_main.py` DEFAULT_PARAMS
+  - `config_loader.py` OscillatoryConfig
+  - `H2s.yaml`, `examples/*.yaml`
+
+**Logging**:
+- Mode logged once per run: `GPU mode: Filon/full-matrix`
+
+### UI Improvements
+
+**Files**: `DW_main.py`, `dwba_matrix_elements.py`, `README.md`
+
+- **Log deduplication**: GPU mode logged only on mode change, not for every energy point
+- **Parameter display**: `gpu_block_size = auto` instead of confusing `= 0`
+- **Default excitation**: H transition changed from 1s→2p to 1s→2s
+- **README expanded**: Comprehensive parameter reference tables for Grid, Excitation, Ionization, Oscillatory, and GPU parameters
+
 ---
 
 ### Edit_64 — `7227310` — 2026-01-01
