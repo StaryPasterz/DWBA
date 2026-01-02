@@ -73,6 +73,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Default excitation**: H transition changed from 1s→2p to 1s→2s
 - **README expanded**: Comprehensive parameter reference tables for Grid, Excitation, Ionization, Oscillatory, and GPU parameters
 
+### GPU Performance Optimization — L-Loop Improvements
+
+**Files**: `dwba_matrix_elements.py`
+
+**Synchronization Reduction**:
+- Hoisted `rho2_eff_full` computation before L-loop (was computed L+1 times per energy point)
+- Removed 3 `free_all_blocks()` calls from inside L-loop (were causing GPU sync each iteration)
+
+**Memory Estimation Fix**:
+- Fixed auto-mode memory check for Filon: now uses `idx_limit × N_grid` instead of `idx_limit²`
+- Prevents incorrect fallback to block-wise when extended matrix would fit
+
+### Config: Support for `gpu_block_size: "auto"` String
+
+**Files**: `config_loader.py`, `DW_main.py`, `*.yaml`
+
+- `gpu_block_size` now accepts `"auto"` string in YAML (more intuitive than `0`)
+- Added `_parse_gpu_block_size()` helper to convert `"auto"` → `0` internally
+- Updated all example configs and templates
+
 ---
 
 ### Edit_64 — `7227310` — 2026-01-01

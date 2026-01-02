@@ -946,8 +946,15 @@ def radial_ME_all_L_gpu(
     else:  # "auto" - check GPU memory
         try:
             free_mem, total_mem = cp.cuda.Device().mem_info
-            # Estimate required memory: 3 matrices (inv_gtr, ratio, log_ratio) × idx_limit²
-            required_mem = idx_limit * idx_limit * 8 * 3
+            # Memory estimation depends on mode:
+            # - Standard: 3 matrices (inv_gtr, ratio, log_ratio) × idx_limit²
+            # - Filon: Extended matrix (idx_limit × N_grid) + standard
+            if use_filon:
+                # Extended Filon matrix + standard matrix
+                required_mem = (idx_limit * N_grid * 8 * 2) + (idx_limit * idx_limit * 8 * 3)
+            else:
+                required_mem = idx_limit * idx_limit * 8 * 3
+            
             if required_mem > free_mem * gpu_memory_threshold:
                 logger.info("GPU memory limited (%.1f GB free, need %.1f GB). Using block-wise.",
                            free_mem / 1e9, required_mem / 1e9)
@@ -1080,6 +1087,9 @@ def radial_ME_all_L_gpu(
 
     # Block size for block-wise computation (only used if needed)
     BLOCK_SIZE = gpu_block_size if gpu_block_size > 0 else _compute_optimal_block_size(idx_limit, gpu_memory_threshold)
+    
+    # Precompute rho2_eff_full ONCE before L-loop (optimization: was computed per-L)
+    rho2_eff_full = (u_f_full_gpu * u_i_full_gpu) * w_full_gpu if use_filon else None
 
     for L in range(L_max + 1):
         kernel_L = None
@@ -1096,7 +1106,7 @@ def radial_ME_all_L_gpu(
             # FAST: If filon_kernel_built, use full (idx_limit × N_grid) matrix
             # HYBRID: If only full_matrix_built, use (idx_limit × idx_limit) + block-wise tail
             if use_filon:
-                rho2_eff_full = (u_f_full_gpu * u_i_full_gpu) * w_full_gpu
+                # rho2_eff_full precomputed before L-loop
                 
                 if filon_kernel_built:
                     # FULL MATRIX PATH: Single cp.dot() for entire grid
@@ -1127,12 +1137,10 @@ def radial_ME_all_L_gpu(
                             int_r2_dir += cp.dot(kb, rho2_eff_full[idx_limit + start:idx_limit + end])
                             del kb, inv_gtr_b
                         del r_col, r_row_tail
-                        cp.get_default_memory_pool().free_all_blocks()
         else:
             # SLOW PATH: block-wise computation (no prebuilt matrix)
             if use_filon:
-                # Compute int_r2_dir block-wise
-                rho2_eff_full = (u_f_full_gpu * u_i_full_gpu) * w_full_gpu
+                # Compute int_r2_dir block-wise (rho2_eff_full precomputed)
                 int_r2_dir = cp.zeros(idx_limit, dtype=float)
                 r_col = r_gpu[:, None]
                 r_row_full = r_full_gpu[None, :]
@@ -1147,7 +1155,6 @@ def radial_ME_all_L_gpu(
                     int_r2_dir += cp.dot(kb, rho2_eff_full[start:end])
                     del kb, inv_gtr_b
                 del r_col, r_row_full
-                cp.get_default_memory_pool().free_all_blocks()
             else:
                 # Standard path without prebuilt matrix - compute kernel block-wise
                 # This case should be rare (low memory + low k)
@@ -1162,7 +1169,6 @@ def radial_ME_all_L_gpu(
                     kernel_L = inv_gtr_temp * cp.exp(L * cp.log(ratio_temp + 1e-30))
                     del inv_gtr_temp, ratio_temp
                 del r_col, r_row
-                cp.get_default_memory_pool().free_all_blocks()
 
         
         # --- Direct Integral on GPU ---

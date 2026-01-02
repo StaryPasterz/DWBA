@@ -95,7 +95,7 @@ class OscillatoryConfig:
     phase_increment: float = 1.5708
     min_grid_fraction: float = 0.1
     k_threshold: float = 0.5
-    gpu_block_size: int = 0  # 0 = auto-tune based on VRAM
+    gpu_block_size: Union[int, str] = "auto"  # "auto" or explicit int
     gpu_memory_mode: Literal["auto", "full", "block"] = "auto"
     gpu_memory_threshold: float = 0.7
 
@@ -162,6 +162,18 @@ def _dict_to_dataclass(data: Dict[str, Any], cls: type) -> Any:
                 kwargs[field_name] = value
     
     return cls(**kwargs)
+
+
+def _parse_gpu_block_size(value) -> int:
+    """Parse gpu_block_size from config: 'auto'/0 = auto-tune, int > 0 = explicit."""
+    if isinstance(value, str):
+        if value.lower() == "auto":
+            return 0  # Internal representation for auto-tune
+        try:
+            return int(value)
+        except ValueError:
+            return 0
+    return int(value) if value else 0
 
 
 def load_config(path: Union[str, Path]) -> DWBAConfig:
@@ -290,7 +302,7 @@ def load_config(path: Union[str, Path]) -> DWBAConfig:
             phase_increment=osc.get('phase_increment', 1.5708),
             min_grid_fraction=osc.get('min_grid_fraction', 0.1),
             k_threshold=osc.get('k_threshold', 0.5),
-            gpu_block_size=osc.get('gpu_block_size', 0),
+            gpu_block_size=_parse_gpu_block_size(osc.get('gpu_block_size', 'auto')),
             gpu_memory_mode=osc.get('gpu_memory_mode', 'auto'),
             gpu_memory_threshold=osc.get('gpu_memory_threshold', 0.7)
         )
@@ -471,7 +483,7 @@ oscillatory:
   phase_increment: 1.5708     # π/2
   min_grid_fraction: 0.1
   k_threshold: 0.5
-  gpu_block_size: 0            # 0 = auto-tune based on VRAM
+  gpu_block_size: \"auto\"        # \"auto\" = auto-tune, int = explicit size
   gpu_memory_mode: "auto"     # "auto", "full", "block"
   gpu_memory_threshold: 0.7
 

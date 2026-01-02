@@ -102,7 +102,7 @@ DEFAULTS = {
         "phase_increment": 1.5708,    # π/2 radians per sub-interval
         "min_grid_fraction": 0.10,    # Minimum match point fraction
         "k_threshold": 0.5,           # k_total threshold for Filon
-        "gpu_block_size": 0,          # 0 = auto-tune based on VRAM, >0 = explicit size
+        "gpu_block_size": "auto",     # "auto" = auto-tune based on VRAM, int = explicit size
         "gpu_memory_mode": "auto",    # "auto" / "full" / "block" - GPU matrix strategy
         "gpu_memory_threshold": 0.7,  # Max fraction of GPU memory to use (for auto mode)
     },
