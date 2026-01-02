@@ -98,7 +98,7 @@ class OscillatoryConfig:
     gpu_block_size: Union[int, str] = "auto"  # "auto" or explicit int
     gpu_memory_mode: Literal["auto", "full", "block"] = "auto"
     gpu_memory_threshold: float = 0.7
-    n_workers: Union[int, str] = "auto"  # "auto" or explicit int count
+    n_workers: Union[int, str] = "auto"  # "auto", "max", or explicit int count
 
 @dataclass
 class OutputConfig:
@@ -489,7 +489,7 @@ oscillatory:
   gpu_block_size: \"auto\"        # \"auto\" = auto-tune, int = explicit size
   gpu_memory_mode: "auto"     # "auto", "full", "block"
   gpu_memory_threshold: 0.7
-  n_workers: "auto"           # "auto" = auto-detect (up to 8 CPUs), int = explicit count
+  n_workers: "auto"           # "auto" (balanced), "max" (all cores), or int count
 
 output:
   save_dcs: true

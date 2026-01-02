@@ -75,11 +75,13 @@ Major improvements to GPU and CPU multiprocessing configuration and consistency.
 **Files**: `driver.py`, `ionization.py`, `config_loader.py`
 
 New `n_workers` configuration parameter:
-- `n_workers: "auto"` — Auto-detect (uses `min(cpu_count, 8)`)
+- `n_workers: "auto"` — Optimized balance (uses `min(cpu_count, 8)`)
+- `n_workers: "max"` — Uses all available CPU cores
 - `n_workers: N` — Explicit count (capped at cpu_count)
 
 **New Helper**: `get_worker_count()` in `driver.py`
 - Returns configured or auto-detected worker count
+- Logs actual count and mode used (e.g., `Multiprocessing: using 8 worker(s) [Mode: auto]`)
 - Used by both excitation and ionization CPU paths
 
 #### Ionization GPU Config Passthrough
@@ -97,7 +99,15 @@ New `n_workers` configuration parameter:
 
 - Removed hardcoded `max_workers = 4`
 - Now uses `get_worker_count()` from global config
-- Batch size scales with worker count
+- Batch size scales with worker count#### Logging Refinements
+
+**Files**: `driver.py`, `ionization.py`
+
+- **Calculation Summary** — New consolidated start logs showing Hardware, Platform, CPU Workers, and Multipole order in one clear block.
+- **Semantic Config Updates** — `set_oscillatory_config` now normalizes values (e.g., `0` vs `"auto"`) to avoid redundant "Config updated" logs.
+- **Worker Logging** — CPU worker count is now consistently logged at the start of both excitation and ionization paths.
+
+---
 
 #### Configuration Updates
 

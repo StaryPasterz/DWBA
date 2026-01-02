@@ -308,8 +308,10 @@ When prompted, enter:
 | | | • **block**: Force block-wise (slowest, constant memory) |
 | `gpu_memory_threshold` | 0.7 | Maximum fraction of free GPU memory to use for matrix allocation. |
 | `n_workers` | "auto" | CPU worker count for multiprocessing: |
-| | | • **auto**: Auto-detect (`min(cpu_count, 8)`) |
+| | | • **auto**: Auto-detect with balance (`min(cpu_count, 8)`) |
+| | | • **max**: Use all available CPU cores |
 | | | • **N**: Explicit count (capped at cpu_count) |
+| | | *Actual count used is logged at start of calculation.* |
 
 ### GPU Computation Modes
 

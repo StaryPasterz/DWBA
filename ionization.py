@@ -79,7 +79,12 @@ from bound_states import (
     BoundOrbital,
 )
 # Reuse precompute logic and config from driver
-from driver import precompute_continuum_waves, OSCILLATORY_CONFIG, get_worker_count
+from driver import (
+    precompute_continuum_waves, 
+    OSCILLATORY_CONFIG, 
+    get_worker_count,
+    log_calculation_params
+)
 from continuum import (
     solve_continuum_wave,
     ContinuumWave,
@@ -756,9 +761,16 @@ def compute_ionization_cs(
     # 6. Parallel Energy Integration
     # ========================================================================
     
-    # Determine GPU availability
-    USE_GPU = HAS_CUPY and check_cupy_runtime()
+    # Selection logic for execution path
+    USE_GPU = False
+    if HAS_CUPY:
+        if check_cupy_runtime():
+            USE_GPU = True
+        else:
+            logger.warning("CuPy detected but runtime check failed. Fallback to CPU.")
     
+    log_calculation_params("GPU" if USE_GPU else "CPU Parallel", L_max_projectile)
+            
     tdcs_angles_rad = None
     if tdcs_angles_deg:
         tdcs_angles_rad = [
@@ -797,9 +809,9 @@ def compute_ionization_cs(
     else:
         # CPU path: Parallel execution across energy points
         if n_workers is None:
-            n_workers = get_worker_count()  # Use global config
+            n_workers = get_worker_count(silent=True)  # Use global config
         
-        logger.info("Mode: CPU Parallel (Workers=%d)", n_workers)
+        # logger.info("Mode: CPU Parallel (Workers=%d)", n_workers)
         
         try:
             with ProcessPoolExecutor(max_workers=n_workers) as executor:

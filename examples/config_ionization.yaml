@@ -47,7 +47,7 @@ oscillatory:
   gpu_block_size: "auto"      # auto-tune based on VRAM
   gpu_memory_mode: "auto"
   gpu_memory_threshold: 0.7
-  n_workers: "auto"           # "auto" = auto-detect (up to 8 CPUs), int = explicit count
+  n_workers: "auto"           # "auto" (balanced), "max" (all cores), or int count
 
 output:
   save_dcs: true

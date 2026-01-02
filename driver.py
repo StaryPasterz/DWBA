@@ -108,50 +108,90 @@ OSCILLATORY_CONFIG = {
 
 def set_oscillatory_config(config_dict: dict):
     """Set the oscillatory integral configuration globally. Only logs actual changes."""
+    def normalize(v):
+        # Treat 0 and "auto" as semantically identical for block size and workers
+        if v == 0 or v == "0": return "auto"
+        return v
+
     changes = {}
     for k, v in config_dict.items():
-        if k in OSCILLATORY_CONFIG and OSCILLATORY_CONFIG[k] != v:
-            changes[k] = (OSCILLATORY_CONFIG[k], v)
+        if k in OSCILLATORY_CONFIG:
+            old_norm = normalize(OSCILLATORY_CONFIG[k])
+            new_norm = normalize(v)
+            if old_norm != new_norm:
+                changes[k] = (OSCILLATORY_CONFIG[k], v)
     
     OSCILLATORY_CONFIG.update(config_dict)
     
     if changes:
         change_str = ", ".join(f"{k}: {old}→{new}" for k, (old, new) in changes.items())
-        logger.info("Config changed: %s", change_str)
+        logger.info("Config updated: %s", change_str)
 
 def set_oscillatory_method(method: OscillatoryMethod):
     """Set only the oscillatory integral method globally (legacy support)."""
-    OSCILLATORY_CONFIG["method"] = method
-    logger.info("Oscillatory method set to: %s", method)
+    if OSCILLATORY_CONFIG.get("method") != method:
+        OSCILLATORY_CONFIG["method"] = method
+        logger.info("Oscillatory method set to: %s", method)
 
 
-def get_worker_count() -> int:
+def get_worker_count(silent: bool = False) -> int:
     """
     Get number of CPU workers from config, with auto-detection.
     
-    Returns
-    -------
-    int
-        Number of workers: 
-        - If n_workers is "auto" or 0: min(cpu_count, 8) for balanced performance
-        - If n_workers > 0: exact value (capped at cpu_count)
+    Parameters
+    ----------
+    silent : bool
+        If True, suppresses the info log.
     """
     n_workers_raw = OSCILLATORY_CONFIG.get("n_workers", "auto")
     cpu_count = os.cpu_count() or 4
     
-    # Handle "auto" string or 0 as auto-detect
-    if n_workers_raw == "auto" or n_workers_raw == 0:
-        return min(cpu_count, 8)
+    selected_count = 1
+    mode_desc = ""
     
-    # Explicit int value
-    try:
-        n_workers = int(n_workers_raw)
-        if n_workers > 0:
-            return min(n_workers, cpu_count)
-        else:
-            return min(cpu_count, 8)
-    except (ValueError, TypeError):
-        return min(cpu_count, 8)
+    if n_workers_raw == "auto" or n_workers_raw == 0 or n_workers_raw == "0":
+        selected_count = min(cpu_count, 8)
+        mode_desc = f"auto (balanced, capping {cpu_count} to 8)" if cpu_count > 8 else "auto"
+    elif n_workers_raw == "max":
+        selected_count = cpu_count
+        mode_desc = "max (all cores)"
+    else:
+        try:
+            val = int(n_workers_raw)
+            if val > 0:
+                selected_count = min(val, cpu_count)
+                mode_desc = "manual" if val <= cpu_count else f"manual (capped {val} to {cpu_count})"
+            else:
+                selected_count = min(cpu_count, 8)
+                mode_desc = "auto (fallback)"
+        except (ValueError, TypeError):
+            selected_count = min(cpu_count, 8)
+            mode_desc = "auto (fallback)"
+            
+    if not silent:
+        logger.info("Multiprocessing: using %d worker(s) [Mode: %s]", selected_count, mode_desc)
+        
+    return selected_count
+
+
+def log_calculation_params(mode: str, L_max_proj: int):
+    """Log a consistent summary of calculation parameters."""
+    from dwba_matrix_elements import HAS_CUPY
+    
+    method = OSCILLATORY_CONFIG.get("method", "advanced")
+    workers = get_worker_count(silent=True)
+    
+    logger.info("Calculation Start | Mode: %s | L_max_proj: %d", mode, L_max_proj)
+    logger.info("Numerical Config  | Method: %s | CPU Workers: %d", method, workers)
+    
+    if HAS_CUPY and mode == "GPU":
+        # Additional GPU info if active
+        gpu_mode = OSCILLATORY_CONFIG.get("gpu_memory_mode", "auto")
+        block_size = OSCILLATORY_CONFIG.get("gpu_block_size", "auto")
+        logger.info("Hardware          | Platform: GPU (CuPy) | Mode: %s | Block: %s", gpu_mode, block_size)
+    else:
+        logger.info("Hardware          | Platform: CPU (NumPy)")
+
 
 
 @dataclass(frozen=True)
@@ -487,12 +527,11 @@ def compute_total_excitation_cs(
     # Hard cap for extreme cases (prevents runaway computation)
     L_max_proj = min(L_max_proj, 100)
     
-    logger.info("Auto-L: E=%.1f eV (k=%.2f, r_max=%.0f) -> L_max_proj=%d (turning_pt=%d)", 
+    logger.debug("Auto-L: E=%.1f eV (k=%.2f, r_max=%.0f) -> L_max_proj=%d (turning_pt=%d)", 
                 E_incident_eV, k_i_au, r_max_actual, L_max_proj, L_turning_point)
     
     if L_max_proj < L_dynamic:
-        logger.warning("L_max=%d limited by turning point (need r_max~%.0f for L=%d). "
-                       "Consider increasing r_max or accepting fewer partial waves.",
+        logger.debug("L_max=%d limited by turning point (need r_max~%.0f for L=%d).",
                        L_max_proj, compute_required_r_max(k_i_au, L_dynamic), L_dynamic)
 
     
@@ -505,10 +544,13 @@ def compute_total_excitation_cs(
         else:
              logger.warning("CuPy detected but runtime check failed (missing NVRTC?). Fallback to CPU.")
     
+    log_calculation_params("GPU" if USE_GPU else "CPU Parallel", L_max_proj)
+
     partial_waves_dict = {} # Initialize for both paths
 
     if USE_GPU:
-        logger.info("GPU Accelerated: Summing Partial Waves l_i=0..%d on GPU (Single Process)...", L_max_proj)
+        # Sequential Loop, but with fast GPU integrals
+        # logger.info("GPU Accelerated: Summing Partial Waves l_i=0..%d on GPU (Single Process)...", L_max_proj)
         
         # --- Pre-calculate Waves (Hybrid Mode) ---
         logger.debug("Pre-calc: Solving continuum waves in parallel (CPU)...")
