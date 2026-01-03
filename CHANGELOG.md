@@ -6,6 +6,56 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v2.5] — 2026-01-03 — GPU Optimization V3
+
+Major GPU performance improvements reducing synchronization overhead and adding energy-level caching.
+
+### GPU Synchronization Reduction
+
+**Files**: `dwba_matrix_elements.py`
+
+- Replaced per-L `float(cp.dot(...))` conversions with GPU array accumulation
+- Single `.get()` transfer at end of L-loop instead of ~2×L_max individual syncs
+- Added `return_gpu=True` parameter to `_gpu_filon_direct()` and `_gpu_filon_exchange()`
+- Precomputed L=0 correction terms on GPU (`sum_rho2_dir`, `V_diff_dot_rho1_dir`)
+
+**Impact**: Eliminates ~2×L_max GPU→CPU synchronizations per `radial_ME_all_L_gpu()` call
+
+### GPUCache Dataclass
+
+**Files**: `dwba_matrix_elements.py`, `driver.py`
+
+New `GPUCache` class for energy-level resource reuse:
+- `r_gpu`, `w_gpu` — Persistent grid arrays
+- `inv_gtr`, `log_ratio` — Base kernel matrices (built once per energy)
+- `filon_params` — Filon quadrature parameters
+- `chi_cache` — LRU-managed continuum wave cache (max 20 entries)
+
+**Usage in driver.py**:
+```python
+gpu_cache = GPUCache.from_grid(grid)
+# ... passed to all radial_ME_all_L_gpu calls ...
+gpu_cache.clear()  # At end of energy point
+```
+
+### Continuum Wave GPU Cache with LRU
+
+**Files**: `dwba_matrix_elements.py`
+
+- `GPUCache.get_chi(chi_wave, channel)` — Retrieve/cache continuum wave on GPU
+- LRU eviction when cache exceeds `max_chi_cached` (default 20)
+- Reduces `cp.asarray()` calls for frequently-reused partial waves
+
+### Memory Management
+
+**Files**: `dwba_matrix_elements.py`, `driver.py`
+
+- Removed `free_all_blocks()` from per-call locations
+- Cleanup consolidated in `GPUCache.clear()` at end of energy point
+- Avoids GPU sync overhead from frequent pool flushing
+
+---
+
 ## [Unreleased]
 
 ### Edit_69 — Output Organization & Tooling Improvements (`a0ec9a8`)

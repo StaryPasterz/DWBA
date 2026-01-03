@@ -562,6 +562,12 @@ def compute_total_excitation_cs(
         chi_f_cache = precompute_continuum_waves(L_max_proj + 15, E_final_eV, z_ion, U_f, grid)
         logger.debug("Pre-calc: Done in %.3f s. (Cached %d i-waves, %d f-waves)", time.perf_counter() - t_pre, len(chi_i_cache), len(chi_f_cache))
 
+        # === PHASE 3: Create GPU cache for energy-level reuse ===
+        from dwba_matrix_elements import GPUCache
+        max_chi = OSCILLATORY_CONFIG.get("max_chi_cached", 20)  # v2.5: configurable
+        gpu_cache = GPUCache.from_grid(grid, max_chi_cached=max_chi)
+        logger.debug("GPU: Created energy-level cache (max_chi_cached=%d)", max_chi)
+
         # Sequential Loop, but with fast GPU integrals
         
         sigma_accumulated = 0.0
@@ -631,7 +637,8 @@ def compute_total_excitation_cs(
                     min_grid_fraction=OSCILLATORY_CONFIG["min_grid_fraction"],
                     k_threshold=OSCILLATORY_CONFIG["k_threshold"],
                     gpu_memory_mode=OSCILLATORY_CONFIG["gpu_memory_mode"],
-                    gpu_memory_threshold=OSCILLATORY_CONFIG["gpu_memory_threshold"]
+                    gpu_memory_threshold=OSCILLATORY_CONFIG["gpu_memory_threshold"],
+                    gpu_cache=gpu_cache  # Phase 3: pass energy-level cache
                 )
                 
                 # Distribute (CPU - fast)
@@ -752,6 +759,10 @@ def compute_total_excitation_cs(
             if consecutive_small_changes >= 4:
                 logger.info("Convergence: Auto-stop at l_i=%d (Change < %.0e for 4 steps)", l_i, convergence_threshold)
                 break
+
+        # === END OF GPU BLOCK: Cleanup cache ===
+        gpu_cache.clear()
+        logger.debug("GPU: Cache cleared at end of energy point")
 
     else:
         # Fallback to CPU Parallel

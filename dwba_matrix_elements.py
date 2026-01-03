@@ -95,6 +95,158 @@ def check_cupy_runtime() -> bool:
         return False
 
 
+# =============================================================================
+# GPU CACHE FOR ENERGY-LEVEL REUSE
+# =============================================================================
+# Safe cache containing only base resources that don't depend on continuum waves.
+# Created once per energy point, passed to radial_ME_all_L_gpu to skip rebuilds.
+# =============================================================================
+
+@dataclass
+class GPUCache:
+    """
+    Energy-level GPU cache for base resources.
+    
+    Contains persistent GPU buffers built once per energy point.
+    Avoids O(L_max_proj^2) matrix rebuilds for each (l_i, l_f) pair.
+    
+    IMPORTANT: Does NOT cache kernel_L (depends on L) or exchange potentials
+    (depend on continuum waves) - those were sources of problems.
+    
+    Attributes
+    ----------
+    r_gpu : cupy.ndarray
+        Radial grid on device (full grid).
+    w_gpu : cupy.ndarray
+        Simpson weights on device (full grid).
+    inv_gtr : cupy.ndarray or None
+        Base kernel matrix 1/r_> (idx_limit × idx_limit).
+    log_ratio : cupy.ndarray or None
+        Base ratio log(r_</r_>) matrix.
+    filon_params : dict or None
+        Precomputed Filon quadrature parameters.
+    idx_limit : int
+        Grid index limit used for cached matrices.
+    chi_cache : dict
+        Cache of continuum waves: (channel, l) -> cp.ndarray.
+    chi_lru : list
+        LRU tracking for chi_cache eviction.
+    max_chi_cached : int
+        Maximum number of continuum waves to cache (default 20).
+    """
+    r_gpu: 'cp.ndarray'
+    w_gpu: 'cp.ndarray'
+    inv_gtr: Optional['cp.ndarray'] = None
+    log_ratio: Optional['cp.ndarray'] = None
+    filon_params: Optional[dict] = None
+    idx_limit: int = -1
+    # Phase 4: Continuum wave cache with LRU
+    chi_cache: Optional[Dict] = None
+    chi_lru: Optional[List] = None
+    max_chi_cached: int = 20
+    
+    def __post_init__(self):
+        """Initialize mutable fields after dataclass creation."""
+        if self.chi_cache is None:
+            self.chi_cache = {}
+        if self.chi_lru is None:
+            self.chi_lru = []
+    
+    @classmethod
+    def from_grid(cls, grid: RadialGrid, idx_limit: int = -1, max_chi_cached: int = 20) -> 'GPUCache':
+        """Create cache from RadialGrid."""
+        if not HAS_CUPY:
+            raise RuntimeError("GPUCache requires CuPy")
+        
+        r_gpu = cp.asarray(grid.r)
+        w_gpu = cp.asarray(grid.w_simpson)
+        
+        return cls(
+            r_gpu=r_gpu, 
+            w_gpu=w_gpu, 
+            idx_limit=idx_limit,
+            chi_cache={},
+            chi_lru=[],
+            max_chi_cached=max_chi_cached
+        )
+    
+    def get_chi(self, chi_wave: 'ContinuumWave', channel: str = 'i') -> 'cp.ndarray':
+        """
+        Get continuum wave on GPU, using cache if available.
+        
+        Parameters
+        ----------
+        chi_wave : ContinuumWave
+            The continuum wave object (CPU).
+        channel : str
+            Channel identifier ('i' for incident, 'f' for final).
+            
+        Returns
+        -------
+        cp.ndarray
+            Continuum wave on GPU.
+        """
+        key = (channel, chi_wave.l)
+        
+        # Check cache
+        if key in self.chi_cache:
+            # Update LRU
+            if key in self.chi_lru:
+                self.chi_lru.remove(key)
+            self.chi_lru.append(key)
+            return self.chi_cache[key]
+        
+        # Not in cache - transfer to GPU
+        chi_gpu = cp.asarray(chi_wave.chi_of_r)
+        
+        # LRU eviction if needed
+        while len(self.chi_cache) >= self.max_chi_cached and self.chi_lru:
+            old_key = self.chi_lru.pop(0)
+            if old_key in self.chi_cache:
+                del self.chi_cache[old_key]
+        
+        # Add to cache
+        self.chi_cache[key] = chi_gpu
+        self.chi_lru.append(key)
+        
+        return chi_gpu
+    
+    def build_kernel_matrix(self, idx_limit: int) -> None:
+        """Build base kernel matrices for given idx_limit."""
+        if self.inv_gtr is not None and self.idx_limit == idx_limit:
+            return
+        
+        # Clear old matrices
+        self.inv_gtr = None
+        self.log_ratio = None
+        
+        r_sub = self.r_gpu[:idx_limit]
+        r_col = r_sub[:, None]
+        r_row = r_sub[None, :]
+        
+        self.inv_gtr = 1.0 / cp.maximum(r_col, r_row + 1e-30)
+        ratio = cp.minimum(r_col, r_row) * self.inv_gtr
+        ratio = cp.minimum(ratio, 1.0 - 1e-12)
+        self.log_ratio = cp.log(ratio + 1e-30)
+        
+        del r_col, r_row, ratio
+        self.idx_limit = idx_limit
+    
+    def clear(self) -> None:
+        """Clear all cached data (call at end of energy point)."""
+        self.inv_gtr = None
+        self.log_ratio = None
+        self.filon_params = None
+        self.idx_limit = -1
+        # Phase 4: Clear chi cache
+        if self.chi_cache:
+            self.chi_cache.clear()
+        if self.chi_lru:
+            self.chi_lru.clear()
+        if HAS_CUPY:
+            cp.get_default_memory_pool().free_all_blocks()
+
+
 def _compute_optimal_block_size(n_grid: int, gpu_memory_threshold: float = 0.7) -> int:
     """
     Compute optimal block size based on available GPU memory.
@@ -710,17 +862,25 @@ def _generate_gpu_filon_params(r_gpu, k_total, phase_increment=1.5708, n_nodes=5
         'n_nodes': n_nodes
     }
 
-def _gpu_filon_direct(rho1_uw, int_r2, r_gpu, w_gpu, k_total, phase_increment=1.5708, n_nodes=5, precomputed=None):
+def _gpu_filon_direct(rho1_uw, int_r2, r_gpu, w_gpu, k_total, phase_increment=1.5708, n_nodes=5, precomputed=None, return_gpu=False):
     """
     GPU Filon quadrature for direct integral outer loop.
+    
+    Parameters
+    ----------
+    return_gpu : bool
+        If True, return GPU scalar (cp.ndarray with shape ()) instead of Python float.
+        This avoids GPU-CPU synchronization when accumulating in GPU arrays.
     """
     if k_total < 1e-6:
-        return float(cp.dot(rho1_uw * w_gpu, int_r2))
+        result = cp.dot(rho1_uw * w_gpu, int_r2)
+        return result if return_gpu else float(result)
     
     if precomputed is None:
         params = _generate_gpu_filon_params(r_gpu, k_total, phase_increment, n_nodes)
         if params is None:
-             return float(cp.dot(rho1_uw * w_gpu, int_r2))
+            result = cp.dot(rho1_uw * w_gpu, int_r2)
+            return result if return_gpu else float(result)
     else:
         params = precomputed
 
@@ -728,34 +888,39 @@ def _gpu_filon_direct(rho1_uw, int_r2, r_gpu, w_gpu, k_total, phase_increment=1.
     all_r_flat = params['all_r_flat']
     weights_scaled = params['weights_scaled']
     n_nodes = params['n_nodes']
-    # idx_right = params['idx_right'] # unused in direct if using cp.interp, but can be used for optimized interp
     
     # OPTIMIZED: Pure GPU interpolation
-    # Note: cp.interp is slow? We can use precomputed indices if we implement custom lerp
     rho1_cc = cp.interp(all_r_flat, r_gpu, rho1_uw).reshape(n_valid, n_nodes)
     int_r2_cc = cp.interp(all_r_flat, r_gpu, int_r2).reshape(n_valid, n_nodes)
     
     integrand = rho1_cc * int_r2_cc
     
-    # Sum
-    result = float(cp.sum(integrand * weights_scaled))
-    return result
+    # Sum - stays on GPU if return_gpu=True
+    result = cp.sum(integrand * weights_scaled)
+    return result if return_gpu else float(result)
 
 
 
-def _gpu_filon_exchange(kernel_L, rho1_uw, rho2_uw, r_gpu, w_gpu, k_total, phase_increment=1.5708, n_nodes=5, precomputed=None):
+def _gpu_filon_exchange(kernel_L, rho1_uw, rho2_uw, r_gpu, w_gpu, k_total, phase_increment=1.5708, n_nodes=5, precomputed=None, return_gpu=False):
     """
     GPU Filon quadrature for exchange integral (CC on both inner and outer).
+    
+    Parameters
+    ----------
+    return_gpu : bool
+        If True, return GPU scalar instead of Python float.
     """
     if k_total < 1e-6:
         int_r2 = cp.dot(kernel_L, rho2_uw * w_gpu)
-        return float(cp.dot(rho1_uw * w_gpu, int_r2))
+        result = cp.dot(rho1_uw * w_gpu, int_r2)
+        return result if return_gpu else float(result)
     
     if precomputed is None:
         params = _generate_gpu_filon_params(r_gpu, k_total, phase_increment, n_nodes)
         if params is None:
-             int_r2 = cp.dot(kernel_L, rho2_uw * w_gpu)
-             return float(cp.dot(rho1_uw * w_gpu, int_r2))
+            int_r2 = cp.dot(kernel_L, rho2_uw * w_gpu)
+            result = cp.dot(rho1_uw * w_gpu, int_r2)
+            return result if return_gpu else float(result)
     else:
         params = precomputed
         
@@ -771,7 +936,6 @@ def _gpu_filon_exchange(kernel_L, rho1_uw, rho2_uw, r_gpu, w_gpu, k_total, phase
     n_r = len(r_gpu)
     
     # Kernel interpolation: reconstruct kernel at CC nodes
-    # We do this from either full kernel_L or sliced components
     if isinstance(kernel_L, dict):
         # Optimized path: use pre-sliced components
         inv_gtr_at_cc = kernel_L['inv_gtr_at_cc']
@@ -785,9 +949,9 @@ def _gpu_filon_exchange(kernel_L, rho1_uw, rho2_uw, r_gpu, w_gpu, k_total, phase
         # Standard path: slice from full matrix
         kernel_at_cc = kernel_L[:, idx_left] * weight_left + kernel_L[:, idx_right] * weight_right
     kernel_interp = kernel_at_cc.reshape(n_r, n_valid, n_nodes)
+    
     # OPTIMIZED: Pure GPU interpolation for rho2
     rho2_cc = cp.interp(all_r_flat, r_gpu, rho2_uw).reshape(n_valid, n_nodes)
-
 
     # Inner integral: for each r1, sum over CC nodes with weights
     inner_integrand = kernel_interp * rho2_cc[None, :, :]
@@ -800,9 +964,9 @@ def _gpu_filon_exchange(kernel_L, rho1_uw, rho2_uw, r_gpu, w_gpu, k_total, phase
     int_r2_outer = cp.interp(all_r_flat, r_gpu, int_r2_cc).reshape(n_valid, n_nodes)
     
     outer_integrand = rho1_cc * int_r2_outer
-    result = float(cp.sum(outer_integrand * weights_scaled))
+    result = cp.sum(outer_integrand * weights_scaled)
     
-    return result
+    return result if return_gpu else float(result)
 
 
 def radial_ME_all_L_gpu(
@@ -823,7 +987,8 @@ def radial_ME_all_L_gpu(
     min_grid_fraction: float = 0.10,
     k_threshold: float = 0.5,
     gpu_memory_mode: str = "auto",
-    gpu_memory_threshold: float = 0.7
+    gpu_memory_threshold: float = 0.7,
+    gpu_cache: Optional[GPUCache] = None  # Phase 3: Energy-level cache
 ) -> RadialDWBAIntegrals:
     """
     GPU Accelerated Version of radial_ME_all_L using CuPy.
@@ -891,16 +1056,24 @@ def radial_ME_all_L_gpu(
     sigma_i = cont_i.sigma_l if hasattr(cont_i, 'sigma_l') else 0.0
     sigma_f = cont_f.sigma_l if hasattr(cont_f, 'sigma_l') else 0.0
     
-    # 1. Transfer Data to GPU
+    # 1. Transfer Data to GPU (or use cache)
     # Match point limit for r1 and continuum waves
     r_lim = r[:idx_limit]
-    r_gpu = cp.asarray(r_lim)
-    w_lim = grid.w_simpson[:idx_limit]
-    w_gpu = cp.asarray(w_lim)
     
-    # Full grid data for bound states and multipole moments (parity with CPU)
-    w_full_gpu = cp.asarray(grid.w_simpson)
-    r_full_gpu = cp.asarray(r)
+    # Use cached grid data if available, otherwise transfer
+    if gpu_cache is not None:
+        r_gpu = gpu_cache.r_gpu[:idx_limit]
+        w_gpu = gpu_cache.w_gpu[:idx_limit]
+        r_full_gpu = gpu_cache.r_gpu
+        w_full_gpu = gpu_cache.w_gpu
+    else:
+        r_gpu = cp.asarray(r_lim)
+        w_lim = grid.w_simpson[:idx_limit]
+        w_gpu = cp.asarray(w_lim)
+        r_full_gpu = cp.asarray(r)
+        w_full_gpu = cp.asarray(grid.w_simpson)
+    
+    # Bound state data (must be transferred - depends on target)
     u_i_full_gpu = cp.asarray(bound_i.u_of_r)
     if isinstance(bound_f, BoundOrbital):
         u_f_full_gpu = cp.asarray(bound_f.u_of_r)
@@ -912,8 +1085,16 @@ def radial_ME_all_L_gpu(
     # Match point sliced data for standard integrals
     u_i_gpu = cp.asarray(bound_i.u_of_r[:idx_limit])
     u_f_gpu = u_f_full_gpu[:idx_limit] # already array
-    chi_i_gpu = cp.asarray(cont_i.chi_of_r[:idx_limit])
-    chi_f_gpu = cp.asarray(cont_f.chi_of_r[:idx_limit])
+    
+    # Phase 4: Use cached continuum waves when gpu_cache is available
+    if gpu_cache is not None:
+        chi_i_full = gpu_cache.get_chi(cont_i, 'i')
+        chi_f_full = gpu_cache.get_chi(cont_f, 'f')
+        chi_i_gpu = chi_i_full[:idx_limit]
+        chi_f_gpu = chi_f_full[:idx_limit]
+    else:
+        chi_i_gpu = cp.asarray(cont_i.chi_of_r[:idx_limit])
+        chi_f_gpu = cp.asarray(cont_f.chi_of_r[:idx_limit])
     
     V_diff_gpu = cp.asarray((V_core_array - U_i_array)[:idx_limit])
 
@@ -1082,8 +1263,11 @@ def radial_ME_all_L_gpu(
         logger.info("GPU mode: %s", mode_str)
         radial_ME_all_L_gpu._last_mode = mode_str
     
-    I_L_dir: Dict[int, float] = {}
-    I_L_exc: Dict[int, float] = {}
+    # === PHASE 1 OPTIMIZATION: GPU Array Accumulation ===
+    # Instead of Dict[int, float] with per-L float() syncs, use GPU arrays
+    # and do a single transfer at the end. This eliminates ~2×L_max syncs.
+    I_L_dir_gpu = cp.zeros(L_max + 1, dtype=cp.float64)
+    I_L_exc_gpu = cp.zeros(L_max + 1, dtype=cp.float64)
 
     # Block size for block-wise computation (only used if needed)
     # Handle string "auto" or int values
@@ -1095,6 +1279,12 @@ def radial_ME_all_L_gpu(
     
     # Precompute rho2_eff_full ONCE before L-loop (optimization: was computed per-L)
     rho2_eff_full = (u_f_full_gpu * u_i_full_gpu) * w_full_gpu if use_filon else None
+    
+    # Precompute L=0 correction terms on GPU (avoid per-L sync)
+    sum_rho2_dir = cp.sum(rho2_dir_w)
+    sum_rho2_ex = cp.sum(rho2_ex_w)
+    V_diff_dot_rho1_dir = cp.dot(rho1_dir_w, V_diff_gpu)
+    V_diff_dot_rho1_ex = cp.dot(rho1_ex_w, V_diff_gpu)
 
     for L in range(L_max + 1):
         kernel_L = None
@@ -1182,11 +1372,12 @@ def radial_ME_all_L_gpu(
         if use_filon:
             # oscillatory_method: legacy, full_split, or advanced
             # int_r2_dir was already computed block-wise above to save memory
-            I_in = _gpu_filon_direct(rho1_dir_uw, int_r2_dir, r_gpu, w_gpu, k_total, phase_increment, CC_nodes, precomputed=filon_params)
+            # NOTE: _gpu_filon_direct returns a GPU scalar, not Python float
+            I_dir_L = _gpu_filon_direct(rho1_dir_uw, int_r2_dir, r_gpu, w_gpu, k_total, phase_increment, CC_nodes, precomputed=filon_params, return_gpu=True)
             
             if oscillatory_method == "legacy":
-                I_dir = I_in
-                # Add analytical tail if applicable
+                # Add analytical tail if applicable (requires CPU computation)
+                # For legacy mode, we still need float conversion for tail
                 if L >= 1 and idx_limit < N_grid - 10 and is_excitation:
                     moment_L = float(cp.sum(w_gpu * (r_gpu ** L) * u_f_gpu * u_i_gpu))
                     if abs(moment_L) > 1e-12:
@@ -1194,10 +1385,9 @@ def radial_ME_all_L_gpu(
                             r_match, k_i, k_f, delta_i, delta_f, l_i, l_f, L, moment_L,
                             eta_i, eta_f, sigma_i, sigma_f
                         )
-                        I_dir += tail_contrib
+                        I_dir_L = I_dir_L + tail_contrib
             else:
                 # full_split or advanced: both use Levin/Filon for tail
-                I_out = 0.0
                 if L >= 1 and idx_limit < N_grid - 10 and is_excitation:
                     # Multipole moment from bound states (use full grid for accuracy)
                     moment_L = float(cp.sum(w_full_gpu * (r_full_gpu ** L) * u_f_full_gpu * u_i_full_gpu))
@@ -1215,42 +1405,45 @@ def radial_ME_all_L_gpu(
                             r_match, float(grid.r[-1]),
                             delta_phi=np.pi / 4
                         )
-                I_dir = I_in + I_out
+                        I_dir_L = I_dir_L + I_out
         else:
-            # Standard method (weighted densities)
-            # kernel_L was computed if not use_filon
+            # Standard method (weighted densities) - stays on GPU
             int_r2 = cp.dot(kernel_L, rho2_dir_w)
-            I_dir = float(cp.dot(rho1_dir_w, int_r2))
+            I_dir_L = cp.dot(rho1_dir_w, int_r2)
         
-        # L=0 correction
+        # L=0 correction using precomputed GPU values
         if L == 0:
-            sum_rho2 = float(cp.sum(rho2_dir_w))
-            if abs(sum_rho2) > overlap_tol:
-                corr_val = float(cp.dot(rho1_dir_w, V_diff_gpu) * sum_rho2)
-                I_dir += corr_val
+            # Use precomputed sums (no sync here)
+            I_dir_L = I_dir_L + V_diff_dot_rho1_dir * sum_rho2_dir
                 
-        I_L_dir[L] = I_dir
+        I_L_dir_gpu[L] = I_dir_L
         
         # --- Exchange Integral on GPU ---
         if use_oscillatory_quadrature and k_total > k_threshold:
             # Use GPU Filon + CC for exchange (both inner and outer)
             # Pass pre-sliced components instead of full matrix to save memory
             k_spec = {**kernel_at_cc_pre, 'L': L} if 'kernel_at_cc_pre' in locals() else kernel_L
-            I_ex = _gpu_filon_exchange(
+            I_ex_L = _gpu_filon_exchange(
                 k_spec, rho1_ex_uw, rho2_ex_uw, r_gpu, w_gpu, k_total, 
-                phase_increment, CC_nodes, precomputed=filon_params
+                phase_increment, CC_nodes, precomputed=filon_params, return_gpu=True
             )
         else:
             int_r2_ex = cp.dot(kernel_L, rho2_ex_w)
-            I_ex = float(cp.dot(rho1_ex_w, int_r2_ex))
+            I_ex_L = cp.dot(rho1_ex_w, int_r2_ex)
 
+        # L=0 exchange correction using precomputed GPU values
         if L == 0:
-            sum_rho2_ex = float(cp.sum(rho2_ex_w))
-            if abs(sum_rho2_ex) > overlap_tol:
-                corr_val_ex = float(cp.dot(rho1_ex_w, V_diff_gpu) * sum_rho2_ex)
-                I_ex += corr_val_ex
+            I_ex_L = I_ex_L + V_diff_dot_rho1_ex * sum_rho2_ex
                 
-        I_L_exc[L] = I_ex
+        I_L_exc_gpu[L] = I_ex_L
+        
+    # === SINGLE TRANSFER AT END ===
+    # Convert GPU arrays to CPU and build result dicts
+    I_L_dir_cpu = I_L_dir_gpu.get()
+    I_L_exc_cpu = I_L_exc_gpu.get()
+    
+    I_L_dir = {L: float(I_L_dir_cpu[L]) for L in range(L_max + 1)}
+    I_L_exc = {L: float(I_L_exc_cpu[L]) for L in range(L_max + 1)}
         
     # Cleanup big arrays (only if they exist and weren't already deleted)
     # Note: These may have been deleted earlier in block-wise paths
@@ -1262,6 +1455,6 @@ def radial_ME_all_L_gpu(
         del filon_inv_gtr
     if 'filon_log_ratio' in locals() and filon_log_ratio is not None:
         del filon_log_ratio
-    cp.get_default_memory_pool().free_all_blocks()
+    # NOTE: Removed free_all_blocks() from here - moved to driver.py level (Phase 2)
 
     return RadialDWBAIntegrals(I_L_direct=I_L_dir, I_L_exchange=I_L_exc)

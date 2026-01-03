@@ -625,6 +625,35 @@ To prevent system memory exhaustion on large grids:
 - Memory for each block is explicitly freed from the CuPy pool before the next block begins.
 - Result: **Constant VRAM usage**, independent of $N_{grid}$.
 
+#### GPU Cache Architecture (v2.5+)
+
+The `GPUCache` class provides **energy-level resource reuse** to minimize GPU transfers:
+
+**Cached Resources:**
+- `r_gpu`, `w_gpu` — Persistent grid arrays (full grid)
+- `chi_cache` — LRU-managed continuum wave cache (max 20 entries)
+
+**Synchronization Reduction:**
+- Radial matrix elements accumulated in GPU arrays (`I_L_dir_gpu`, `I_L_exc_gpu`)
+- Single `.get()` transfer at end of L-loop instead of ~2×L_max syncs per call
+- L=0 correction terms precomputed on GPU
+
+**Usage:**
+```python
+# Created once per energy point in driver.py
+gpu_cache = GPUCache.from_grid(grid, max_chi_cached=20)
+
+# Passed to all radial_ME_all_L_gpu calls
+integrals = radial_ME_all_L_gpu(..., gpu_cache=gpu_cache)
+
+# Cleanup at end of energy point
+gpu_cache.clear()
+```
+
+**Configuration:**
+- `max_chi_cached: 20` — Maximum cached continuum waves (LRU eviction)
+- Automatically adapts to available VRAM
+
 **Algorithmic Optimizations:**
 - Module-level CC weight caching (~25% speedup)
 - Vectorized kernel interpolation (searchsorted + linear)

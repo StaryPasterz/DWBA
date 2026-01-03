@@ -98,6 +98,7 @@ class OscillatoryConfig:
     gpu_block_size: Union[int, str] = "auto"  # "auto" or explicit int
     gpu_memory_mode: Literal["auto", "full", "block"] = "auto"
     gpu_memory_threshold: float = 0.7
+    max_chi_cached: int = 20  # v2.5: LRU cache size for GPU continuum waves
     n_workers: Union[int, str] = "auto"  # "auto", "max", or explicit int count
 
 @dataclass
