@@ -6,6 +6,46 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v2.6] — 2026-01-03 — Adaptive Grid Strategies
+
+Introduces user-selectable strategies for radial grid adaptation, optimizing performance and accuracy.
+
+### Adaptive Grid Strategies
+
+**Files**: `DW_main.py`, `config_loader.py`
+
+New `grid.strategy` configuration option with 3 modes:
+- **Global (default)**: Calculates optimal `r_max` and `n_points` based on the lowest energy in the scan. Single target preparation.
+- **Local**: Recalculates optimal grid parameters for *each* energy point. Most accurate but slower due to repeated bound state solving. Uses 5% change threshold to avoid unnecessary recalculations.
+- **Manual**: Uses fixed `r_max` and `n_points` from configuration.
+
+**Helper**: `calculate_optimal_grid_params()` logic extracted and formalized.
+
+### Grid Strategy Implementation Fix (v2.6.1)
+
+**Files**: `DW_main.py`
+
+- **Fixed**: Interactive mode now correctly reads and applies `params['grid']['strategy']` 
+- **Added**: Comprehensive logging showing actual grid parameters being used
+- **Added**: Per-energy grid recalculation for LOCAL mode with optimization (only recalc if params change >5%)
+- **Added**: Strategy information included in result metadata (`run_meta['grid']['strategy']`)
+- **Improved**: User feedback with `print_subheader("Grid Configuration")` and detailed parameter display
+
+**Logging examples**:
+```
+  Strategy: GLOBAL (single adaptive calculation)
+    E_min = 10.7 eV, k_min = 0.42 a.u.
+    r_max = 200.0 a.u., n_points = 3000
+```
+
+### Configuration Updates
+
+- `GridConfig`: Added `strategy` field.
+- `DW_main.py`: Updated interactive menu to allow selecting grid strategy.
+- **Updated**: All example config files with improved strategy documentation.
+
+---
+
 ## [v2.5] — 2026-01-03 — GPU Optimization V3
 
 Major GPU performance improvements reducing synchronization overhead and adding energy-level caching.
@@ -53,6 +93,37 @@ gpu_cache.clear()  # At end of energy point
 - Removed `free_all_blocks()` from per-call locations
 - Cleanup consolidated in `GPUCache.clear()` at end of energy point
 - Avoids GPU sync overhead from frequent pool flushing
+
+### Pilot Light Mode
+
+**Files**: `driver.py`, `DW_main.py`, `config_loader.py`
+
+Fast calibration mode with reduced parameters for faster pilot calculations:
+
+**New Config Parameters** (in `excitation` section):
+- `pilot_L_max_integrals: 8` — Lower than production (reduces computation)
+- `pilot_L_max_projectile: 30` — Limited partial waves
+- `pilot_n_theta: 50` — TCS only, DCS not needed for calibration
+
+**Usage in DW_main.py**:
+```python
+pilot_res = compute_excitation_cs_precalc(
+    pilot_E, prep, 
+    n_theta=pilot_n_theta,
+    L_max_integrals_override=pilot_L_max_integrals,
+    L_max_projectile_override=pilot_L_max_projectile
+)
+```
+
+**Impact**: Pilot calibration is 5-10x faster with minimal effect on α accuracy
+
+### Improved Logging
+
+**Files**: `driver.py`
+
+- `log_calculation_params()` now accepts `actual_gpu_mode` and `actual_block_size`
+- Displays actual values used, not just configured values
+- Block display: "full-matrix" when using full matrix mode, else block size
 
 ---
 

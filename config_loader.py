@@ -66,6 +66,7 @@ class EnergyConfig:
 @dataclass
 class GridConfig:
     """Radial grid configuration."""
+    strategy: Literal["manual", "global", "local"] = "global"  # v2.6+
     r_max: float = 200.0
     n_points: int = 3000
     r_max_scale_factor: float = 2.5
@@ -74,10 +75,15 @@ class GridConfig:
 @dataclass
 class ExcitationConfig:
     """Excitation-specific parameters."""
+    # Production parameters
     L_max_integrals: int = 15
     L_max_projectile: int = 5
     n_theta: int = 200
     pilot_energy_eV: float = 1000.0
+    # Pilot light mode parameters (v2.5+) - reduced for fast calibration
+    pilot_L_max_integrals: int = 8         # Lower than production L_max_integrals
+    pilot_L_max_projectile: int = 30       # Auto-scaled, but limited
+    pilot_n_theta: int = 50                # TCS only, DCS not needed
 
 @dataclass
 class IonizationConfig:
@@ -269,6 +275,7 @@ def load_config(path: Union[str, Path]) -> DWBAConfig:
     if 'grid' in raw_data:
         g = raw_data['grid']
         config.grid = GridConfig(
+            strategy=g.get('strategy', 'global'),  # v2.6+: manual/global/local
             r_max=g.get('r_max', 200.0),
             n_points=g.get('n_points', 3000),
             r_max_scale_factor=g.get('r_max_scale_factor', 2.5),
@@ -395,6 +402,7 @@ def config_to_params_dict(config: DWBAConfig) -> Dict[str, Dict[str, Any]]:
     """
     return {
         'grid': {
+            'strategy': config.grid.strategy,  # v2.6+
             'r_max': config.grid.r_max,
             'n_points': config.grid.n_points,
             'r_max_scale_factor': config.grid.r_max_scale_factor,
@@ -405,6 +413,10 @@ def config_to_params_dict(config: DWBAConfig) -> Dict[str, Dict[str, Any]]:
             'L_max_projectile': config.excitation.L_max_projectile,
             'n_theta': config.excitation.n_theta,
             'pilot_energy_eV': config.excitation.pilot_energy_eV,
+            # Pilot light mode (v2.5+)
+            'pilot_L_max_integrals': config.excitation.pilot_L_max_integrals,
+            'pilot_L_max_projectile': config.excitation.pilot_L_max_projectile,
+            'pilot_n_theta': config.excitation.pilot_n_theta,
         },
         'ionization': {
             'l_eject_max': config.ionization.l_eject_max,
@@ -421,6 +433,7 @@ def config_to_params_dict(config: DWBAConfig) -> Dict[str, Dict[str, Any]]:
             'gpu_block_size': config.oscillatory.gpu_block_size,
             'gpu_memory_mode': config.oscillatory.gpu_memory_mode,
             'gpu_memory_threshold': config.oscillatory.gpu_memory_threshold,
+            'max_chi_cached': config.oscillatory.max_chi_cached,  # v2.5+
             'n_workers': config.oscillatory.n_workers,
         },
     }

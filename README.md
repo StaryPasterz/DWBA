@@ -222,6 +222,7 @@ All numerical defaults are organized by category and displayed before calculatio
 
 ```
   ┌─ GRID ─────────────────────────────
+  │  strategy               = "global"   # "global" / "local" / "manual" (v2.6+)
   │  r_max                  = 200
   │  n_points               = 3000
   │  r_max_scale_factor     = 2.5
@@ -233,6 +234,9 @@ All numerical defaults are organized by category and displayed before calculatio
   │  L_max_projectile       = 5
   │  n_theta                = 200
   │  pilot_energy_eV        = 1000
+  │  pilot_L_max_integrals  = 8      # v2.5+
+  │  pilot_L_max_projectile = 30     # v2.5+
+  │  pilot_n_theta          = 50     # v2.5+
   └────────────────────────────────────
 
   ┌─ OSCILLATORY ──────────────────────
@@ -244,8 +248,50 @@ All numerical defaults are organized by category and displayed before calculatio
   │  gpu_block_size         = auto
   │  gpu_memory_mode        = "auto"
   │  gpu_memory_threshold   = 0.7
+  │  max_chi_cached         = 20     # v2.5+
   │  n_workers              = auto
   └────────────────────────────────────
+```
+
+### Adaptive Grid Strategies (v2.6+)
+
+The code supports three strategies for determining the radial grid (`r_max`, `n_points`):
+
+1. **Global (Default)**
+   - Calculates optimal grid parameters based on the *lowest* energy in the scan.
+   - Pre-calculates target properties once.
+   - **Pros**: Balanced performance/accuracy, single target prep.
+   - **Cons**: Excessive grid size for high-energy points in wide scans.
+
+2. **Local**
+   - Recalculates optimal grid parameters for *each* energy point.
+   - Re-runs target preparation (bound states, core potential) for every point.
+   - **Pros**: Most accurate, optimal grid size per energy.
+   - **Cons**: Slower due to repeated target preparation.
+
+3. **Manual**
+   - Uses fixed `r_max` and `n_points` defined in configuration.
+   - **Pros**: Complete user control, predictable memory usage.
+   - **Cons**: Risk of insufficient grid for low energies or high partial waves.
+
+### Pilot Light Mode (v2.5+)
+
+Fast calibration with reduced parameters for faster startup:
+
+| Parameter | Production | Pilot Light | Impact |
+|-----------|------------|-------------|--------|
+| `L_max_integrals` | 15 | 8 | Fewer multipole terms |
+| `L_max_projectile` | (auto) | 30 | Limited partial waves |
+| `n_theta` | 200 | 50 | TCS-only (DCS not needed) |
+
+**Speedup**: Pilot runs 5-10x faster with minimal effect on calibration α.
+
+**Configuration** (in `excitation` section of YAML):
+```yaml
+excitation:
+  pilot_L_max_integrals: 8
+  pilot_L_max_projectile: 30
+  pilot_n_theta: 50
 ```
 
 When prompted, enter:

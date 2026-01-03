@@ -174,8 +174,26 @@ def get_worker_count(silent: bool = False) -> int:
     return selected_count
 
 
-def log_calculation_params(mode: str, L_max_proj: int):
-    """Log a consistent summary of calculation parameters."""
+def log_calculation_params(
+    mode: str, 
+    L_max_proj: int,
+    actual_gpu_mode: Optional[str] = None,
+    actual_block_size: Optional[int] = None
+):
+    """
+    Log a consistent summary of calculation parameters.
+    
+    Parameters
+    ----------
+    mode : str
+        "GPU" or "CPU Parallel"
+    L_max_proj : int
+        Actual L_max for projectile partial waves.
+    actual_gpu_mode : str, optional
+        Actual GPU memory mode used (e.g., "full", "block").
+    actual_block_size : int, optional
+        Actual block size used (0 = full matrix).
+    """
     from dwba_matrix_elements import HAS_CUPY
     
     method = OSCILLATORY_CONFIG.get("method", "advanced")
@@ -185,10 +203,22 @@ def log_calculation_params(mode: str, L_max_proj: int):
     logger.info("Numerical Config  | Method: %s | CPU Workers: %d", method, workers)
     
     if HAS_CUPY and mode == "GPU":
-        # Additional GPU info if active
-        gpu_mode = OSCILLATORY_CONFIG.get("gpu_memory_mode", "auto")
-        block_size = OSCILLATORY_CONFIG.get("gpu_block_size", "auto")
-        logger.info("Hardware          | Platform: GPU (CuPy) | Mode: %s | Block: %s", gpu_mode, block_size)
+        # Show actual vs configured GPU parameters
+        gpu_mode_cfg = OSCILLATORY_CONFIG.get("gpu_memory_mode", "auto")
+        block_cfg = OSCILLATORY_CONFIG.get("gpu_block_size", "auto")
+        
+        # Use actual values if provided, else config values
+        gpu_mode_used = actual_gpu_mode or gpu_mode_cfg
+        block_used = actual_block_size if actual_block_size is not None else block_cfg
+        
+        # Format block display
+        if block_used == 0 or block_used == "auto":
+            block_disp = "full-matrix"
+        else:
+            block_disp = f"{block_used}"
+        
+        logger.info("Hardware          | Platform: GPU (CuPy) | Memory: %s | Block: %s", 
+                   gpu_mode_used, block_disp)
     else:
         logger.info("Hardware          | Platform: CPU (NumPy)")
 
@@ -1002,9 +1032,27 @@ def prepare_target(
 def compute_excitation_cs_precalc(
     E_incident_eV: float,
     prep: PreparedTarget,
-    n_theta: int = 200
+    n_theta: int = 200,
+    # Pilot light mode overrides (v2.5+)
+    L_max_integrals_override: Optional[int] = None,
+    L_max_projectile_override: Optional[int] = None,
 ) -> DWBAResult:
-    """Efficient runner using pre-computed target data."""
+    """
+    Efficient runner using pre-computed target data.
+    
+    Parameters
+    ----------
+    E_incident_eV : float
+        Incident electron energy in eV.
+    prep : PreparedTarget
+        Pre-computed target data from prepare_target().
+    n_theta : int
+        Number of theta points for DCS (can be reduced for pilot).
+    L_max_integrals_override : int, optional
+        Override L_max for radial integrals (pilot light mode).
+    L_max_projectile_override : int, optional
+        Override L_max for projectile partial waves (pilot light mode).
+    """
     
     E_final_eV = E_incident_eV - prep.dE_target_eV
     if E_final_eV <= 0.0:
@@ -1026,12 +1074,25 @@ def compute_excitation_cs_precalc(
     k_i_au = float(k_from_E_eV(E_incident_eV))
     k_f_au = float(k_from_E_eV(E_final_eV))
     
+    # Use channel from prep, optionally with L_max overrides for pilot mode
+    chan = prep.chan
+    if L_max_integrals_override is not None or L_max_projectile_override is not None:
+        # Create modified ChannelSpec for pilot light mode
+        from dataclasses import replace
+        chan = replace(
+            prep.chan,
+            L_max_integrals=L_max_integrals_override or prep.chan.L_max_integrals,
+            L_max_projectile=L_max_projectile_override or prep.chan.L_max_projectile
+        )
+        logger.debug("Pilot light mode: L_max_integrals=%d, L_max_projectile=%d",
+                    chan.L_max_integrals, chan.L_max_projectile)
+    
     # We delegate back to the main runner which now supports 
     # injected pre-calculated objects.
     # This ensures we use the full robust logic (GPU/Parallel).
     
     return compute_total_excitation_cs(
-        E_incident_eV, prep.chan, prep.core_params,
+        E_incident_eV, chan, prep.core_params,
         n_points=len(prep.grid.r),
         n_theta=n_theta,
         use_polarization_potential=prep.use_polarization,

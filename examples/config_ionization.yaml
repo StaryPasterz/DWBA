@@ -27,6 +27,7 @@ energy:
   density: 0.5
 
 grid:
+  strategy: "global"  # "manual" = fixed params, "global" = adaptive for E_min (recommended), "local" = per-energy adaptive
   r_max: 200
   n_points: 3000
   r_max_scale_factor: 2.5
