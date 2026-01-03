@@ -58,7 +58,7 @@ oscillatory:
   gpu_memory_mode: "auto"        # "auto" (smart), "full" (fast), "block" (safe)
   gpu_memory_threshold: 0.7      # [dimensionless] Max VRAM fraction to use
   max_chi_cached: 20             # [count] LRU cache size for continuum waves
-  n_workers: "max"               # "auto" (balanced), "max" (all cores), or int
+  n_workers: 8               # "auto" (balanced), "max" (all cores), or int
 
 output:
   save_dcs: true                 # Save differential cross section

@@ -951,8 +951,13 @@ def run_scan_excitation(run_name):
                     r_local, n_local = calculate_optimal_grid_params(
                         E, L_max_proj, base_r_max, base_n_points, scale_factor, n_points_max
                     )
-                    # Only re-prepare if grid parameters changed significantly (>5%)
-                    if abs(r_local - r_max_calc) / r_max_calc > 0.05 or abs(n_local - n_points_calc) / n_points_calc > 0.05:
+                    # Check if grid parameters changed
+                    current_r_max = current_prep.grid.r[-1]
+                    current_n_pts = len(current_prep.grid.r)
+                    params_changed = (abs(r_local - current_r_max) > 0.1 or 
+                                     abs(n_local - current_n_pts) > 1)
+                    
+                    if params_changed or i_E == 0:
                         current_prep = prepare_target(
                             chan=spec,
                             core_params=core_params,
@@ -960,9 +965,9 @@ def run_scan_excitation(run_name):
                             r_max=r_local,
                             n_points=n_local
                         )
-                        # Log only periodically to avoid spam
-                        if i_E % 5 == 0:
-                            logger.info("LOCAL grid update: E=%.1f eV -> r_max=%.1f, n_points=%d", E, r_local, n_local)
+                        logger.info("Local Adaptive  | E=%.1f eV: r_max=%.1f a.u., n_points=%d", 
+                                   E, r_local, n_local)
+                        prep = current_prep  # Update reference for next comparison
                 
                 res = compute_excitation_cs_precalc(E, current_prep, n_theta=n_theta)
                 
@@ -1574,7 +1579,8 @@ def run_from_config(config_path: str, verbose: bool = False) -> None:
     else:
         energy_grid = [config.energy.start_eV]
     
-    print(f"  Energy grid: {len(energy_grid)} points ({energy_grid[0]:.1f} - {energy_grid[-1]:.1f} eV)")
+    logger.info("Energy Grid     | %d points (%.1f - %.1f eV)", 
+               len(energy_grid), energy_grid[0], energy_grid[-1])
     
     # Run calculation
     if config.calculation_type == "excitation":
@@ -1597,33 +1603,31 @@ def run_from_config(config_path: str, verbose: bool = False) -> None:
         scale_factor = params['grid'].get('r_max_scale_factor', 2.5)
         n_points_max = params['grid'].get('n_points_max', 8000)
         
-        print(f"  Grid Strategy: {strategy.upper()}")
-        
         # Determine parameters for initial target prep
-        # (Used for threshold determination and Global/Manual modes)
         if strategy == 'manual':
             r_max_calc, n_points_calc = base_r_max, base_n_points
-            print(f"    Using fixed params: r_max={r_max_calc:.1f}, n_points={n_points_calc}")
+            logger.info("Grid Strategy   | MANUAL (r_max=%.1f a.u., n_points=%d)", 
+                       r_max_calc, n_points_calc)
         elif strategy == 'local':
-            # LOCAL: Start with optimal grid for lowest energy (initial prep)
             E_ref = min(energy_grid)
             r_max_calc, n_points_calc = calculate_optimal_grid_params(
                 E_ref, params['excitation']['L_max_projectile'],
                 base_r_max, base_n_points, scale_factor, n_points_max
             )
-            print(f"    Initial prep (E_min={E_ref:.1f} eV): r_max={r_max_calc:.1f}, n_points={n_points_calc}")
-            print(f"    Grid will be recalculated for each energy point.")
+            logger.info("Grid Strategy   | LOCAL (per-energy adaptive)")
+            logger.info("Grid Initial    | E_min=%.1f eV: r_max=%.1f a.u., n_points=%d", 
+                       E_ref, r_max_calc, n_points_calc)
         else:  # 'global' (default)
-            # Global: Calculate optimal grid for lowest energy, use for all
             E_ref = min(energy_grid)
             r_max_calc, n_points_calc = calculate_optimal_grid_params(
                 E_ref, params['excitation']['L_max_projectile'],
                 base_r_max, base_n_points, scale_factor, n_points_max
             )
-            print(f"    E_min={E_ref:.1f} eV: r_max={r_max_calc:.1f}, n_points={n_points_calc}")
+            logger.info("Grid Strategy   | GLOBAL (E_min=%.1f eV: r_max=%.1f a.u., n_points=%d)", 
+                       E_ref, r_max_calc, n_points_calc)
 
         # --- Pre-calculate static target properties ---
-        print("  Pre-calculating static target properties...", end=" ", flush=True)
+        logger.info("Target Prep     | Pre-calculating bound states...")
         use_pol = (config.physics_model == "polarization")
         
         # Initial preparation (serves as the fixed prep for Manual/Global)
@@ -1634,13 +1638,12 @@ def run_from_config(config_path: str, verbose: bool = False) -> None:
             r_max=r_max_calc,
             n_points=n_points_calc
         )
-        print("done")
         
         # Get threshold and binding energies from prep (no duplicate calculation)
         threshold_eV = prep.dE_target_eV
         E_f_au = prep.orb_f.energy_au  # For TongModel
         
-        print(f"  Threshold: {threshold_eV:.2f} eV")
+        logger.info("Threshold       | %.2f eV", threshold_eV)
         
         # Transition class for calibration
         delta_l = abs(lf - li)
@@ -1652,7 +1655,7 @@ def run_from_config(config_path: str, verbose: bool = False) -> None:
             print_error("All energies are below threshold!")
             return
             
-        print(f"  Grid: {len(energies)} points above threshold")
+        logger.info("Active Points   | %d points above threshold", len(energies))
 
         # --- Initialize calibrator ---
         alpha = 1.0
@@ -1665,7 +1668,8 @@ def run_from_config(config_path: str, verbose: bool = False) -> None:
             pilot_L_proj = params['excitation'].get('pilot_L_max_projectile', 30)
             pilot_n_th = params['excitation'].get('pilot_n_theta', 50)
             
-            print(f"  Running pilot at {pilot_E:.0f} eV for calibration (L_int={pilot_L_int}, L_proj={pilot_L_proj}, n_θ={pilot_n_th})...", end=" ", flush=True)
+            logger.info("Pilot Calc      | E=%d eV (L_int=%d, L_proj=%d, n_θ=%d)...", 
+                       pilot_E, pilot_L_int, pilot_L_proj, pilot_n_th)
             
             try:
                 pilot_res = compute_excitation_cs_precalc(
@@ -1675,9 +1679,9 @@ def run_from_config(config_path: str, verbose: bool = False) -> None:
                     L_max_projectile_override=pilot_L_proj
                 )
                 alpha = tong_model.calibrate_alpha(pilot_E, pilot_res.sigma_total_cm2)
-                print(f"done. α = {alpha:.3f}")
+                logger.info("Calibration     | α = %.3f", alpha)
             except Exception as e:
-                print(f"failed ({e}). Using default α=1.0")
+                logger.warning("Pilot failed: %s. Using α=1.0", e)
 
         # --- Build metadata (same as interactive) ---
         n_theta = params['excitation']['n_theta']
@@ -1734,20 +1738,23 @@ def run_from_config(config_path: str, verbose: bool = False) -> None:
                             params['grid']['r_max_scale_factor'],
                             params['grid']['n_points_max']
                         )
-                        # Only re-prepare if significantly different to save time?
-                        # For now, strictly follow strategy: re-calc every time.
-                        # This ensures correctness for "Local".
-                        # Use quiet=True if implemented, or just capture output?
-                        # prepare_target prints nothing unless logging is on.
-                        current_prep = prepare_target(
-                            chan=spec,
-                            core_params=core_params,
-                            use_polarization=use_pol,
-                            r_max=r_local,
-                            n_points=n_local
-                        )
-                        if i_e == 0: 
-                             print(f"  [Local Adaptive] E={E:.1f}: r_max={r_local:.1f}, n={n_local}")
+                        # Check if parameters changed from current prep
+                        current_r_max = current_prep.grid.r[-1]
+                        current_n_pts = len(current_prep.grid.r)
+                        params_changed = (abs(r_local - current_r_max) > 0.1 or 
+                                         abs(n_local - current_n_pts) > 1)
+                        
+                        if params_changed or i_e == 0:
+                            current_prep = prepare_target(
+                                chan=spec,
+                                core_params=core_params,
+                                use_polarization=use_pol,
+                                r_max=r_local,
+                                n_points=n_local
+                            )
+                            logger.info("Local Adaptive  | E=%.1f eV: r_max=%.1f a.u., n_points=%d", 
+                                       E, r_local, n_local)
+                            prep = current_prep  # Update reference for next comparison
 
                     res = compute_excitation_cs_precalc(E, current_prep, n_theta=n_theta)
                     
