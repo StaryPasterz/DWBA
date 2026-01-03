@@ -73,6 +73,46 @@ class CorePotentialParams:
     a4: float
     a5: float
     a6: float
+    
+    def validate_physical(self) -> list:
+        """
+        Check for potentially unphysical SAE parameters.
+        
+        Returns
+        -------
+        list of str
+            List of warning messages. Empty if parameters look reasonable.
+            
+        Examples
+        --------
+        >>> params = CorePotentialParams(Zc=0.5, a1=0, a2=0, a3=0, a4=0, a5=0, a6=0)
+        >>> params.validate_physical()
+        ['Zc=0.5 < 1 is unphysical for atomic/ionic targets']
+        """
+        warnings = []
+        
+        # Check Zc validity (must be >= 1 for atoms/ions)
+        if self.Zc < 1:
+            warnings.append(f"Zc={self.Zc} < 1 is unphysical for atomic/ionic targets")
+        
+        # Check for very large a_params that may cause numerical issues
+        a_vals = [
+            (1, self.a1), (2, self.a2), (3, self.a3),
+            (4, self.a4), (5, self.a5), (6, self.a6)
+        ]
+        for idx, a in a_vals:
+            if abs(a) > 200:
+                warnings.append(f"a{idx}={a:.1f} is very large, may cause numerical instability")
+        
+        # Check decay rates are positive (a2, a4, a6 should be > 0 for physical decay)
+        if self.a2 < 0:
+            warnings.append(f"a2={self.a2:.3f} < 0: exponential term exp(-a2*r) will grow instead of decay")
+        if self.a4 < 0:
+            warnings.append(f"a4={self.a4:.3f} < 0: exponential term r*exp(-a4*r) will grow")
+        if self.a6 < 0:
+            warnings.append(f"a6={self.a6:.3f} < 0: exponential term exp(-a6*r) will grow")
+        
+        return warnings
 
 
 def _safe_inv_r(r: np.ndarray, r_floor: float = 1e-12) -> np.ndarray:

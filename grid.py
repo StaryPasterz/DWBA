@@ -155,6 +155,81 @@ def k_from_E_eV(E_eV: float | np.ndarray) -> float | np.ndarray:
 # within the computational domain.
 # =============================================================================
 
+# =============================================================================
+# HIGH-ENERGY REGIME VALIDATION
+# =============================================================================
+# DWBA accuracy decreases at very high energies where:
+#   - Born approximation becomes more appropriate
+#   - Distortion effects are less significant
+#   - Numerical wavelength sampling becomes challenging
+#
+# Threshold: k > 5 a.u. corresponds to ~340 eV
+# =============================================================================
+
+K_HIGH_ENERGY_THRESHOLD = 5.0  # a.u. (≈ 340 eV)
+
+def validate_high_energy(E_eV: float, L_max: int = 0, r_max: float = 200.0, 
+                         n_points: int = 3000) -> list:
+    """
+    Validate calculation parameters for high-energy regime.
+    
+    At high energies (k > 5 a.u., ~340 eV), DWBA becomes less accurate
+    and Born approximation may be more appropriate. This function checks
+    for potential issues.
+    
+    Parameters
+    ----------
+    E_eV : float
+        Incident energy in eV.
+    L_max : int
+        Maximum angular momentum.
+    r_max : float
+        Grid maximum radius in a.u.
+    n_points : int
+        Number of grid points.
+        
+    Returns
+    -------
+    list of str
+        Warning messages. Empty if parameters look OK.
+        
+    Examples
+    --------
+    >>> validate_high_energy(500, L_max=50)
+    ['High-energy regime: k=6.06 a.u. (500.0 eV). DWBA accuracy may be reduced...']
+    """
+    warnings = []
+    k = k_from_E_eV(E_eV)
+    
+    # Check high-energy regime
+    if k > K_HIGH_ENERGY_THRESHOLD:
+        warnings.append(
+            f"High-energy regime: k={k:.2f} a.u. ({E_eV:.1f} eV). "
+            f"DWBA accuracy may be reduced; consider Born approximation above ~500 eV."
+        )
+    
+    # Check wavelength sampling if n_points provided
+    if n_points > 0 and r_max > 0:
+        wavelength = 2 * np.pi / k if k > 0.01 else 1000
+        dr = r_max / n_points
+        points_per_wavelength = wavelength / dr
+        
+        if points_per_wavelength < 10:
+            warnings.append(
+                f"Undersampled oscillations: only {points_per_wavelength:.1f} pts/wavelength "
+                f"at k={k:.2f} a.u. Consider increasing n_points to {int(n_points * 10 / points_per_wavelength)}."
+            )
+    
+    # Check L_max consistency if provided
+    if L_max > 0 and r_max > 0 and k > 0.01:
+        L_safe = compute_safe_L_max(k, r_max, 2.5)
+        if L_max > L_safe:
+            warnings.append(
+                f"L_max={L_max} exceeds turning point limit ({L_safe}) for r_max={r_max:.0f} a.u. at k={k:.2f}."
+            )
+    
+    return warnings
+
 
 def classical_turning_point(L: int, k_au: float) -> float:
     """

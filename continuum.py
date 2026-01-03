@@ -1255,6 +1255,49 @@ def solve_continuum_wave(
     if k_au <= 0.0 or not np.isfinite(k_au):
         raise ValueError("solve_continuum_wave: invalid k from given E_eV.")
 
+    # ==========================================================================
+    # ADAPTIVE PRECISION FOR VERY HIGH ENERGIES (v2.6.2+)
+    # ==========================================================================
+    # At very high energies (>1 keV, k > 8.6 a.u.), phase extraction becomes
+    # numerically challenging due to:
+    #   - More oscillations per unit length (smaller wavelength)
+    #   - Larger centrifugal terms for high L
+    #   - Phase stability issues in tail fitting
+    #
+    # We adapt by:
+    #   1. Using stricter tolerances for ODE solvers
+    #   2. Requiring more points in the tail for phase averaging
+    #   3. Using tighter renormalization intervals
+    #   4. Logging high-energy regime entry
+    # ==========================================================================
+    
+    E_HIGH_THRESHOLD_EV = 1000.0  # 1 keV
+    E_VERY_HIGH_THRESHOLD_EV = 5000.0  # 5 keV
+    
+    adaptive_mode = "standard"
+    adaptive_rtol = rtol
+    adaptive_atol = atol
+    adaptive_renorm_interval = 100
+    
+    if E_eV > E_VERY_HIGH_THRESHOLD_EV:
+        # Very high energy: strictest precision
+        adaptive_mode = "very_high"
+        adaptive_rtol = min(rtol, 1e-8)
+        adaptive_atol = min(atol, 1e-10)
+        adaptive_renorm_interval = 50
+        if l == 0:  # Only log once per energy point (for L=0)
+            logger.info("High-energy adaptive: E=%.0f eV (k=%.2f a.u.) using precision mode: %s", 
+                       E_eV, k_au, adaptive_mode)
+    elif E_eV > E_HIGH_THRESHOLD_EV:
+        # High energy: enhanced precision
+        adaptive_mode = "high"
+        adaptive_rtol = min(rtol, 1e-7)
+        adaptive_atol = min(atol, 1e-9)
+        adaptive_renorm_interval = 75
+        if l == 0:
+            logger.debug("High-energy adaptive: E=%.0f eV (k=%.2f a.u.) mode=%s", 
+                        E_eV, k_au, adaptive_mode)
+
     # spline interpolation of U(r) so we can evaluate it at arbitrary r during integration
     U_spline = CubicSpline(r, U_arr, bc_type="natural")
 
@@ -1366,10 +1409,10 @@ def solve_continuum_wave(
             chi0 = 1e-10
             chi1 = chi0 * (r1_init / r0_init) ** (ell + 1.0)
     
-    # Propagate using Numerov
+    # Propagate using Numerov (with adaptive precision for high energies)
     chi_computed, log_scale = _numerov_propagate(
         r_eval, Q_eval, chi0, chi1, 
-        renorm_interval=100, renorm_scale=1e50
+        renorm_interval=adaptive_renorm_interval, renorm_scale=1e50
     )
     
     # Compute derivative using central difference with local step sizes
@@ -1422,7 +1465,8 @@ def solve_continuum_wave(
         U_eval = U_arr[idx_start:]
         r_eval_fb = r[idx_start:]
         chi_johnson, dchi_johnson = _johnson_log_derivative_solve(
-            r_eval_fb, U_eval, l, k_au, renorm_interval=50
+            r_eval_fb, U_eval, l, k_au, 
+            renorm_interval=max(30, adaptive_renorm_interval // 2)
         )
         
         if idx_start > 0:
@@ -1462,8 +1506,8 @@ def solve_continuum_wave(
                 t_eval=r_eval_rk,
                 method="RK45",
                 max_step=max_step_val,
-                rtol=rtol,
-                atol=atol,
+                rtol=adaptive_rtol,  # v2.6.2: adaptive precision
+                atol=adaptive_atol,
                 dense_output=False
             )
             

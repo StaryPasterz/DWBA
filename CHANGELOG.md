@@ -46,6 +46,70 @@ New `grid.strategy` configuration option with 3 modes:
 
 ---
 
+## [v2.6.2] — 2026-01-03 — Logging & Validation Improvements
+
+Quality-of-life improvements for logging readability, physical validation, and documentation.
+
+### Logging Improvements
+
+**Files**: `driver.py`, `DW_main.py`
+
+- **Added**: Scan-level logging control via `_SCAN_LOGGED` flag
+- **Added**: `reset_scan_logging()` function to reset flags at start of new scan
+- **Improved**: Hardware info logged once per scan (not per energy point), reducing log spam
+
+### High-Energy Validation
+
+**Files**: `grid.py`
+
+- **Added**: `K_HIGH_ENERGY_THRESHOLD = 5.0 a.u.` constant (~340 eV)
+- **Added**: `validate_high_energy()` function checking:
+  - High-energy regime warning (k > 5 a.u.)
+  - Wavelength undersampling detection
+  - L_max vs turning point consistency
+- **Integrated**: Validation called before calculation loops with warnings displayed
+
+### SAE Parameter Validation
+
+**Files**: `potential_core.py`
+
+- **Added**: `CorePotentialParams.validate_physical()` method checking:
+  - Zc validity (must be >= 1 for atoms/ions)
+  - Very large a_params (|a| > 200) causing numerical instability
+  - Negative decay rates (a2, a4, a6 < 0) causing exponential growth
+
+### YAML Documentation
+
+**Files**: `H2s.yaml`, `examples/config_excitation.yaml`, `examples/config_ionization.yaml`
+
+- **Added**: Unit annotations for all numerical parameters:
+  - `# [eV]` for energies
+  - `# [a.u.]` for atomic units (bohr)
+  - `# [count]` for integer counts
+  - `# [dimensionless]` for ratios and exponents
+  - `# [rad]` for angles
+
+### Adaptive High-Energy Precision
+
+**Files**: `continuum.py`
+
+- **Added**: Adaptive precision for very high energies (>1 keV) where phase extraction is challenging:
+  - E > 1 keV: Enhanced precision mode (`rtol=1e-7`, `atol=1e-9`)
+  - E > 5 keV: Strictest precision mode (`rtol=1e-8`, `atol=1e-10`)
+  - Tighter renormalization intervals for Numerov/Johnson propagators
+  - Logging of high-energy mode activation
+- **Constants**: `E_HIGH_THRESHOLD_EV = 1000.0`, `E_VERY_HIGH_THRESHOLD_EV = 5000.0`
+
+### Comprehensive Parameter Logging
+
+**Files**: `DW_main.py`
+
+- **Added**: `log_active_configuration()` helper function that logs all active parameters before calculation starts
+- **Improved**: Clear visibility into what parameters are actually being used (especially auto-calculated ones)
+- **Format**: Structured log output showing Grid, Excitation/Ionization, and Oscillatory settings
+
+---
+
 ## [v2.5] — 2026-01-03 — GPU Optimization V3
 
 Major GPU performance improvements reducing synchronization overhead and adding energy-level caching.

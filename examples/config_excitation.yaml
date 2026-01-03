@@ -7,57 +7,57 @@ calculation:
   type: "excitation"
 
 target:
-  atom: "H"           # Hydrogen - pure Coulomb potential
+  atom: "H"              # Atom from atoms.json: H, He, Li, Ne, Ar, etc.
 
 states:
   initial:
     n: 1
-    l: 0              # 1s state
+    l: 0                 # 1s state
   final:
     n: 2
-    l: 0              # 2s state
+    l: 0                 # 2s state
 
 physics:
-  model: "static"     # Static DWBA (recommended)
+  model: "static"        # "static" (article DWBA) or "polarization" (heuristic)
 
 energy:
-  type: "log"         # Logarithmic grid (dense near threshold)
-  start_eV: 10.2      # Just above threshold (10.2 eV for H 1s→2s)
-  end_eV: 300.0       # Upper energy limit
-  density: 0.5        # Grid density (0.5 = sparser, 1.0 = normal)
+  type: "log"            # Grid type: "single", "linear", "log", "list"
+  start_eV: 10.2         # [eV] Start energy (just above threshold for 1s→2s)
+  end_eV: 300.0          # [eV] End energy
+  density: 0.5           # [dimensionless] Log grid density (0.5 = sparser, 1.0 = normal)
 
 grid:
-  strategy: "global"  # "manual" = fixed params, "global" = adaptive for E_min (recommended), "local" = per-energy adaptive
-  r_max: 200
-  n_points: 3000
-  r_max_scale_factor: 2.5
-  n_points_max: 8000
+  strategy: "global"     # "manual" = fixed params, "global" = adaptive for E_min (recommended), "local" = per-energy
+  r_max: 200             # [a.u.] Maximum radial extent (bohr)
+  n_points: 3000         # [count] Number of radial grid points
+  r_max_scale_factor: 2.5  # [dimensionless] Safety factor for turning point criterion
+  n_points_max: 8000     # [count] Maximum allowed grid points (memory cap)
 
 excitation:
   # Production parameters
-  L_max_integrals: 15
-  L_max_projectile: 5
-  n_theta: 200
-  pilot_energy_eV: 1000
-  # Pilot light mode (v2.5+) - reduced for fast calibration
-  pilot_L_max_integrals: 8       # Lower than production
-  pilot_L_max_projectile: 30     # Auto-scaled, but limited
-  pilot_n_theta: 50              # TCS only, DCS not needed
+  L_max_integrals: 15    # [dimensionless] Max multipole L in 1/r₁₂ Coulomb expansion
+  L_max_projectile: 5    # [dimensionless] Base partial wave L_max (auto-scaled at high E)
+  n_theta: 200           # [count] Angular grid points for DCS integration
+  pilot_energy_eV: 1000  # [eV] Calibration pilot energy for Tong model
+  # Pilot light mode (v2.5+) - reduced parameters for fast calibration
+  pilot_L_max_integrals: 8       # [dimensionless] Lower than production
+  pilot_L_max_projectile: 30     # [dimensionless] Auto-scaled, but limited
+  pilot_n_theta: 50              # [count] TCS only, DCS not needed
 
 oscillatory:
-  method: "advanced"
-  CC_nodes: 5
-  phase_increment: 1.5708
-  min_grid_fraction: 0.1
-  k_threshold: 0.5
+  method: "advanced"             # "legacy" | "advanced" | "full_split"
+  CC_nodes: 5                    # [count] Clenshaw-Curtis nodes per interval
+  phase_increment: 1.5708        # [rad] Phase increment (π/2) per sub-interval
+  min_grid_fraction: 0.1         # [dimensionless] Minimum match point as fraction of grid
+  k_threshold: 0.5               # [a.u.] Total momentum threshold for Filon/Levin switch
   # GPU Configuration (v2.5+)
-  gpu_block_size: "auto"      # auto-tune based on VRAM
-  gpu_memory_mode: "auto"     # "auto" (smart), "full" (fast), "block" (safe)
-  gpu_memory_threshold: 0.7   # Max VRAM fraction to use
-  max_chi_cached: 20          # LRU cache size for continuum waves
-  n_workers: "auto"           # "auto" (balanced), "max" (all cores), or int count
+  gpu_block_size: "auto"         # "auto" = auto-tune based on VRAM, int = explicit size
+  gpu_memory_mode: "auto"        # "auto" (smart), "full" (fast), "block" (safe)
+  gpu_memory_threshold: 0.7      # [dimensionless] Max VRAM fraction to use
+  max_chi_cached: 20             # [count] LRU cache size for continuum waves on GPU
+  n_workers: "auto"              # "auto" (balanced), "max" (all cores), or int count
 
 output:
-  save_dcs: true
-  save_partial: true
-  calibrate: true
+  save_dcs: true                 # Save differential cross section
+  save_partial: true             # Save partial wave contributions
+  calibrate: true                # Apply Tong empirical calibration

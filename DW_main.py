@@ -48,12 +48,14 @@ from driver import (
     ExcitationChannelSpec,
     ev_to_au,
     set_oscillatory_method,
-    set_oscillatory_config
+    set_oscillatory_config,
+    reset_scan_logging
 )
 from grid import (
     k_from_E_eV,
     compute_safe_L_max,
     compute_required_r_max,
+    validate_high_energy,
 )
 
 from ionization import (
@@ -268,6 +270,55 @@ def display_params_custom(cat_name, val_dict):
         else:
             print(f"  │  {key:<22} = {val}")
     print(f"  └{'─' * 40}")
+
+
+def log_active_configuration(params: dict, context: str = "calculation"):
+    """
+    Log the complete active configuration being used for calculation.
+    
+    This provides users visibility into exactly what parameters are being used,
+    especially important when parameters are auto-calculated or derive from defaults.
+    
+    Parameters
+    ----------
+    params : dict
+        The complete parameters dictionary.
+    context : str
+        Context description (e.g., "excitation scan", "ionization").
+    """
+    logger.info("=" * 60)
+    logger.info("ACTIVE CONFIGURATION for %s", context)
+    logger.info("=" * 60)
+    
+    # Grid configuration (always important)
+    if 'grid' in params:
+        g = params['grid']
+        strategy = g.get('strategy', 'global').upper()
+        logger.info("Grid: strategy=%s, r_max=%.1f a.u., n_points=%d", 
+                   strategy, g.get('r_max', 200), g.get('n_points', 3000))
+    
+    # Excitation-specific
+    if 'excitation' in params:
+        e = params['excitation']
+        logger.info("Excitation: L_max_int=%d, L_max_proj=%d, n_theta=%d",
+                   e.get('L_max_integrals', 15), e.get('L_max_projectile', 5), 
+                   e.get('n_theta', 200))
+    
+    # Ionization-specific
+    if 'ionization' in params:
+        ion = params['ionization']
+        logger.info("Ionization: l_eject_max=%d, L_max=%d, n_energy_steps=%d",
+                   ion.get('l_eject_max', 3), ion.get('L_max', 15),
+                   ion.get('n_energy_steps', 10))
+    
+    # Oscillatory configuration
+    if 'oscillatory' in params:
+        o = params['oscillatory']
+        logger.info("Oscillatory: method=%s, CC_nodes=%d, gpu_mode=%s, workers=%s",
+                   o.get('method', 'advanced'), o.get('CC_nodes', 5),
+                   o.get('gpu_memory_mode', 'auto'), o.get('n_workers', 'auto'))
+    
+    logger.info("=" * 60)
 
 
 # =============================================================================
@@ -818,7 +869,6 @@ def run_scan_excitation(run_name):
         n_points_calc = base_n_points
         print_info(f"Strategy: MANUAL (fixed parameters)")
         print_info(f"  r_max = {r_max_calc:.1f} a.u., n_points = {n_points_calc}")
-        logger.info("Grid strategy: MANUAL - r_max=%.1f, n_points=%d", r_max_calc, n_points_calc)
         
     elif strategy == 'local':
         # LOCAL: Will recalculate per energy, but start with E_min for initial prep
@@ -828,8 +878,6 @@ def run_scan_excitation(run_name):
         print_info(f"Strategy: LOCAL (per-energy adaptive)")
         print_info(f"  Initial grid (E_min={E_min_scan:.1f} eV): r_max = {r_max_calc:.1f}, n_points = {n_points_calc}")
         print_info(f"  Grid will be recalculated for each energy point.")
-        logger.info("Grid strategy: LOCAL - initial r_max=%.1f, n_points=%d (for E=%.1f eV)", 
-                   r_max_calc, n_points_calc, E_min_scan)
                    
     else:  # 'global' (default)
         # GLOBAL: Calculate optimal grid for lowest energy, use for all
@@ -840,8 +888,6 @@ def run_scan_excitation(run_name):
         print_info(f"Strategy: GLOBAL (single adaptive calculation)")
         print_info(f"  E_min = {E_min_scan:.1f} eV, k_min = {k_min:.2f} a.u.")
         print_info(f"  r_max = {r_max_calc:.1f} a.u., n_points = {n_points_calc}")
-        logger.info("Grid strategy: GLOBAL - r_max=%.1f, n_points=%d (for E_min=%.1f eV, k_min=%.2f)", 
-                   r_max_calc, n_points_calc, E_min_scan, k_min)
     
     # --- Pre-calculate static target properties (Optimization) ---
     print("\n[Optimization] Pre-calculating static target properties...")
@@ -885,6 +931,15 @@ def run_scan_excitation(run_name):
     print("  " + "-" * 45)
     print(f"  {'Energy':>10}  │  {'Cross Section':>15}")
     print("  " + "-" * 45)
+    
+    # Reset scan-level logging for clean output
+    reset_scan_logging()
+    
+    # Validate high-energy points upfront
+    E_max = max(energies)
+    he_warnings = validate_high_energy(E_max, L_max_proj, r_max_calc, n_points_calc)
+    for warn in he_warnings:
+        logger.warning(warn)
     
     try:
         for i_E, E in enumerate(energies):
@@ -1549,7 +1604,6 @@ def run_from_config(config_path: str, verbose: bool = False) -> None:
         if strategy == 'manual':
             r_max_calc, n_points_calc = base_r_max, base_n_points
             print(f"    Using fixed params: r_max={r_max_calc:.1f}, n_points={n_points_calc}")
-            logger.info("Grid strategy: MANUAL - r_max=%.1f, n_points=%d", r_max_calc, n_points_calc)
         elif strategy == 'local':
             # LOCAL: Start with optimal grid for lowest energy (initial prep)
             E_ref = min(energy_grid)
@@ -1559,7 +1613,6 @@ def run_from_config(config_path: str, verbose: bool = False) -> None:
             )
             print(f"    Initial prep (E_min={E_ref:.1f} eV): r_max={r_max_calc:.1f}, n_points={n_points_calc}")
             print(f"    Grid will be recalculated for each energy point.")
-            logger.info("Grid strategy: LOCAL - initial r_max=%.1f, n_points=%d", r_max_calc, n_points_calc)
         else:  # 'global' (default)
             # Global: Calculate optimal grid for lowest energy, use for all
             E_ref = min(energy_grid)
@@ -1568,8 +1621,6 @@ def run_from_config(config_path: str, verbose: bool = False) -> None:
                 base_r_max, base_n_points, scale_factor, n_points_max
             )
             print(f"    E_min={E_ref:.1f} eV: r_max={r_max_calc:.1f}, n_points={n_points_calc}")
-            logger.info("Grid strategy: GLOBAL - r_max=%.1f, n_points=%d (for E_min=%.1f eV)", 
-                       r_max_calc, n_points_calc, E_ref)
 
         # --- Pre-calculate static target properties ---
         print("  Pre-calculating static target properties...", end=" ", flush=True)
@@ -1660,6 +1711,15 @@ def run_from_config(config_path: str, verbose: bool = False) -> None:
         print("  " + "-" * 45)
         print(f"  {'Energy':>10}  │  {'Cross Section':>15}")
         print("  " + "-" * 45)
+        
+        # Reset scan-level logging for clean output
+        reset_scan_logging()
+        
+        # Validate high-energy points upfront
+        E_max = max(energies)
+        he_warnings = validate_high_energy(E_max, params['excitation']['L_max_projectile'], r_max_calc, n_points_calc)
+        for warn in he_warnings:
+            logger.warning(warn)
         
         results = []
         try:

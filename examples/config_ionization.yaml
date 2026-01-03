@@ -7,48 +7,48 @@ calculation:
   type: "ionization"
 
 target:
-  atom: "H"           # Hydrogen
+  atom: "H"              # Atom from atoms.json: H, He, Li, Ne, Ar, etc.
 
 states:
   initial:
     n: 1
-    l: 0              # 1s state (ionization from ground state)
+    l: 0                 # 1s state (ionization from ground state)
   final:
-    n: 1              # Not used for ionization
+    n: 1                 # Not used for ionization
     l: 0
 
 physics:
-  model: "static"
+  model: "static"        # "static" (article DWBA) or "polarization" (heuristic)
 
 energy:
-  type: "log"
-  start_eV: 15.0      # Above ionization threshold (13.6 eV for H)
-  end_eV: 500.0
-  density: 0.5
+  type: "log"            # Grid type: "single", "linear", "log", "list"
+  start_eV: 15.0         # [eV] Start energy (above ionization threshold 13.6 eV for H)
+  end_eV: 500.0          # [eV] End energy
+  density: 0.5           # [dimensionless] Log grid density
 
 grid:
-  strategy: "global"  # "manual" = fixed params, "global" = adaptive for E_min (recommended), "local" = per-energy adaptive
-  r_max: 200
-  n_points: 3000
-  r_max_scale_factor: 2.5
-  n_points_max: 8000
+  strategy: "global"     # "manual" = fixed params, "global" = adaptive for E_min, "local" = per-energy
+  r_max: 200             # [a.u.] Maximum radial extent (bohr)
+  n_points: 3000         # [count] Number of radial grid points
+  r_max_scale_factor: 2.5  # [dimensionless] Safety factor for turning point criterion
+  n_points_max: 8000     # [count] Maximum allowed grid points
 
 ionization:
-  l_eject_max: 3
-  L_max: 15
-  L_max_projectile: 50
-  n_energy_steps: 10
+  l_eject_max: 3         # [dimensionless] Maximum ejected electron angular momentum
+  L_max: 15              # [dimensionless] Multipole L_max
+  L_max_projectile: 50   # [dimensionless] Base partial wave L_max
+  n_energy_steps: 10     # [count] SDCS integration steps
 
 oscillatory:
-  method: "advanced"
-  CC_nodes: 5
-  phase_increment: 1.5708
-  min_grid_fraction: 0.1
-  k_threshold: 0.5
-  gpu_block_size: "auto"      # auto-tune based on VRAM
-  gpu_memory_mode: "auto"
-  gpu_memory_threshold: 0.7
-  n_workers: "auto"           # "auto" (balanced), "max" (all cores), or int count
+  method: "advanced"             # "legacy" | "advanced" | "full_split"
+  CC_nodes: 5                    # [count] Clenshaw-Curtis nodes per interval
+  phase_increment: 1.5708        # [rad] Phase increment (π/2)
+  min_grid_fraction: 0.1         # [dimensionless] Minimum match point fraction
+  k_threshold: 0.5               # [a.u.] Momentum threshold for Filon/Levin
+  gpu_block_size: "auto"         # "auto" = auto-tune, int = explicit size
+  gpu_memory_mode: "auto"        # "auto" | "full" | "block"
+  gpu_memory_threshold: 0.7      # [dimensionless] Max VRAM fraction
+  n_workers: "auto"              # "auto" (balanced), "max" (all cores), or int
 
 output:
   save_dcs: true

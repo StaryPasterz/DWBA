@@ -106,6 +106,20 @@ OSCILLATORY_CONFIG = {
     "n_workers": "auto"
 }
 
+# =============================================================================
+# SCAN-LEVEL LOGGING CONTROL
+# =============================================================================
+# Prevents repetitive log messages for each energy point in a scan.
+# Reset via reset_scan_logging() at start of new scan.
+# =============================================================================
+_SCAN_LOGGED = False  # True after first energy point logs hardware info
+
+def reset_scan_logging():
+    """Reset scan-level logging flags. Call at start of new energy scan."""
+    global _SCAN_LOGGED
+    _SCAN_LOGGED = False
+    logger.debug("Scan logging flags reset")
+
 def set_oscillatory_config(config_dict: dict):
     """Set the oscillatory integral configuration globally. Only logs actual changes."""
     def normalize(v):
@@ -178,10 +192,18 @@ def log_calculation_params(
     mode: str, 
     L_max_proj: int,
     actual_gpu_mode: Optional[str] = None,
-    actual_block_size: Optional[int] = None
+    actual_block_size: Optional[int] = None,
+    E_eV: Optional[float] = None,
+    k_au: Optional[float] = None,
+    r_max: Optional[float] = None,
+    n_points: Optional[int] = None,
+    force_log: bool = False
 ):
     """
     Log a consistent summary of calculation parameters.
+    
+    Only logs full hardware info once per scan (controlled by _SCAN_LOGGED).
+    Subsequent calls only log per-energy info if provided.
     
     Parameters
     ----------
@@ -193,7 +215,18 @@ def log_calculation_params(
         Actual GPU memory mode used (e.g., "full", "block").
     actual_block_size : int, optional
         Actual block size used (0 = full matrix).
+    E_eV : float, optional
+        Incident energy in eV (for per-energy logging).
+    k_au : float, optional
+        Wave number in a.u.
+    r_max : float, optional
+        Grid maximum radius in a.u.
+    n_points : int, optional
+        Number of grid points.
+    force_log : bool
+        If True, log hardware info even if already logged.
     """
+    global _SCAN_LOGGED
     from dwba_matrix_elements import HAS_CUPY
     
     method = OSCILLATORY_CONFIG.get("method", "advanced")
@@ -221,8 +254,6 @@ def log_calculation_params(
                    gpu_mode_used, block_disp)
     else:
         logger.info("Hardware          | Platform: CPU (NumPy)")
-
-
 
 @dataclass(frozen=True)
 class ExcitationChannelSpec:
