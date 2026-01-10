@@ -280,19 +280,19 @@ Fast calibration with reduced parameters for faster startup:
 
 | Parameter | Production | Pilot Light | Impact |
 |-----------|------------|-------------|--------|
-| `L_max_integrals` | 15 | 8 | Fewer multipole terms |
-| `L_max_projectile` | (auto) | 30* | Limited partial waves |
+| `L_max_integrals` | 15 | auto* | Fewer multipole terms |
+| `L_max_projectile` | (auto) | auto* | Limited partial waves |
 | `n_theta` | 200 | 50 | TCS-only (DCS not needed) |
 
-**Note (v2.7+)**: *`pilot_L_max_projectile` is now dynamically scaled at high energies using `max(base, k × r_max × 0.6)` to ensure convergence. This prevents systematic calibration errors that occurred with fixed L_max=30 at 1000 eV.
+**Note (v2.7+)**: *Pilot L_max parameters now support `"auto"` mode (default) which dynamically scales based on `k × r_max × 0.6`. Users can override with explicit integer values if needed.
 
 **Speedup**: Pilot runs 5-10x faster with minimal effect on calibration α.
 
 **Configuration** (in `excitation` section of YAML):
 ```yaml
 excitation:
-  pilot_L_max_integrals: 8       # Base value, auto-scaled
-  pilot_L_max_projectile: 30     # Base value, auto-scaled based on k*r_max
+  pilot_L_max_integrals: "auto"    # "auto" or int (e.g., 8)
+  pilot_L_max_projectile: "auto"   # "auto" or int (e.g., 30)
   pilot_n_theta: 50
 ```
 

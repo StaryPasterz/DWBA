@@ -101,7 +101,7 @@ def _get_cc_ref(n_nodes: int) -> Tuple[np.ndarray, np.ndarray]:
 
 def _kahan_sum_complex(values: np.ndarray) -> complex:
     """
-    Kahan compensated summation for complex values.
+    Compensated summation for complex values using math.fsum.
     
     Reduces roundoff error when summing many small contributions that may
     partially cancel, which is common in oscillatory integrals.
@@ -115,38 +115,28 @@ def _kahan_sum_complex(values: np.ndarray) -> complex:
     -------
     total : complex
         Compensated sum with reduced roundoff error.
-    """
-    total_re = 0.0
-    total_im = 0.0
-    c_re = 0.0  # Compensation for real part
-    c_im = 0.0  # Compensation for imaginary part
-    
-    for val in values:
-        # Real part
-        y_re = val.real - c_re
-        t_re = total_re + y_re
-        c_re = (t_re - total_re) - y_re
-        total_re = t_re
         
-        # Imaginary part
-        y_im = val.imag - c_im
-        t_im = total_im + y_im
-        c_im = (t_im - total_im) - y_im
-        total_im = t_im
-    
+    Notes
+    -----
+    Uses math.fsum which implements Shewchuk's algorithm (more accurate
+    than Kahan summation) and is implemented in C for speed.
+    """
+    import math
+    # math.fsum is O(n) C-optimized with full precision tracking
+    total_re = math.fsum(values.real)
+    total_im = math.fsum(values.imag)
     return complex(total_re, total_im)
 
 
 def _kahan_sum_real(values: np.ndarray) -> float:
-    """Kahan compensated summation for real values."""
-    total = 0.0
-    c = 0.0
-    for val in values:
-        y = float(val) - c
-        t = total + y
-        c = (t - total) - y
-        total = t
-    return total
+    """
+    Compensated summation for real values using math.fsum.
+    
+    Uses Python's math.fsum which implements Shewchuk's algorithm
+    for exact summation with O(n) complexity in C.
+    """
+    import math
+    return math.fsum(values)
 
 
 # =============================================================================
@@ -427,16 +417,31 @@ def _chebyshev_differentiation_matrix(n: int) -> np.ndarray:
     c[0] = 2.0
     c[-1] = 2.0
     
-    # Build differentiation matrix
-    D = np.zeros((n, n))
-    for i in range(n):
-        for j in range(n):
-            if i != j:
-                D[i, j] = (c[i] / c[j]) * ((-1) ** (i + j)) / (x[i] - x[j])
-        
-    # Diagonal: D[i,i] = -sum of off-diagonal terms
-    for i in range(n):
-        D[i, i] = -np.sum(D[i, :])
+    # Build differentiation matrix (vectorized)
+    # D[i,j] = (c[i] / c[j]) * ((-1)^(i+j)) / (x[i] - x[j]) for i != j
+    
+    # Create index arrays
+    i_idx = np.arange(n)[:, None]  # Column vector
+    j_idx = np.arange(n)[None, :]  # Row vector
+    
+    # Sign matrix: (-1)^(i+j)
+    sign_matrix = (-1.0) ** (i_idx + j_idx)
+    
+    # x difference matrix (with small offset to avoid division by zero on diagonal)
+    x_diff = x[:, None] - x[None, :]
+    np.fill_diagonal(x_diff, 1.0)  # Temporary, will be fixed by diagonal calculation
+    
+    # c ratio matrix
+    c_ratio = c[:, None] / c[None, :]
+    
+    # Off-diagonal elements
+    D = c_ratio * sign_matrix / x_diff
+    
+    # Zero out diagonal (will be set below)
+    np.fill_diagonal(D, 0.0)
+    
+    # Diagonal: D[i,i] = -sum of off-diagonal terms in row i
+    D[np.diag_indices(n)] = -np.sum(D, axis=1)
     
     return D
 
@@ -568,10 +573,11 @@ def levin_oscillatory_integral(
         x_ref = np.cos(theta)[::-1]  # Ascending order
         r_nodes = 0.5 * (b - a) * (x_ref + 1) + a
         
-        # Evaluate functions at nodes
-        f_vals = np.array([f_func(r) for r in r_nodes])
-        Phi_vals = np.array([phi_func(r) for r in r_nodes])
-        Phi_prime_vals = np.array([phi_prime_func(r) for r in r_nodes])
+        # Evaluate functions at nodes (vectorized)
+        # Use np.vectorize for scalar functions - creates efficient C loop
+        f_vals = np.vectorize(f_func)(r_nodes)
+        Phi_vals = np.vectorize(phi_func)(r_nodes)
+        Phi_prime_vals = np.vectorize(phi_prime_func)(r_nodes)
         
         # Levin on this segment
         contrib = _levin_segment_complex(f_vals, r_nodes, Phi_vals, Phi_prime_vals)
@@ -751,7 +757,7 @@ def filon_oscillatory_integral(
     for i in range(n_segments):
         a, b = segment_bounds[i], segment_bounds[i + 1]
         r_nodes = np.linspace(a, b, n_nodes_per_segment)
-        f_vals = np.array([f_func(r) for r in r_nodes])
+        f_vals = np.vectorize(f_func)(r_nodes)  # Vectorized
         
         # omega is constant, phase_offset is the offset at r=0
         contrib = _filon_segment_complex(f_vals, r_nodes, omega, phase_offset)

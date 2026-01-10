@@ -878,26 +878,47 @@ def _build_asymptotic_wave(
     cos_d = np.cos(delta_l)
     sin_d = np.sin(delta_l)
     
+    # Get slice to work with
+    r_slice = r_grid[idx_start:]
+    rho_slice = k_au * r_slice
+    
+    # Mask for valid rho values
+    valid_mask = rho_slice >= 1e-10
+    rho_valid = rho_slice[valid_mask]
+    
+    if len(rho_valid) == 0:
+        return chi_as
+    
     if abs(z_ion) < 1e-3:
-        # Neutral: use Riccati-Bessel functions
-        for i in range(idx_start, N):
-            r = r_grid[i]
-            rho = k_au * r
-            if rho < 1e-10:
-                continue
-            j_hat, _ = _riccati_bessel_jn(l, rho)
-            n_hat, _ = _riccati_bessel_yn(l, rho)
-            chi_as[i] = A * (j_hat * cos_d - n_hat * sin_d)
+        # Neutral: use vectorized Riccati-Bessel functions
+        # spherical_jn and spherical_yn accept arrays
+        jl = spherical_jn(l, rho_valid)
+        j_hat = rho_valid * jl  # ĵ_l = ρ·j_l
+        
+        yl = spherical_yn(l, rho_valid)
+        # Guard against overflow
+        yl = np.where(np.isfinite(yl) & (np.abs(yl) < 1e50), yl, -1e30)
+        n_hat = rho_valid * yl  # n̂_l = ρ·y_l
+        
+        chi_valid = A * (j_hat * cos_d - n_hat * sin_d)
     else:
-        # Ionic: use Coulomb functions
+        # Ionic: use vectorized Coulomb functions
         eta = -z_ion / k_au
-        for i in range(idx_start, N):
-            r = r_grid[i]
-            rho = k_au * r
-            if rho < 1e-10:
-                continue
-            F, _, G, _ = _coulomb_FG_asymptotic(l, eta, rho)
-            chi_as[i] = A * (F * cos_d - G * sin_d)
+        
+        # Coulomb phase shift σ_l = arg Γ(l+1+iη)
+        sigma_l = np.imag(loggamma(l + 1 + 1j * eta))
+        
+        # Asymptotic argument (vectorized)
+        theta = rho_valid + eta * np.log(2.0 * rho_valid) - (l * np.pi / 2.0) + sigma_l
+        
+        F = np.sin(theta)
+        G = np.cos(theta)
+        
+        chi_valid = A * (F * cos_d - G * sin_d)
+    
+    # Place results back into full array
+    valid_indices = np.where(valid_mask)[0] + idx_start
+    chi_as[valid_indices] = chi_valid
     
     return chi_as
 

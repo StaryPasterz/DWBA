@@ -39,11 +39,11 @@ excitation:
   L_max_projectile: 5    # [dimensionless] Base partial wave L_max (auto-scaled at high E)
   n_theta: 200           # [count] Angular grid points for DCS integration
   pilot_energy_eV: 1000  # [eV] Calibration pilot energy for Tong model
-  # Pilot light mode (v2.5+) - reduced parameters for fast calibration
-  # Note (v2.7+): pilot_L_max_projectile is dynamically increased at high energies
-  pilot_L_max_integrals: 8       # [dimensionless] Base value, auto-scaled
-  pilot_L_max_projectile: 30     # [dimensionless] Base value, auto-scaled based on k*r_max
-  pilot_n_theta: 50              # [count] TCS only, DCS not needed
+  # Pilot light mode (v2.5+) - "auto" = dynamic scaling based on energy, int = explicit value
+  # Note (v2.7+): "auto" calculates L_max from k*r_max to ensure convergence at high energies
+  pilot_L_max_integrals: "auto"    # "auto" or int (e.g., 8)
+  pilot_L_max_projectile: "auto"   # "auto" or int (e.g., 30)
+  pilot_n_theta: 50                # [count] TCS only, DCS not needed
 
 oscillatory:
   method: "advanced"             # "legacy" | "advanced" | "full_split"

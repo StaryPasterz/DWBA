@@ -94,10 +94,10 @@ DEFAULTS = {
         "L_max_projectile": 5,    # Base partial wave L_max for projectile
         "n_theta": 200,           # Angular grid for DCS
         "pilot_energy_eV": 1000.0, # Calibration energy
-        # Pilot light mode (v2.5+) - reduced parameters for fast calibration
-        "pilot_L_max_integrals": 8,    # Lower for faster pilot
-        "pilot_L_max_projectile": 30,  # Auto-scaled but limited
-        "pilot_n_theta": 50,            # TCS only, DCS not needed
+        # Pilot light mode (v2.5+) - "auto" = dynamic scaling, int = explicit value
+        "pilot_L_max_integrals": "auto",    # "auto" or int (e.g., 8)
+        "pilot_L_max_projectile": "auto",   # "auto" or int (e.g., 30)
+        "pilot_n_theta": 50,                # TCS only, DCS not needed
     },
     
     # --- Ionization-specific ---
@@ -787,15 +787,32 @@ def run_scan_excitation(run_name):
     # compute_total_excitation_cs runs bound state solve internally each time (inefficient but safe).
     # We will run it once.
     
-    # Bug #4 fix: Dynamic L_max for pilot based on energy
-    # At 1000 eV, k ≈ 8.6 a.u., requiring much higher L_max for convergence
-    k_pilot = np.sqrt(2 * pilot_E / 27.2114)  # k in a.u.
-    r_max_grid = params['grid']['r_max']
-    pilot_L_proj_dynamic = int(k_pilot * r_max_grid * 0.6)
-    pilot_L_proj = max(L_max_proj, min(pilot_L_proj_dynamic, 150))
-    pilot_L_int = max(L_max_integrals, min(25, pilot_L_proj // 4))
+    # Pilot L_max configuration: "auto" = dynamic scaling, int = explicit value
+    pilot_L_proj_cfg = params['excitation'].get('pilot_L_max_projectile', 'auto')
+    pilot_L_int_cfg = params['excitation'].get('pilot_L_max_integrals', 'auto')
     
-    logger.debug("Pilot dynamic L_max: L_proj=%d, L_int=%d (k=%.2f)", pilot_L_proj, pilot_L_int, k_pilot)
+    if pilot_L_proj_cfg == 'auto' or pilot_L_int_cfg == 'auto':
+        # Dynamic L_max calculation based on energy
+        k_pilot = np.sqrt(2 * pilot_E / 27.2114)  # k in a.u.
+        r_max_grid = params['grid']['r_max']
+        pilot_L_proj_dynamic = int(k_pilot * r_max_grid * 0.6)
+        
+        if pilot_L_proj_cfg == 'auto':
+            pilot_L_proj = max(L_max_proj, min(pilot_L_proj_dynamic, 150))
+        else:
+            pilot_L_proj = int(pilot_L_proj_cfg)
+        
+        if pilot_L_int_cfg == 'auto':
+            pilot_L_int = max(L_max_integrals, min(25, pilot_L_proj // 4))
+        else:
+            pilot_L_int = int(pilot_L_int_cfg)
+        
+        logger.debug("Pilot dynamic L_max: L_proj=%d, L_int=%d (k=%.2f)", pilot_L_proj, pilot_L_int, k_pilot)
+    else:
+        # User specified explicit values
+        pilot_L_proj = int(pilot_L_proj_cfg)
+        pilot_L_int = int(pilot_L_int_cfg)
+        logger.debug("Pilot explicit L_max: L_proj=%d, L_int=%d", pilot_L_proj, pilot_L_int)
     
     try:
         # Article uses large box (200 au)
@@ -1700,24 +1717,34 @@ def run_from_config(config_path: str, verbose: bool = False) -> None:
             pilot_E = params['excitation']['pilot_energy_eV']
             pilot_n_th = params['excitation'].get('pilot_n_theta', 50)
             
-            # Bug #4 fix: Dynamic L_max for pilot based on energy
-            # At high energies (e.g., 1000 eV), low L_max causes non-converged σ_DWBA
-            # which leads to incorrect α calibration factor
-            k_pilot = np.sqrt(2 * pilot_E / 27.2114)  # k in a.u.
-            r_max_grid = params['grid']['r_max']
+            # Pilot L_max configuration: "auto" = dynamic scaling, int = explicit value
+            pilot_L_proj_cfg = params['excitation'].get('pilot_L_max_projectile', 'auto')
+            pilot_L_int_cfg = params['excitation'].get('pilot_L_max_integrals', 'auto')
             
-            # Classical turning point physics: L_max ~ k * r_max
-            # Use 60% factor for safety margin
-            pilot_L_proj_dynamic = int(k_pilot * r_max_grid * 0.6)
-            pilot_L_proj_base = params['excitation'].get('pilot_L_max_projectile', 30)
-            pilot_L_proj = max(pilot_L_proj_base, min(pilot_L_proj_dynamic, 150))  # Cap at 150
-            
-            # Scale L_max_integrals proportionally
-            pilot_L_int_base = params['excitation'].get('pilot_L_max_integrals', 8)
-            pilot_L_int = max(pilot_L_int_base, min(25, pilot_L_proj // 4))
-            
-            logger.info("Pilot Calc      | E=%d eV (L_int=%d, L_proj=%d [dynamic], n_θ=%d)...", 
-                       pilot_E, pilot_L_int, pilot_L_proj, pilot_n_th)
+            if pilot_L_proj_cfg == 'auto' or pilot_L_int_cfg == 'auto':
+                # Dynamic L_max calculation based on energy
+                k_pilot = np.sqrt(2 * pilot_E / 27.2114)  # k in a.u.
+                r_max_grid = params['grid']['r_max']
+                pilot_L_proj_dynamic = int(k_pilot * r_max_grid * 0.6)
+                
+                if pilot_L_proj_cfg == 'auto':
+                    pilot_L_proj = max(spec.L_max_projectile, min(pilot_L_proj_dynamic, 150))
+                else:
+                    pilot_L_proj = int(pilot_L_proj_cfg)
+                
+                if pilot_L_int_cfg == 'auto':
+                    pilot_L_int = max(spec.L_max_integrals, min(25, pilot_L_proj // 4))
+                else:
+                    pilot_L_int = int(pilot_L_int_cfg)
+                
+                logger.info("Pilot Calc      | E=%d eV (L_int=%d, L_proj=%d [auto], n_θ=%d)...", 
+                           pilot_E, pilot_L_int, pilot_L_proj, pilot_n_th)
+            else:
+                # User specified explicit values
+                pilot_L_proj = int(pilot_L_proj_cfg)
+                pilot_L_int = int(pilot_L_int_cfg)
+                logger.info("Pilot Calc      | E=%d eV (L_int=%d, L_proj=%d [explicit], n_θ=%d)...", 
+                           pilot_E, pilot_L_int, pilot_L_proj, pilot_n_th)
             
             try:
                 pilot_res = compute_excitation_cs_precalc(
