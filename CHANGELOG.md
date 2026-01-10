@@ -6,6 +6,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v2.7] — 2026-01-10 — Calibration & Stability Fixes
+
+Critical bug fixes improving calibration accuracy and numerical stability.
+
+### Bug Fixes
+
+**Bug #2: Asymptotic Validation Now Checks Both Potentials**
+- **Files**: `dwba_matrix_elements.py`, `driver.py`
+- **Problem**: Match point validation only checked `U_i`, ignoring `U_f`. If `U_f` decays slower, phase extraction could be unstable.
+- **Fix**: `radial_ME_all_L` and `radial_ME_all_L_gpu` now accept `U_f_array` parameter and use `max(|U_i|, |U_f|)` for asymptotic threshold check.
+- Uses `min(k_i, k_f)` for kinetic energy (stricter criterion).
+
+**Bug #4: Dynamic Pilot L_max for Calibration**
+- **Files**: `DW_main.py`
+- **Problem**: Default `pilot_L_max_projectile=30` was insufficient for 1000 eV calibration (k≈8.6 a.u. requires L_max≈100+ for convergence). This caused underestimated σ_DWBA pilot, leading to systematically incorrect α factor.
+- **Fix**: Pilot L_max is now dynamically calculated: `L_proj = max(base, min(k*r_max*0.6, 150))`.
+- Applied to both interactive and batch modes.
+
+**Bug #5: Run Name Change Now Renames Files**
+- **Files**: `DW_main.py`
+- **Problem**: Changing simulation name via menu option "7" only updated the variable, leaving existing result files with old names.
+- **Fix**: After name change, offers to rename existing `results_<old>_*.json` and `*_<old>_*.png` files to the new name.
+
+**Bug #3: Analytical Tail Contribution Extended to Infinity**
+- **Files**: `dwba_matrix_elements.py`
+- **Problem**: For methods "advanced" and "full_split", the oscillatory outer integral `dwba_outer_integral_1d` stopped at `r_max` instead of integrating to ∞. For dipole (L=1) and higher multipoles, the tail ~1/r^(L+1) has non-negligible contribution beyond the grid.
+- **Fix**: Added explicit call to `_analytical_multipole_tail(r_max, ...)` after `dwba_outer_integral_1d` in both CPU and GPU code paths. This uses asymptotic expansion with Si(x)/Ci(x) behavior for the remaining [r_max, ∞) domain.
+- Affects direct integrals for L≥1 in excitation calculations.
+
+---
+
 ## [v2.6] — 2026-01-03 — Adaptive Grid Strategies
 
 Introduces user-selectable strategies for radial grid adaptation, optimizing performance and accuracy.

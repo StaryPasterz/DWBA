@@ -43,8 +43,9 @@ excitation:
   n_theta: 200           # [count] Angular grid for DCS integration
   pilot_energy_eV: 1000  # [eV] Calibration pilot energy
   # Pilot light mode (v2.5+) - reduced for fast calibration
-  pilot_L_max_integrals: 8       # [dimensionless] Lower than production
-  pilot_L_max_projectile: 30     # [dimensionless] Auto-scaled, but limited
+  # Note (v2.7+): pilot_L_max_projectile is dynamically increased at high energies
+  pilot_L_max_integrals: 8       # [dimensionless] Base value, auto-scaled
+  pilot_L_max_projectile: 30     # [dimensionless] Base value, auto-scaled based on k*r_max
   pilot_n_theta: 50              # [count] TCS only, DCS not needed
 
 oscillatory:

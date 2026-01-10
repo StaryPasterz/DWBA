@@ -320,7 +320,9 @@ def radial_ME_all_L(
     CC_nodes: int = 5,
     phase_increment: float = 1.5708,
     min_grid_fraction: float = 0.10,
-    k_threshold: float = 0.5
+    k_threshold: float = 0.5,
+    # Bug #2 fix: Also check U_f for asymptotic validation
+    U_f_array: Optional[np.ndarray] = None
 ) -> RadialDWBAIntegrals:
     """
     Compute radial DWBA integrals I_L for multipoles L = 0 to L_max.
@@ -477,8 +479,11 @@ def radial_ME_all_L(
     # ==========================================================================
     ASYMPTOTIC_THRESHOLD = 0.05  # |U|/(k²/2) should be < 5%
     r_m_idx = max(0, idx_limit - 1)
-    U_at_rm = abs(U_i_array[r_m_idx])
-    kinetic_energy = 0.5 * k_i**2  # E_kin = k²/2 in atomic units
+    # Bug #2 fix: Check BOTH U_i and U_f for asymptotic validity
+    U_i_at_rm = abs(U_i_array[r_m_idx])
+    U_f_at_rm = abs(U_f_array[r_m_idx]) if U_f_array is not None else 0.0
+    U_at_rm = max(U_i_at_rm, U_f_at_rm)
+    kinetic_energy = 0.5 * min(k_i, k_f)**2  # Use lower k for stricter check
     
     if kinetic_energy > 1e-10:  # Avoid division by zero
         ratio = U_at_rm / kinetic_energy
@@ -649,6 +654,15 @@ def radial_ME_all_L(
                             r_match, r[-1],
                             delta_phi=np.pi / 4
                         )
+                        
+                        # Bug #3 fix: Add analytical tail from r_max to ∞
+                        # For L≥1, the multipole kernel 1/r^(L+1) has non-zero contribution beyond r_max
+                        I_tail_inf = _analytical_multipole_tail(
+                            r[-1], k_i, k_f, delta_i, delta_f, l_i, l_f, L,
+                            bound_overlap=moment_L,
+                            eta_i=eta_i, eta_f=eta_f, sigma_i=sigma_i, sigma_f=sigma_f
+                        )
+                        I_out += I_tail_inf
                 
                 I_dir = I_in + I_out
             
@@ -687,6 +701,15 @@ def radial_ME_all_L(
                             r_match, r[-1],
                             delta_phi=np.pi / 4
                         )
+                        
+                        # Bug #3 fix: Add analytical tail from r_max to ∞
+                        # The multipole kernel 1/r^(L+1) contribution beyond grid
+                        I_tail_inf = _analytical_multipole_tail(
+                            r[-1], k_i, k_f, delta_i, delta_f, l_i, l_f, L,
+                            bound_overlap=moment_L,
+                            eta_i=eta_i, eta_f=eta_f, sigma_i=sigma_i, sigma_f=sigma_f
+                        )
+                        I_out += I_tail_inf
                 
                 I_dir = I_in + I_out
         else:
@@ -988,7 +1011,9 @@ def radial_ME_all_L_gpu(
     k_threshold: float = 0.5,
     gpu_memory_mode: str = "auto",
     gpu_memory_threshold: float = 0.7,
-    gpu_cache: Optional[GPUCache] = None  # Phase 3: Energy-level cache
+    gpu_cache: Optional[GPUCache] = None,  # Phase 3: Energy-level cache
+    # Bug #2 fix: Also check U_f for asymptotic validation
+    U_f_array: Optional[np.ndarray] = None
 ) -> RadialDWBAIntegrals:
     """
     GPU Accelerated Version of radial_ME_all_L using CuPy.
@@ -1405,6 +1430,15 @@ def radial_ME_all_L_gpu(
                             r_match, float(grid.r[-1]),
                             delta_phi=np.pi / 4
                         )
+                        
+                        # Bug #3 fix: Add analytical tail from r_max to ∞
+                        I_tail_inf = _analytical_multipole_tail(
+                            float(grid.r[-1]), k_i, k_f, delta_i, delta_f, l_i, l_f, L,
+                            bound_overlap=moment_L,
+                            eta_i=eta_i, eta_f=eta_f, sigma_i=sigma_i, sigma_f=sigma_f
+                        )
+                        I_out += I_tail_inf
+                        
                         I_dir_L = I_dir_L + I_out
         else:
             # Standard method (weighted densities) - stays on GPU

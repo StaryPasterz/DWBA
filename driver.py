@@ -351,7 +351,8 @@ def _worker_partial_wave(
             CC_nodes=OSCILLATORY_CONFIG["CC_nodes"],
             phase_increment=OSCILLATORY_CONFIG["phase_increment"],
             min_grid_fraction=OSCILLATORY_CONFIG["min_grid_fraction"],
-            k_threshold=OSCILLATORY_CONFIG["k_threshold"]
+            k_threshold=OSCILLATORY_CONFIG["k_threshold"],
+            U_f_array=U_f.U_of_r  # Bug #2 fix: check both potentials
         )
         
         # Distribute
@@ -699,7 +700,8 @@ def compute_total_excitation_cs(
                     k_threshold=OSCILLATORY_CONFIG["k_threshold"],
                     gpu_memory_mode=OSCILLATORY_CONFIG["gpu_memory_mode"],
                     gpu_memory_threshold=OSCILLATORY_CONFIG["gpu_memory_threshold"],
-                    gpu_cache=gpu_cache  # Phase 3: pass energy-level cache
+                    gpu_cache=gpu_cache,  # Phase 3: pass energy-level cache
+                    U_f_array=U_f.U_of_r  # Bug #2 fix: check both potentials
                 )
                 
                 # Distribute (CPU - fast)

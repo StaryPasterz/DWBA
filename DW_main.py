@@ -787,6 +787,16 @@ def run_scan_excitation(run_name):
     # compute_total_excitation_cs runs bound state solve internally each time (inefficient but safe).
     # We will run it once.
     
+    # Bug #4 fix: Dynamic L_max for pilot based on energy
+    # At 1000 eV, k ≈ 8.6 a.u., requiring much higher L_max for convergence
+    k_pilot = np.sqrt(2 * pilot_E / 27.2114)  # k in a.u.
+    r_max_grid = params['grid']['r_max']
+    pilot_L_proj_dynamic = int(k_pilot * r_max_grid * 0.6)
+    pilot_L_proj = max(L_max_proj, min(pilot_L_proj_dynamic, 150))
+    pilot_L_int = max(L_max_integrals, min(25, pilot_L_proj // 4))
+    
+    logger.debug("Pilot dynamic L_max: L_proj=%d, L_int=%d (k=%.2f)", pilot_L_proj, pilot_L_int, k_pilot)
+    
     try:
         # Article uses large box (200 au)
         res_pilot = compute_total_excitation_cs(
@@ -794,6 +804,8 @@ def run_scan_excitation(run_name):
             r_max=200.0, n_points=3000, 
             use_polarization_potential=use_pol,
             n_theta=n_theta,
+            L_max_integrals_override=pilot_L_int,
+            L_max_projectile_override=pilot_L_proj,
         )
     except Exception as e:
         logger.debug("Pilot calculation failed: %s", e)
@@ -1440,8 +1452,30 @@ def main():
         elif choice == '7':
             new_name = input("Enter new Simulation Name: ").strip()
             if new_name:
+                old_name = run_name
                 run_name = new_name
-                print(f"Run Name changed to: {run_name}")
+                print_success(f"Run Name changed to: {run_name}")
+                
+                # Offer to rename existing files (Bug #5 fix)
+                old_files = list(get_results_dir().glob(f"results_{old_name}_*.json"))
+                old_plots = list(get_results_dir().glob(f"*_{old_name}_*.png"))
+                all_old_files = old_files + old_plots
+                
+                if all_old_files:
+                    print_info(f"Found {len(all_old_files)} files with old name '{old_name}'.")
+                    rename_choice = input("  Rename existing files to new name? [y/N]: ").strip().lower()
+                    if rename_choice == 'y':
+                        renamed_count = 0
+                        for old_path in all_old_files:
+                            new_filename = old_path.name.replace(old_name, new_name)
+                            new_path = old_path.parent / new_filename
+                            try:
+                                old_path.rename(new_path)
+                                print(f"    {old_path.name} → {new_filename}")
+                                renamed_count += 1
+                            except Exception as e:
+                                print_warning(f"    Failed to rename {old_path.name}: {e}")
+                        print_success(f"Renamed {renamed_count}/{len(all_old_files)} files.")
         elif choice == 'q':
             print("Goodbye.")
             break
@@ -1664,11 +1698,25 @@ def run_from_config(config_path: str, verbose: bool = False) -> None:
         if config.output.calibrate:
             # Run Pilot Calculation for Alpha Matching (v2.5+: pilot light mode)
             pilot_E = params['excitation']['pilot_energy_eV']
-            pilot_L_int = params['excitation'].get('pilot_L_max_integrals', 8)
-            pilot_L_proj = params['excitation'].get('pilot_L_max_projectile', 30)
             pilot_n_th = params['excitation'].get('pilot_n_theta', 50)
             
-            logger.info("Pilot Calc      | E=%d eV (L_int=%d, L_proj=%d, n_θ=%d)...", 
+            # Bug #4 fix: Dynamic L_max for pilot based on energy
+            # At high energies (e.g., 1000 eV), low L_max causes non-converged σ_DWBA
+            # which leads to incorrect α calibration factor
+            k_pilot = np.sqrt(2 * pilot_E / 27.2114)  # k in a.u.
+            r_max_grid = params['grid']['r_max']
+            
+            # Classical turning point physics: L_max ~ k * r_max
+            # Use 60% factor for safety margin
+            pilot_L_proj_dynamic = int(k_pilot * r_max_grid * 0.6)
+            pilot_L_proj_base = params['excitation'].get('pilot_L_max_projectile', 30)
+            pilot_L_proj = max(pilot_L_proj_base, min(pilot_L_proj_dynamic, 150))  # Cap at 150
+            
+            # Scale L_max_integrals proportionally
+            pilot_L_int_base = params['excitation'].get('pilot_L_max_integrals', 8)
+            pilot_L_int = max(pilot_L_int_base, min(25, pilot_L_proj // 4))
+            
+            logger.info("Pilot Calc      | E=%d eV (L_int=%d, L_proj=%d [dynamic], n_θ=%d)...", 
                        pilot_E, pilot_L_int, pilot_L_proj, pilot_n_th)
             
             try:
