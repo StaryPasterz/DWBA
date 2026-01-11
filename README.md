@@ -564,37 +564,36 @@ DWBA COMPREHENSIVE DIAGNOSTIC SUITE
 
 ## Performance Tips
 
-### Grid Numerics: L_max and r_max Selection
+### Grid Numerics: $L_{max}$ and $r_{max}$ Selection
 
 The classical turning point constraint is critical for numerical stability:
 
-```
-r_t(L) = (L + 0.5) / k      # Turning point for partial wave L
-L_max ≤ k × (r_max / C) - 0.5   # Safe L_max for given r_max (C ≈ 2.5)
-```
+$$r_t(L) = \frac{L + 0.5}{k}$$    # Turning point for partial wave L
+
+$$L_{max} \le k \cdot \frac{r_{max}}{C} - 0.5 \quad (C \approx 2.5)$$    # Safe L_max for given r_max (C ≈ 2.5)
 
 The code automatically enforces this via `compute_safe_L_max()`:
-- At **low energies** (small k): L_max is automatically reduced
-- If you see **warnings about turning point limits**: increase r_max or accept fewer partial waves
+- At **low energies** (small $k$): $L_{max}$ is automatically reduced
+- If you see **warnings about turning point limits**: increase $r_{max}$ or accept fewer partial waves
 
-| Energy (eV) | k (a.u.) | r_max=200 | r_max=500 | r_max=1000 |
-|-------------|----------|-----------|-----------|------------|
-| 15          | 1.05     | L≤33      | L≤83      | L≤167      |
-| 50          | 1.92     | L≤61      | L≤153     | L≤306      |
-| 100         | 2.71     | L≤86      | L≤216     | L≤433      |
+| Energy (eV) | $k$ (a.u.) | $r_{max}=200$ | $r_{max}=500$ | $r_{max}=1000$ |
+|-------------|------------|---------------|---------------|----------------|
+| 15          | 1.05       | $L \le 33$    | $L \le 83$    | $L \le 167$    |
+| 50          | 1.92       | $L \le 61$    | $L \le 153$   | $L \le 306$    |
+| 100         | 2.71       | $L \le 86$    | $L \le 216$   | $L \le 433$    |
 
-### Adaptive Grid (Automatic r_max Scaling)
+### Adaptive Grid (Automatic $r_{max}$ Scaling)
 
-The interactive scans (`DW_main.py`) now **automatically compute optimal r_max** based on:
+The interactive scans (`DW_main.py`) now **automatically compute optimal $r_{max}$** based on:
 1. Minimum energy in the scan (lowest kinetic energy = most restrictive)
-2. Requested L_max_projectile
+2. Requested $L_{max}$ for projectile
 3. Classical turning point formula
 
-```
-E_min_scan → k_min = sqrt(2 × (E_min - threshold))
-r_max_optimal = max(200, C × (L_max + 0.5) / k_min)    # C ≈ 2.5
-n_points = 3000 × (r_max / 200)                        # Scale proportionally
-```
+$$k_{min} = \sqrt{2(E_{min} - E_{threshold})}$$
+
+$$r_{max}^{opt} = \max\left(200, \; C \cdot \frac{L_{max} + 0.5}{k_{min}}\right)$$    # C ≈ 2.5
+
+$$n_{points} = 3000 \times \frac{r_{max}}{200}$$
 
 This ensures **all energies in the scan** have sufficient grid extent. The console shows:
 ```
@@ -606,67 +605,64 @@ This ensures **all energies in the scan** have sufficient grid extent. The conso
 The continuum wave solver uses **Numerov propagation** with asymptotic stitching:
 
 **Numerov Method** (Primary):
-- Solves χ''(r) = Q(r)·χ(r) where Q = l(l+1)/r² + 2U(r) - k²
-- O(h⁴) accuracy for non-uniform (exponential) grids
-- Uses **separate step sizes** h₁², h₂² instead of averaged h² for better accuracy
+- Solves the radial Schrödinger equation:
+  $$\chi''(r) = Q(r) \cdot \chi(r), \quad Q(r) = \frac{l(l+1)}{r^2} + 2U(r) - k^2$$
+- $O(h^4)$ accuracy for non-uniform (exponential) grids
+- Uses **separate step sizes** $h_1^2$, $h_2^2$ instead of averaged $h^2$ for better accuracy
 - Periodic renormalization prevents over/underflow
 
 **Fornberg Phase Extraction** (v2.2+):
-- Replaced 3-point central differences with a **5-point Fornberg stencil**.
-- Correctly computes weights for arbitrary grid spacing, suppressing numerical noise in the logarithmic derivative $Y(r) = \chi'(r)/\chi(r)$ at match points.
-- Essential for stable extraction of phase shifts $\delta_l$ at high energies ($k \gg 1$).
+- Replaced 3-point central differences with a **5-point Fornberg stencil**
+- Correctly computes weights for arbitrary grid spacing, suppressing numerical noise in the logarithmic derivative $Y(r) = \chi'(r)/\chi(r)$ at match points
+- Essential for stable extraction of phase shifts $\delta_l$ at high energies ($k \gg 1$)
 
 **Physics-Based Turning Point Detection**:
-- Checks S(r_min) = l(l+1)/r² + 2U - k² at grid origin
-- If S > 0 (inside barrier): starts propagation at r = 0.9 × r_turn
-- Works for **any l** when physics requires it (not just l > 5)
+- Checks $S(r_{min}) = l(l+1)/r^2 + 2U - k^2$ at grid origin
+- If $S > 0$ (inside barrier): starts propagation at $r = 0.9 \times r_{turn}$
+- Works for **any $l$** when physics requires it (not just $l > 5$)
 
 **Adaptive Initial Conditions**:
-- Always evaluates S(r_start) to choose between:
-  - **WKB**: χ ~ exp(κ·r) when S > 0 (inside barrier)
-  - **Regular**: χ ~ r^(l+1) when S < 0 (oscillatory region)
+- Always evaluates $S(r_{start})$ to choose between:
+  - **WKB**: $\chi \sim \exp(\kappa r)$ when $S > 0$ (inside barrier)
+  - **Regular**: $\chi \sim r^{l+1}$ when $S < 0$ (oscillatory region)
 
-**Match Point Selection** (Critical for high L):
-- Searches **forward** from idx_start + 50 to guarantee valid wavefunction
-- Ensures r_m > r_turn (past classical turning point)
-- Uses relaxed threshold: |U|/(k²/2) < 1% (was 0.01%)
+**Match Point Selection** (Critical for high $L$):
+- Searches **forward** from `idx_start + 50` to guarantee valid wavefunction
+- Ensures $r_m > r_{turn}$ (past classical turning point)
+- Uses relaxed threshold: $|U|/(k^2/2) < 1\%$ (was 0.01%)
 - Prevents "all solvers failed" errors for high partial waves
 
 **Phase Extraction**:
-```
-tan(δ_l) = [Y_m · ĵ_l - ĵ_l'] / [n̂_l' - Y_m · n̂_l]
-```
-- Matches to Riccati-Bessel (neutral) or Coulomb F,G (ionic) at r_m
-- Log-derivative Y_m = χ'/χ used for numerical stability
+$$\tan(\delta_l) = \frac{Y_m \cdot \hat{j}_l - \hat{j}_l'}{\hat{n}_l' - Y_m \cdot \hat{n}_l}$$
+- Matches to Riccati-Bessel (neutral) or Coulomb $F$, $G$ (ionic) at $r_m$
+- Log-derivative $Y_m = \chi'/\chi$ used for numerical stability
 
 **Asymptotic Stitching**:
-- Numerical χ scaled to match asymptotic amplitude at r_m
-- Pure analytic solution A·[ĵ cos(δ) - n̂ sin(δ)] used for r > r_m
-- Amplitude A = √(2/π) for δ(k-k') normalization
+- Numerical $\chi$ scaled to match asymptotic amplitude at $r_m$
+- Pure analytic solution $A[\hat{j}\cos\delta - \hat{n}\sin\delta]$ used for $r > r_m$
+- Amplitude $A = \sqrt{2/\pi}$ for $\delta(k-k')$ normalization
 - Eliminates numerical noise in oscillatory tail
 
 **Fallback Chain**:
 If Numerov fails → Johnson log-derivative → RK45
 
 **Split Radial Integrals**:
-- Integration uses numerical χ for [0, r_m] and analytic for [r_m, ∞)
+- Integration uses numerical $\chi$ for $[0, r_m]$ and analytic for $[r_m, \infty)$
 - Match point stored in `ContinuumWave.idx_match`
 
 ### Oscillatory Radial Integrals
 
 For high partial waves and energies, the radial integrands oscillate rapidly:
 
-```
-χ_i(k_i, r) × χ_f(k_f, r) × K_L(r₁, r₂)
-```
+$$\chi_i(k_i, r) \times \chi_f(k_f, r) \times K_L(r_1, r_2)$$
 
 The **oscillatory_integrals.py** module provides advanced oscillatory quadrature methods following best practices for high-accuracy scattering calculations.
 
-#### Domain Splitting: I_in + I_out
+#### Domain Splitting: $I_{in} + I_{out}$
 
-All integrals are split at the match point r_m:
-- **I_in [0, r_m]**: Clenshaw-Curtis / Simpson quadrature with proper integration weights.
-- **I_out [r_m, ∞)**: Specialized oscillatory methods (Levin/Filon) using asymptotic wave forms.
+All integrals are split at the match point $r_m$:
+- **$I_{in}$ $[0, r_m]$**: Clenshaw-Curtis / Simpson quadrature with proper integration weights
+- **$I_{out}$ $[r_m, \infty)$**: Specialized oscillatory methods (Levin/Filon) using asymptotic wave forms
 
 #### High-Accuracy Integration (v2.2+)
 
@@ -678,33 +674,28 @@ Recent audits (Edit_62+) have standardized the **Full-Split** and **Advanced** m
 2.  **Inner Integral Parity**: The inner $r_2$ integral for both **Direct** and **Exchange** terms is now computed over the full range $[0, R_{max}]$ on both CPU and GPU. This ensures that the entire localized potential of the target atom is integrated when computing the field felt by the projectile.
 
 **Important**: 2D kernel integrals use:
-```
-I = ∫∫ ρ₁(r₁) · K(r₁,r₂) · ρ₂(r₂) dr₁ dr₂
-```
-Integration weights `w_grid` (Simpson's rule) are applied to both dimensions to ensure proper ∫dr integration.
+$$I = \iint \rho_1(r_1) \cdot K(r_1, r_2) \cdot \rho_2(r_2) \, dr_1 \, dr_2$$
+Integration weights `w_grid` (Simpson's rule) are applied to both dimensions.
 
-#### sinA × sinB Decomposition
+#### $\sin A \times \sin B$ Decomposition
 
-For products of continuum waves χ_a × χ_b, the identity is applied:
-```
-sin(Φ_a) × sin(Φ_b) = ½[cos(Φ_a - Φ_b) - cos(Φ_a + Φ_b)]
-```
-This separates the integral into two cosine terms `I_minus` and `I_plus`, each computed using complex exponentials:
-```python
-I = Re ∫ f(r) exp(iΦ(r)) dr
-```
+For products of continuum waves $\chi_a \times \chi_b$, the identity is applied:
+$$\sin(\Phi_a) \times \sin(\Phi_b) = \frac{1}{2}\left[\cos(\Phi_a - \Phi_b) - \cos(\Phi_a + \Phi_b)\right]$$
+
+This separates the integral into two cosine terms $I_{-}$ and $I_{+}$, each computed using complex exponentials:
+$$I = \text{Re} \int f(r) \exp(i\Phi(r)) \, dr$$
 
 **Key functions:**
-- `compute_product_phases()` - decomposes wave parameters into k_±, φ_±, η_±
-- `dwba_outer_integral_1d()` - full sinA×sinB integral using Filon/Levin
+- `compute_product_phases()` — decomposes wave parameters into $k_\pm$, $\varphi_\pm$, $\eta_\pm$
+- `dwba_outer_integral_1d()` — full $\sin A \times \sin B$ integral using Filon/Levin
 
 #### Filon Quadrature (Linear Phase)
 
-For regions where phase is approximately linear (|Φ''| × h² < 0.1):
-- Divides into segments with constant phase increment ΔΦ = π/4
-- Uses complex exponential form: ∫ f(r) exp(iωr + φ₀) dr
-- Taylor expansion for small ω·h to avoid division issues
-- Polynomial interpolation of envelope f(r)
+For regions where phase is approximately linear ($|\Phi''| \times h^2 < 0.1$):
+- Divides into segments with constant phase increment $\Delta\Phi = \pi/4$
+- Uses complex exponential form: $\int f(r) \exp(i\omega r + \varphi_0) \, dr$
+- Taylor expansion for small $\omega h$ to avoid division issues
+- Polynomial interpolation of envelope $f(r)$
 
 ```python
 from oscillatory_integrals import filon_oscillatory_integral
@@ -713,9 +704,9 @@ I = filon_oscillatory_integral(f_func, omega, phase_offset, r_start, r_end)
 
 #### Levin Collocation (Nonlinear Phase)
 
-For Coulomb phases where η·ln(2kr) makes Φ nonlinear:
-- Solves ODE: u'(r) + iΦ'(r)u(r) = f(r)
-- Uses boundary formula: I = u(b)exp(iΦ(b)) - u(a)exp(iΦ(a))
+For Coulomb phases where $\eta \ln(2kr)$ makes $\Phi$ nonlinear:
+- Solves ODE: $u'(r) + i\Phi'(r)u(r) = f(r)$
+- Uses boundary formula: $I = u(b)e^{i\Phi(b)} - u(a)e^{i\Phi(a)}$
 - Chebyshev collocation with 8 nodes per segment
 - Robust for highly oscillatory integrands with variable frequency
 
@@ -727,8 +718,8 @@ I = levin_oscillatory_integral(f_func, phi_func, phi_prime_func, r_start, r_end)
 #### Automatic Method Selection
 
 The unified interface `compute_outer_integral_oscillatory()` automatically selects:
-- **Filon** when |Φ''| × h² < 0.1 (constant frequency)
-- **Levin** when |Φ''| × h² ≥ 0.1 (variable frequency)
+- **Filon** when $|\Phi''| \times h^2 < 0.1$ (constant frequency)
+- **Levin** when $|\Phi''| \times h^2 \ge 0.1$ (variable frequency)
 
 ```python
 from oscillatory_integrals import compute_outer_integral_oscillatory
@@ -755,10 +746,10 @@ phi_prime = compute_phase_derivative(r, k, eta)  # Φ'(r) = k + η/r
 | Function | Purpose |
 |----------|---------|
 | `clenshaw_curtis_nodes(n, a, b)` | Chebyshev nodes and weights |
-| `generate_phase_nodes(r_start, r_end, k_total, Δφ)` | Constant phase grid |
-| `_filon_segment_complex(f, r, ω, φ₀)` | Single segment Filon |
-| `_levin_segment_complex(f, r, Φ, Φ')` | Single segment Levin |
-| `compute_product_phases(...)` | sinA×sinB → cos terms |
+| `generate_phase_nodes(r_start, r_end, k_total, dphi)` | Constant phase grid |
+| `_filon_segment_complex(f, r, omega, phi0)` | Single segment Filon |
+| `_levin_segment_complex(f, r, phi, phi_prime)` | Single segment Levin |
+| `compute_product_phases(...)` | $\sin A \times \sin B \to \cos$ terms |
 | `dwba_outer_integral_1d(...)` | Full DWBA outer integral |
 
 **Usage**:

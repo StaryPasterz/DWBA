@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [v2.10] — 2026-01-11 — Configuration Refactoring & Output Controls
+## [v2.10] — 2026-01-11 — Configuration Refactoring & Output Controls — Edit_80 (`f2a0314`)
 
 Restructured configuration system with separate Hardware category and full Output options support.
 
@@ -48,7 +48,7 @@ Restructured configuration system with separate Hardware category and full Outpu
 
 ---
 
-## [v2.9] — 2026-01-11 — Enhanced Diagnostic Framework
+## [v2.9] — 2026-01-11 — Enhanced Diagnostic Framework — Edit_79 (`9c29eef`)
 
 Comprehensive diagnostic suite with unified menu and result tracking.
 
