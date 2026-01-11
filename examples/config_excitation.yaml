@@ -28,10 +28,11 @@ energy:
 
 grid:
   strategy: "global"     # "manual" = fixed params, "global" = adaptive for E_min (recommended), "local" = per-energy
-  r_max: 200             # [a.u.] Maximum radial extent (bohr)
-  n_points: 3000         # [count] Number of radial grid points
+  r_max: 200             # [a.u.] Maximum radial extent (for manual; base value for adaptive)
+  n_points: 3000         # [count] Base grid points (for manual; minimum for adaptive modes)
   r_max_scale_factor: 2.5  # [dimensionless] Safety factor for turning point criterion
-  n_points_max: 8000     # [count] Maximum allowed grid points (memory cap)
+  n_points_max: 15000    # [count] Maximum allowed grid points (caps adaptive scaling)
+  min_points_per_wavelength: 15  # [count] Minimum pts/λ for high-E (v2.7+). Set to 0 to disable.
 
 excitation:
   # Production parameters

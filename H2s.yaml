@@ -31,10 +31,11 @@ energy:
 
 grid:
   strategy: "local"      # "manual" = fixed params, "global" = adaptive for E_min (recommended), "local" = per-energy
-  r_max: 200             # [a.u.] Maximum radial extent (bohr)
-  n_points: 3000         # [count] Number of radial grid points
+  r_max: 200             # [a.u.] Maximum radial extent (for manual; base value for adaptive)
+  n_points: 3000         # [count] Base grid points (for manual; minimum for adaptive modes)
   r_max_scale_factor: 2.5  # [dimensionless] Safety factor for turning point criterion
-  n_points_max: 8000     # [count] Maximum allowed grid points
+  n_points_max: 15000    # [count] Maximum allowed grid points (caps adaptive scaling)
+  min_points_per_wavelength: 15  # [count] Minimum pts/λ for high-E (v2.7+). Set to 0 to disable.
 
 excitation:
   # Production parameters
@@ -44,8 +45,8 @@ excitation:
   pilot_energy_eV: 1000  # [eV] Calibration pilot energy
   # Pilot light mode (v2.5+) - "auto" = dynamic scaling based on energy, int = explicit value
   # Note (v2.7+): "auto" calculates L_max from k*r_max to ensure convergence at high energies
-  pilot_L_max_integrals: "auto"    # "auto" or int (e.g., 8)
-  pilot_L_max_projectile: "auto"   # "auto" or int (e.g., 30)
+  pilot_L_max_integrals: 8    # "auto" or int (e.g., 8)
+  pilot_L_max_projectile: 30   # "auto" or int (e.g., 30)
   pilot_n_theta: 50                # [count] TCS only, DCS not needed
 
 oscillatory:
@@ -59,7 +60,7 @@ oscillatory:
   gpu_memory_mode: "auto"        # "auto" (smart), "full" (fast), "block" (safe)
   gpu_memory_threshold: 0.7      # [dimensionless] Max VRAM fraction to use
   max_chi_cached: 20             # [count] LRU cache size for continuum waves
-  n_workers: 8               # "auto" (balanced), "max" (all cores), or int
+  n_workers: "max"               # "auto" (balanced), "max" (all cores), or int
 
 output:
   save_dcs: true                 # Save differential cross section

@@ -26,4 +26,4 @@ Cechuj się:
 - Dokumentacja matematyczna: W docstringach używaj notacji LaTeX do opisu implementowanych wzorów, aby zapewnić pełną zgodność z artykułami źródłowymi.
 - Zarządzanie błędami: Implementuj szczegółowe logowanie procesów iteracyjnych i sprawdzaj fizyczną poprawność wyników (np. zachowanie energii, ortogonalność funkcji falowych).
 - Adaptacyjność: Bądź gotowy na refaktoryzację istniejących modułów, jeśli nowa literatura sugeruje bardziej precyzyjne podejście do potencjałów wymiennych lub korelacyjnych.
-
+- Respektuj dokumentację i strukturę projektu, skrypty diagnostyczne zapisuj w folderze debug, korzystaj z istniejących skryptów diagnostycznych i ulepszaj je nie usuwając zawartości aby mogły się przydać w przyszłości.

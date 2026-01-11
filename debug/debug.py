@@ -242,9 +242,10 @@ class DWBADebugger:
         self.log("Ionization Trace Complete.")
 
     def _verify_continuum(self, wave: ContinuumWave, label: str, U_pot: Optional[DistortingPotential] = None, E_eV: float = 0.0):
-        # Asymptotic Amplitude Check
         tail_max = np.max(np.abs(wave.chi_of_r[-int(self.cfg.n_points*0.1):]))
-        self.check(0.9 < tail_max < 1.1, f"{label} Asymp Amp (~{tail_max:.3f})")
+        # Normalization check: sqrt(2/pi) ~= 0.798 for delta(k-k') normalization
+        target_amp = np.sqrt(2.0 / np.pi)
+        self.check(target_amp * 0.9 < tail_max < target_amp * 1.1, f"{label} Asymp Amp (~{tail_max:.3f})")
 
     def _compute_sigma_sample(self, orb_i, orb_f, U_i, U_f, L_max=5):
         # Simplified sigma calc for debugging

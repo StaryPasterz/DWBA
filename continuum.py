@@ -1342,23 +1342,35 @@ def solve_continuum_wave(
     if use_analytic_bypass:
         logger.debug(f"L={l}: Analytic bypass (r_m={r_m_check:.1f} at {fraction_to_match*100:.0f}% of grid)")
         
+        # Calculate Born approximation phase shift:
+        # δ_l^Born ≈ -k ∫₀^∞ U(r) [j_l(kr)]² r² dr
+        # This gives non-zero phase shifts even for weak potentials
+        rho_vec = k_au * r
+        jl_vals = spherical_jn(l, rho_vec)
+        
+        # Use trapezoidal weights from grid for integration
+        integrand = U_arr * jl_vals**2 * r**2
+        delta_born = -k_au * np.sum(grid.w_trapz * integrand)
+        
+        # Clamp to reasonable range to avoid numerical artifacts
+        delta_born = np.clip(delta_born, -np.pi/2, np.pi/2)
+        
         if abs(z_ion) < 1e-3:
-            # Neutral: use Riccati-Bessel
-            rho_vec = k_au * r
-            jl_vals = spherical_jn(l, rho_vec)
+            # Neutral: use Riccati-Bessel with Born phase
             chi_analytic = r * jl_vals * k_au
-            return ContinuumWave(l, k_au, chi_analytic, 0.0, eta=0.0, sigma_l=0.0)
+            # Apply phase shift properly via normalization factor
+            A_norm = np.sqrt(2.0 / np.pi)  # δ(k-k') normalization
+            return ContinuumWave(l, k_au, A_norm * chi_analytic, delta_born, eta=0.0, sigma_l=0.0)
         else:
-            # Ionic: use asymptotic Coulomb
+            # Ionic: use asymptotic Coulomb with Born phase
             eta = -z_ion / k_au
             coulomb_phase = np.imag(loggamma(l + 1 + 1j * eta))
-            rho_vec = k_au * r
-            theta = rho_vec + eta * np.log(2.0 * rho_vec + 1e-30) - (l * np.pi / 2.0) + coulomb_phase
-            chi_coulomb = np.sin(theta)
+            theta = rho_vec + eta * np.log(2.0 * rho_vec + 1e-30) - (l * np.pi / 2.0) + coulomb_phase + delta_born
+            chi_coulomb = np.sqrt(2.0 / np.pi) * np.sin(theta)
             # Zero below turning point (asymptotic invalid there)
             r_turning = np.sqrt(l * (l + 1)) / k_au
             chi_coulomb[r < 0.5 * r_turning] = 0.0
-            return ContinuumWave(l, k_au, chi_coulomb, 0.0, eta=eta, sigma_l=coulomb_phase)
+            return ContinuumWave(l, k_au, chi_coulomb, delta_born, eta=eta, sigma_l=coulomb_phase)
 
 
     # The centrifugal barrier l(l+1)/r^2 is huge at small r.

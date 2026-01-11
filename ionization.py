@@ -769,7 +769,7 @@ def compute_ionization_cs(
         else:
             logger.warning("CuPy detected but runtime check failed. Fallback to CPU.")
     
-    log_calculation_params("GPU" if USE_GPU else "CPU Parallel", L_max_projectile)
+    log_calculation_params("GPU" if USE_GPU else "CPU Parallel", L_max_proj)
             
     tdcs_angles_rad = None
     if tdcs_angles_deg:

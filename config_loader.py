@@ -70,7 +70,8 @@ class GridConfig:
     r_max: float = 200.0
     n_points: int = 3000
     r_max_scale_factor: float = 2.5
-    n_points_max: int = 8000
+    n_points_max: int = 15000
+    min_points_per_wavelength: int = 15  # v2.7+: wavelength-based scaling
 
 @dataclass
 class ExcitationConfig:
@@ -80,10 +81,10 @@ class ExcitationConfig:
     L_max_projectile: int = 5
     n_theta: int = 200
     pilot_energy_eV: float = 1000.0
-    # Pilot light mode parameters (v2.5+) - reduced for fast calibration
-    pilot_L_max_integrals: int = 8         # Lower than production L_max_integrals
-    pilot_L_max_projectile: int = 30       # Auto-scaled, but limited
-    pilot_n_theta: int = 50                # TCS only, DCS not needed
+    # Pilot light mode parameters (v2.5+) - "auto" = dynamic scaling, int = explicit
+    pilot_L_max_integrals: Union[str, int] = "auto"
+    pilot_L_max_projectile: Union[str, int] = "auto"
+    pilot_n_theta: int = 50
 
 @dataclass
 class IonizationConfig:
@@ -279,7 +280,8 @@ def load_config(path: Union[str, Path]) -> DWBAConfig:
             r_max=g.get('r_max', 200.0),
             n_points=g.get('n_points', 3000),
             r_max_scale_factor=g.get('r_max_scale_factor', 2.5),
-            n_points_max=g.get('n_points_max', 8000)
+            n_points_max=g.get('n_points_max', 8000),
+            min_points_per_wavelength=g.get('min_points_per_wavelength', 15)
         )
     
     # Excitation
@@ -289,7 +291,10 @@ def load_config(path: Union[str, Path]) -> DWBAConfig:
             L_max_integrals=ex.get('L_max_integrals', 15),
             L_max_projectile=ex.get('L_max_projectile', 5),
             n_theta=ex.get('n_theta', 200),
-            pilot_energy_eV=ex.get('pilot_energy_eV', 1000.0)
+            pilot_energy_eV=ex.get('pilot_energy_eV', 1000.0),
+            pilot_L_max_integrals=ex.get('pilot_L_max_integrals', 'auto'),
+            pilot_L_max_projectile=ex.get('pilot_L_max_projectile', 'auto'),
+            pilot_n_theta=ex.get('pilot_n_theta', 50)
         )
     
     # Ionization

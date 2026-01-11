@@ -238,50 +238,76 @@ def dwba_outer_integral_1d(
     
     def phi_minus(r):
         result = k_minus * r + phi_c_minus
-        if abs(eta_a) > 1e-10:
+        if abs(eta_a) > 1e-15:
             result += eta_a * np.log(2 * k_a * r + 1e-30)
-        if abs(eta_b) > 1e-10:
+        if abs(eta_b) > 1e-15:
             result -= eta_b * np.log(2 * k_b * r + 1e-30)
+        # Centrifugal terms
+        if l_a > 0:
+            result -= (l_a * (l_a + 1)) / (2.0 * k_a * r)
+        if l_b > 0:
+            result += (l_b * (l_b + 1)) / (2.0 * k_b * r)
         return result
     
     def phi_plus(r):
         result = k_plus * r + phi_c_plus
-        if abs(eta_a) > 1e-10:
+        if abs(eta_a) > 1e-15:
             result += eta_a * np.log(2 * k_a * r + 1e-30)
-        if abs(eta_b) > 1e-10:
+        if abs(eta_b) > 1e-15:
             result += eta_b * np.log(2 * k_b * r + 1e-30)
+        # Centrifugal terms (both additive to total phase)
+        if l_a > 0:
+            result -= (l_a * (l_a + 1)) / (2.0 * k_a * r)
+        if l_b > 0:
+            result -= (l_b * (l_b + 1)) / (2.0 * k_b * r)
         return result
     
     def phi_minus_prime(r):
         result = k_minus
-        if abs(eta_a) > 1e-10:
+        if abs(eta_a) > 1e-15:
             result += eta_a / r
-        if abs(eta_b) > 1e-10:
+        if abs(eta_b) > 1e-15:
             result -= eta_b / r
+        if l_a > 0:
+            result += (l_a * (l_a + 1)) / (2.0 * k_a * r ** 2)
+        if l_b > 0:
+            result -= (l_b * (l_b + 1)) / (2.0 * k_b * r ** 2)
         return result
     
     def phi_plus_prime(r):
         result = k_plus
-        if abs(eta_a) > 1e-10:
+        if abs(eta_a) > 1e-15:
             result += eta_a / r
-        if abs(eta_b) > 1e-10:
+        if abs(eta_b) > 1e-15:
             result += eta_b / r
+        if l_a > 0:
+            result += (l_a * (l_a + 1)) / (2.0 * k_a * r ** 2)
+        if l_b > 0:
+            result += (l_b * (l_b + 1)) / (2.0 * k_b * r ** 2)
         return result
     
     def phi_minus_prime2(r):
         result = 0.0
-        if abs(eta_a) > 1e-10:
+        if abs(eta_a) > 1e-15:
             result -= eta_a / (r * r)
-        if abs(eta_b) > 1e-10:
+        if abs(eta_b) > 1e-15:
             result += eta_b / (r * r)
+        if l_a > 0:
+            result -= (l_a * (l_a + 1)) / (k_a * r ** 3)
+        if l_b > 0:
+            result += (l_b * (l_b + 1)) / (k_b * r ** 3)
         return result
     
     def phi_plus_prime2(r):
         result = 0.0
-        if abs(eta_a) > 1e-10:
+        if abs(eta_a) > 1e-15:
             result -= eta_a / (r * r)
-        if abs(eta_b) > 1e-10:
+        if abs(eta_b) > 1e-15:
             result -= eta_b / (r * r)
+        if l_a > 0:
+            result -= (l_a * (l_a + 1)) / (k_a * r ** 3)
+        if l_b > 0:
+            result -= (l_b * (l_b + 1)) / (k_b * r ** 3)
         return result
     
     # Compute I_minus = ∫ f(r) cos(Φ_-(r)) dr = Re ∫ f(r) exp(iΦ_-(r)) dr
@@ -315,68 +341,94 @@ def compute_asymptotic_phase(
     """
     Compute asymptotic phase of continuum wave at radius r.
     
-    Φ(r) = k·r + η·ln(2kr) - l·π/2 + σ_l + δ_l
+    Includes the first-order centrifugal correction to ensure stability
+    for high partial waves at non-asymptotic distances.
     
-    For neutral targets (η=0), this reduces to:
-    Φ(r) = k·r - l·π/2 + δ_l
+    Φ(r) = k·r + η·ln(2kr) - l·π/2 + σ_l + δ_l - l(l+1)/(2kr)
     
     Parameters
     ----------
     r : float
-        Radius in atomic units.
+        Radius [bohr].
     k : float
-        Wave number.
+        Wave number [bohr⁻¹].
     l : int
-        Angular momentum.
+        Orbital angular momentum.
     delta : float
-        Short-range phase shift.
+        Short-range phase shift (from potential).
     eta : float
-        Sommerfeld parameter (-z_ion/k).
+        Sommerfeld parameter (Z/k).
     sigma : float
-        Coulomb phase shift arg(Γ(l+1+iη)).
+        Coulomb phase shift.
         
     Returns
     -------
     phi : float
         Total phase in radians.
     """
-    phi = k * r - l * np.pi / 2 + delta + sigma
-    if abs(eta) > 1e-10 and k * r > 1e-6:
-        phi += eta * np.log(2 * k * r)
-    return phi
+    if r < 1e-9 or k < 1e-9:
+        return 0.0
+    
+    # Base phase (asymptotic)
+    phi = k * r - 0.5 * l * np.pi + sigma + delta
+    
+    if abs(eta) > 1e-15:
+        phi += eta * np.log(max(2 * k * r, 1e-300))
+        
+    # Centrifugal correction (O(1/r))
+    # This term arises from the large-r expansion of the Besssel/Coulomb phase:
+    # arg(F_l) -> k*r + ... - l(l+1)/(2kr)
+    # It is CRITICAL for high l when integrating on a finite grid.
+    if l > 0:
+        phi -= (l * (l + 1)) / (2.0 * k * r)
+        
+    return float(phi)
 
 
 def compute_phase_derivative(
     r: float,
     k: float,
-    eta: float = 0.0
+    eta: float = 0.0,
+    l: int = 0
 ) -> float:
     """
-    Compute derivative of asymptotic phase: Φ'(r) = k + η/r.
+    Compute derivative of asymptotic phase: Φ'(r) = k + η/r + l(l+1)/(2kr²).
     
-    For neutral targets: Φ'(r) = k (constant).
-    For Coulomb: Φ'(r) = k + η/r (decreases with r for attractive).
+    Parameters
+    ----------
+    r : float
+        Radius [bohr].
+    k : float
+        Wave number [bohr⁻¹].
+    eta : float
+        Sommerfeld parameter.
+    l : int
+        Orbital angular momentum (for centrifugal term).
     """
-    if abs(eta) > 1e-10 and r > 1e-6:
-        return k + eta / r
-    return k
+    if r < 1e-9:
+        return k
+    
+    deriv = k + eta / r
+    if l > 0:
+        deriv += (l * (l + 1)) / (2.0 * k * r ** 2)
+    return float(deriv)
 
 
 def compute_phase_second_derivative(
     r: float,
-    eta: float = 0.0
+    eta: float = 0.0,
+    l: int = 0,
+    k: float = 1.0
 ) -> float:
     """
-    Compute second derivative of phase: Φ''(r) = -η/r².
-    
-    For neutral targets: Φ''(r) = 0.
-    For Coulomb: Φ''(r) = -η/r².
-    
-    This is used to decide between Filon (Φ'' small) and Levin (Φ'' large).
+    Compute second derivative: Φ''(r) = -η/r² - l(l+1)/(kr³).
     """
-    if abs(eta) > 1e-10 and r > 1e-6:
-        return -eta / (r * r)
-    return 0.0
+    if r < 1e-9:
+        return 0.0
+    deriv2 = -eta / (r ** 2)
+    if l > 0:
+        deriv2 -= (l * (l + 1)) / (k * r ** 3)
+    return float(deriv2)
 
 
 # =============================================================================

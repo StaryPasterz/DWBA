@@ -473,32 +473,39 @@ def radial_ME_all_L(
     # ==========================================================================
     # ASYMPTOTIC VALIDATION
     # ==========================================================================
-    # Check that |U(r_m)| / (k²/2) < threshold ensures match point is truly
+    # Check that |V_eff(r_m)| / (k²/2) < threshold ensures match point is truly
     # in the asymptotic region where potential is negligible compared to kinetic.
-    # Tightened threshold for better tail accuracy.
+    # CRITICAL: We MUST include the centrifugal term here, as it's the dominant
+    # "potential" for high partial waves!
     # ==========================================================================
-    ASYMPTOTIC_THRESHOLD = 0.05  # |U|/(k²/2) should be < 5%
+    ASYMPTOTIC_THRESHOLD = 0.03  # |V_eff|/(k²/2) should be < 3%
     r_m_idx = max(0, idx_limit - 1)
-    # Bug #2 fix: Check BOTH U_i and U_f for asymptotic validity
-    U_i_at_rm = abs(U_i_array[r_m_idx])
-    U_f_at_rm = abs(U_f_array[r_m_idx]) if U_f_array is not None else 0.0
-    U_at_rm = max(U_i_at_rm, U_f_at_rm)
-    kinetic_energy = 0.5 * min(k_i, k_f)**2  # Use lower k for stricter check
     
-    if kinetic_energy > 1e-10:  # Avoid division by zero
-        ratio = U_at_rm / kinetic_energy
+    def get_max_V_eff(idx):
+        ri = r[idx]
+        Ui = abs(U_i_array[idx])
+        Uf = abs(U_f_array[idx]) if U_f_array is not None else 0.0
+        V_cent = (l_max_wave * (l_max_wave + 1)) / (2.0 * ri**2)
+        return max(Ui, Uf) + V_cent
+
+    kinetic_energy = 0.5 * min(k_i, k_f)**2
+    
+    if kinetic_energy > 1e-10:
+        V_eff_rm = get_max_V_eff(r_m_idx)
+        ratio = V_eff_rm / kinetic_energy
+        
         if ratio > ASYMPTOTIC_THRESHOLD:
             # Try to find a better match point further out
-            for try_idx in range(idx_limit, min(idx_limit + 100, N_grid)):
-                U_try = abs(U_i_array[try_idx])
-                if U_try / kinetic_energy < ASYMPTOTIC_THRESHOLD:
+            for try_idx in range(idx_limit, min(idx_limit + 500, N_grid)):
+                V_eff_try = get_max_V_eff(try_idx)
+                if V_eff_try / kinetic_energy < ASYMPTOTIC_THRESHOLD:
                     idx_limit = try_idx + 1
                     break
             else:
-                logger.warning(
-                    "Match point r_m=%.2f a₀ may not be in asymptotic region: "
-                    "|U(r_m)|/(k²/2) = %.2f > %.2f. Tail contribution may be inaccurate.",
-                    r[r_m_idx], ratio, ASYMPTOTIC_THRESHOLD
+                # If cannot reach threshold, just warn
+                logger.debug(
+                    "Match point r_m=%.2f a₀ has V_eff/E = %.2f > %.2f. Using best available point.",
+                    r[idx_limit-1], ratio, ASYMPTOTIC_THRESHOLD
                 )
 
     # Apply limit by zeroing weights beyond idx_limit (efficient, no array slicing)

@@ -85,7 +85,8 @@ DEFAULTS = {
         "r_max": 200.0,           # Maximum radius (a.u.)
         "n_points": 3000,         # Number of radial grid points
         "r_max_scale_factor": 2.5, # Safety factor for adaptive r_max
-        "n_points_max": 8000,     # Maximum grid points (memory cap)
+        "n_points_max": 15000,    # Maximum grid points (memory cap)
+        "min_points_per_wavelength": 15,  # Minimum points per λ for high-E (v2.7+)
     },
     
     # --- Excitation-specific ---
@@ -886,7 +887,8 @@ def run_scan_excitation(run_name):
     base_r_max = params['grid']['r_max']
     base_n_points = params['grid']['n_points']
     scale_factor = params['grid'].get('r_max_scale_factor', 2.5)
-    n_points_max = params['grid'].get('n_points_max', 8000)
+    n_points_max = params['grid'].get('n_points_max', 15000)
+    min_pts_per_wl = params['grid'].get('min_points_per_wavelength', 15)
     
     E_min_scan = float(np.min(energies))
     
@@ -902,7 +904,7 @@ def run_scan_excitation(run_name):
     elif strategy == 'local':
         # LOCAL: Will recalculate per energy, but start with E_min for initial prep
         r_max_calc, n_points_calc = calculate_optimal_grid_params(
-            E_min_scan, L_max_proj, base_r_max, base_n_points, scale_factor, n_points_max
+            E_min_scan, L_max_proj, base_r_max, base_n_points, scale_factor, n_points_max, min_pts_per_wl
         )
         print_info(f"Strategy: LOCAL (per-energy adaptive)")
         print_info(f"  Initial grid (E_min={E_min_scan:.1f} eV): r_max = {r_max_calc:.1f}, n_points = {n_points_calc}")
@@ -912,7 +914,7 @@ def run_scan_excitation(run_name):
         # GLOBAL: Calculate optimal grid for lowest energy, use for all
         k_min = k_from_E_eV(E_min_scan - dE_thr) if E_min_scan > dE_thr else k_from_E_eV(0.5)
         r_max_calc, n_points_calc = calculate_optimal_grid_params(
-            E_min_scan, L_max_proj, base_r_max, base_n_points, scale_factor, n_points_max
+            E_min_scan, L_max_proj, base_r_max, base_n_points, scale_factor, n_points_max, min_pts_per_wl
         )
         print_info(f"Strategy: GLOBAL (single adaptive calculation)")
         print_info(f"  E_min = {E_min_scan:.1f} eV, k_min = {k_min:.2f} a.u.")
@@ -978,7 +980,7 @@ def run_scan_excitation(run_name):
                 current_prep = prep
                 if strategy == 'local':
                     r_local, n_local = calculate_optimal_grid_params(
-                        E, L_max_proj, base_r_max, base_n_points, scale_factor, n_points_max
+                        E, L_max_proj, base_r_max, base_n_points, scale_factor, n_points_max, min_pts_per_wl
                     )
                     # Check if grid parameters changed
                     current_r_max = current_prep.grid.r[-1]
@@ -1183,25 +1185,23 @@ def run_scan_ionization(run_name):
             if not tdcs_angles:
                 tdcs_angles = None
     
-    # --- Adaptive r_max based on Classical Turning Point ---
+    # --- Adaptive r_max and n_points using unified function (v2.7+) ---
     E_min_scan = float(np.min(energies))
-    k_min = k_from_E_eV(E_min_scan - ion_thr) if E_min_scan > ion_thr else k_from_E_eV(0.5)
     
-    # Compute r_max needed for requested L_max_projectile
-    r_max_needed = compute_required_r_max(k_min, L_max_proj, safety_factor=2.5)
-    r_max_optimal = max(200.0, min(r_max_needed, 1000.0))  # Clamp to [200, 1000]
+    # Get grid parameters from params (supports user config)
+    base_r_max = params['grid'].get('r_max', 200.0)
+    base_n_points = params['grid'].get('n_points', 4000)
+    scale_factor = params['grid'].get('r_max_scale_factor', 2.5)
+    n_points_max = params['grid'].get('n_points_max', 10000)
+    min_pts_per_wl = params['grid'].get('min_points_per_wavelength', 15)
     
-    # Scale n_points with r_max to maintain grid density
-    n_points_base = 4000
-    n_points_optimal = int(n_points_base * (r_max_optimal / 200.0))
+    # Use unified grid calculation with wavelength scaling
+    r_max_optimal, n_points_optimal = calculate_optimal_grid_params(
+        E_min_scan, L_max_proj, base_r_max, base_n_points, 
+        scale_factor, n_points_max, min_pts_per_wl
+    )
     
-    # Further increase for high start energy
-    if E_min_scan > 500:
-        n_points_optimal = max(n_points_optimal, 8000)
-
-    n_points_optimal = min(n_points_optimal, 10000)  # Cap memory usage
-    
-    print_info(f"Adaptive Grid: E_min={E_min_scan:.1f} eV, k_min={k_min:.2f} -> r_max={r_max_optimal:.0f}, n_points={n_points_optimal}")
+    print_info(f"Adaptive Grid: E_min={E_min_scan:.1f} eV -> r_max={r_max_optimal:.0f}, n_points={n_points_optimal}")
     
     # Pre-calculate (Optimization)
     print("\n[Optimization] Pre-calculating static target properties...")
@@ -1514,7 +1514,8 @@ def calculate_optimal_grid_params(
     base_r_max: float,
     base_n_points: int,
     scale_factor: float = 2.5,
-    n_points_max: int = 8000
+    n_points_max: int = 15000,
+    min_points_per_wavelength: int = 15
 ) -> tuple[float, int]:
     """
     Calculate optimal radial grid size based on energy and projectile L_max.
@@ -1524,6 +1525,14 @@ def calculate_optimal_grid_params(
        for L_max_proj with a given safety margin.
     2. Enforce the user's base_r_max as a minimum floor.
     3. Scale n_points proportionally to maintain grid density.
+    4. (v2.7+) For high energies, ensure sufficient points per wavelength
+       to accurately sample oscillations.
+    
+    Parameters
+    ----------
+    min_points_per_wavelength : int
+        Minimum grid points per wavelength at large r. Default 15.
+        Set to 0 to disable wavelength-based scaling.
     
     Returns
     -------
@@ -1540,17 +1549,46 @@ def calculate_optimal_grid_params(
     # but extend if physics demands it (low energy / high L)
     r_max_optimal = max(base_r_max, r_needed)
     
-    # Check if we are extending
+    # --- Wavelength-based n_points scaling for high energies ---
+    # For exponential grid: dr(r) ≈ r * ln(r_max/r_min) / n_points
+    # At large r ≈ r_max/2, we need: dr < wavelength / min_pts_per_wavelength
+    # => n_points > r_check * ln(ratio) * min_pts / wavelength
+    
+    r_min = 1e-5  # Standard grid r_min
+    
+    if k_au > 0.1 and min_points_per_wavelength > 0:  # Only for non-zero k
+        wavelength = 2 * np.pi / k_au
+        log_ratio = np.log(r_max_optimal / r_min)
+        
+        # Check at r = 0.7 * r_max (where oscillations matter most for matching)
+        r_check = 0.7 * r_max_optimal
+        dr_needed = wavelength / min_points_per_wavelength
+        
+        # For exponential grid: dr(r) ≈ r * log_ratio / n
+        # => n >= r * log_ratio / dr_needed
+        n_wavelength_required = int(r_check * log_ratio / dr_needed) + 1
+        
+        # Use max of density-based and wavelength-based requirements
+        n_points_optimal = max(base_n_points, n_wavelength_required)
+    else:
+        n_points_optimal = base_n_points
+    
+    # Check if we are extending r_max beyond base
     if r_max_optimal > base_r_max:
         # Scale points to keep density constant
         density = base_n_points / base_r_max
-        n_req = int(density * r_max_optimal)
-        
-        # Apply strict memory cap
-        n_points_optimal = min(n_req, n_points_max)
-    else:
-        # Just use base if we are within bounds
-        n_points_optimal = base_n_points
+        n_density_req = int(density * r_max_optimal)
+        n_points_optimal = max(n_points_optimal, n_density_req)
+    
+    # Apply strict memory cap
+    n_points_optimal = min(n_points_optimal, n_points_max)
+    
+    # Log if we're scaling up significantly
+    if n_points_optimal > base_n_points * 1.5:
+        logger.debug(
+            f"Grid scaled for E={E_eV:.0f}eV: n_points {base_n_points}→{n_points_optimal} "
+            f"(k={k_au:.2f}, λ={2*np.pi/k_au:.2f})"
+        )
         
     return r_max_optimal, n_points_optimal
 
@@ -1652,7 +1690,8 @@ def run_from_config(config_path: str, verbose: bool = False) -> None:
         base_r_max = params['grid']['r_max']
         base_n_points = params['grid']['n_points']
         scale_factor = params['grid'].get('r_max_scale_factor', 2.5)
-        n_points_max = params['grid'].get('n_points_max', 8000)
+        n_points_max = params['grid'].get('n_points_max', 15000)
+        min_pts_per_wl = params['grid'].get('min_points_per_wavelength', 15)
         
         # Determine parameters for initial target prep
         if strategy == 'manual':
@@ -1663,7 +1702,7 @@ def run_from_config(config_path: str, verbose: bool = False) -> None:
             E_ref = min(energy_grid)
             r_max_calc, n_points_calc = calculate_optimal_grid_params(
                 E_ref, params['excitation']['L_max_projectile'],
-                base_r_max, base_n_points, scale_factor, n_points_max
+                base_r_max, base_n_points, scale_factor, n_points_max, min_pts_per_wl
             )
             logger.info("Grid Strategy   | LOCAL (per-energy adaptive)")
             logger.info("Grid Initial    | E_min=%.1f eV: r_max=%.1f a.u., n_points=%d", 
@@ -1672,7 +1711,7 @@ def run_from_config(config_path: str, verbose: bool = False) -> None:
             E_ref = min(energy_grid)
             r_max_calc, n_points_calc = calculate_optimal_grid_params(
                 E_ref, params['excitation']['L_max_projectile'],
-                base_r_max, base_n_points, scale_factor, n_points_max
+                base_r_max, base_n_points, scale_factor, n_points_max, min_pts_per_wl
             )
             logger.info("Grid Strategy   | GLOBAL (E_min=%.1f eV: r_max=%.1f a.u., n_points=%d)", 
                        E_ref, r_max_calc, n_points_calc)
@@ -1809,9 +1848,7 @@ def run_from_config(config_path: str, verbose: bool = False) -> None:
                     if strategy == 'local':
                         r_local, n_local = calculate_optimal_grid_params(
                             E, params['excitation']['L_max_projectile'],
-                            base_r_max, base_n_points,
-                            params['grid']['r_max_scale_factor'],
-                            params['grid']['n_points_max']
+                            base_r_max, base_n_points, scale_factor, n_points_max, min_pts_per_wl
                         )
                         # Check if parameters changed from current prep
                         current_r_max = current_prep.grid.r[-1]

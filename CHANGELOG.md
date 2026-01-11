@@ -57,6 +57,20 @@ Critical bug fixes improving calibration accuracy and numerical stability.
 - **Optimization**: Replaced list comprehensions `[f(r) for r in nodes]` with `np.vectorize(f)(nodes)` in Levin and Filon quadrature.
 - **Impact**: Eliminated Python interpreter overhead in inner loops.
 
+### Numerical Stability Improvements
+
+**Wavelength-Based Grid Scaling**
+- **Files**: `DW_main.py`
+- **Problem**: At high energies (e.g., 1000 eV), exponential grid had insufficient resolution at large r. Only ~1.5 pts/wavelength caused aliasing and phase extraction errors.
+- **Fix**: `calculate_optimal_grid_params` now ensures minimum 15 points per wavelength by computing: `n_points >= r_check × ln(ratio) / (λ/15)`
+- **Impact**: Automatically increases grid density for high-energy calculations, preventing "Phase unstable" warnings.
+
+**Born Approximation in Analytic Bypass**
+- **Files**: `continuum.py`
+- **Problem**: When analytic bypass was used (potential negligible early), phase shift was set to 0, which is incorrect even for weak potentials.
+- **Fix**: Now computes Born approximation: `δ_Born = -k ∫ U(r) [j_l(kr)]² r² dr` using trapezoidal quadrature.
+- **Impact**: Non-zero phase shifts for high-L waves where potential is weak but not zero.
+
 ---
 
 ## [v2.6] — 2026-01-03 — Adaptive Grid Strategies

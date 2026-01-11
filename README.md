@@ -309,10 +309,12 @@ When prompted, enter:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `r_max` | 200 a.u. | Maximum radius of radial grid. Automatically scaled based on projectile wavelength. |
-| `n_points` | 3000 | Base number of radial grid points. Uses exponential spacing for efficiency. |
-| `r_max_scale_factor` | 2.5 | Multiplier for adaptive r_max scaling: `r_max = factor × max(classical_turning_point, wavelength)` |
-| `n_points_max` | 10000 | Maximum allowed grid points (limits memory usage for high-energy calculations). |
+| `strategy` | `"global"` | Grid mode: `"manual"` = fixed params, `"global"` = adaptive for E_min, `"local"` = per-energy |
+| `r_max` | 200 a.u. | Base maximum radius. For manual mode: used as-is. For adaptive: minimum floor. |
+| `n_points` | 3000 | Base grid points. For manual: fixed. For adaptive: minimum value. |
+| `r_max_scale_factor` | 2.5 | Safety factor for turning point: `r_max = factor × r_turn(L_max)` |
+| `n_points_max` | 8000 | Maximum grid points (caps adaptive scaling, limits memory). |
+| `min_points_per_wavelength` | 15 | **(v2.7+)** Min pts/λ at large r. Increases n_points for high energies. Set to 0 to disable. |
 
 ### Excitation Parameters
 
