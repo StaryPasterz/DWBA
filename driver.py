@@ -642,7 +642,7 @@ def compute_total_excitation_cs(
             if l_i % 10 == 0 and l_i > 0:
                 elapsed = time.perf_counter() - t0_sum
                 eta = (elapsed / l_i) * (L_max_proj - l_i) if l_i > 0 else 0
-                logger.info("  Summing: l_i=%d/%d (Elapsed: %.1fs, ETA: %.1fs)", l_i, L_max_proj, elapsed, eta)
+                logger.info("Summing: l_i=%d/%d (Elapsed: %.1fs, ETA: %.1fs)", l_i, L_max_proj, elapsed, eta)
              # Logic similar to worker but sequential and utilizing GPU integrals where possible
              # To avoid code duplication, we could call a GPU-specific worker or inline here.
              # Inline is safer for accessing GPU context.

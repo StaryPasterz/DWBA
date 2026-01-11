@@ -10,7 +10,8 @@ Comprehensive Python suite for computing electron–atom excitation and ionizati
 - [Requirements](#requirements)
 - [Setup](#setup)
 - [Core Workflows](#core-workflows)
-  - [Interactive Driver (`DW_main.py`)](#interactive-driver-dw_mainpy)
+  - [Batch Mode](#batch-mode-config-file)
+  - [Interactive Driver](#interactive-driver-dw_mainpy)
   - [Excitation Scan](#excitation-scan)
   - [Ionization Scan](#ionization-scan)
   - [Plotting Results](#plotting-results)
@@ -18,9 +19,14 @@ Comprehensive Python suite for computing electron–atom excitation and ionizati
   - [Potential Fitting](#potential-fitting)
 - [Numerics and Parameters](#numerics-and-parameters)
   - [Centralized Default Parameters](#centralized-default-parameters)
-  - [Adaptive Grid Strategies](#adaptive-grid-strategies-v26)
-  - [Pilot Light Mode](#pilot-light-mode-v25)
   - [Parameter Reference](#parameter-reference)
+    - [Grid Parameters](#grid-parameters)
+    - [Excitation Parameters](#excitation-parameters)
+    - [Ionization Parameters](#ionization-parameters)
+    - [Oscillatory Integral Parameters](#oscillatory-integral-parameters)
+    - [Hardware Parameters](#hardware-parameters)
+    - [Output Parameters](#output-parameters)
+  - [Adaptive Grid Strategies](#adaptive-grid-strategies-v26)
 - [Atom Library (`atoms.json`)](#atom-library-atomsjson)
 - [Debugging and Logging](#debugging-and-logging)
 - [Performance Tips](#performance-tips)
@@ -55,20 +61,24 @@ DW_antigravity_v2/
 ├── calibration.py          # Tong model implementation
 ├── potential_core.py       # SAE core potential V(r)
 ├── grid.py                 # Radial grid and quadrature
-├── output_utils.py         # Centralized output path management
+├── config_loader.py        # YAML configuration handling
+├── logging_config.py       # Centralized logging configuration
+├── output_utils.py         # Result directory management
 ├── atom_library.py         # Atom database interface
 ├── atoms.json              # SAE parameters for atoms/ions
-├── nist_data.json          # NIST reference energies
+├── nist_data.json          # NIST experimental benchmarks
 ├── fit_potential.py        # Potential parameter fitting tool
 ├── plotter.py              # Result plotting utility
 ├── partial_wave_plotter.py # Partial wave analysis plotter
-├── logging_config.py       # Centralized logging
-├── debug/                  # Diagnostic scripts for analysis
-│   ├── debug.py            # Health checks and diagnostics
-│   ├── diag_upturn.py      # Partial wave convergence analysis
-│   ├── diag_radial_integrals.py  # Radial integral diagnostics
-│   └── compare_methods.py  # Legacy vs Advanced method comparison
-├── article.md              # Reference paper (theory)
+├── debug/                  # Unified diagnostic framework
+│   ├── debug.py            # Main diagnostic menu
+│   ├── diag_amplitude.py   # Amplitude logic verification
+│   ├── diag_angular.py     # Coupling coefficients check
+│   ├── diag_bound.py       # Bound state solver health
+│   ├── diag_upturn.py      # High-E convergence analysis
+│   ├── diag_radial_integrals.py  # I_L multipole diagnostics
+│   └── diag_oscillatory.py # Integral stability tests
+├── article.md              # Reference theory paper
 ├── results/                # All output files (auto-created)
 │   ├── results_*.json      # Calculation results
 │   └── plot_*.png          # Generated plots
@@ -121,7 +131,10 @@ $$f(x) = \frac{1}{x} \left[ \beta \ln x + \gamma \left( 1 - \frac{1}{x} \right) 
 3. **Calibrated Results**: Both raw and calibrated TCS are saved. Calibrated DCS are obtained via: $(d\sigma/d\Omega)_{\text{cal}} = C(E) \cdot (d\sigma/d\Omega)_{\text{raw}}$.
 
 > [!NOTE]
-> Calibration applies to **excitation only**. Ionization calculations use raw DWBA results with proper kinematic factors.
+> Calibration applies to **excitation only**. Ionization calculations use raw DWBA results.
+
+> [!TIP]
+> **Disabling Calibration (v2.10+):** Set `output.calibrate: false` in config or interactive mode to skip the pilot run. Results will use α = 1.0 and plots will show only the raw DWBA curve.
 
 ## Units and Normalization
 | Quantity | Internal Unit | Output Unit |
@@ -153,19 +166,6 @@ pip install cupy-cuda12x      # Match your CUDA version
 
 ## Core Workflows
 
-### Interactive Driver (`DW_main.py`)
-```bash
-python DW_main.py
-```
-Menu:
-1. Excitation Cross Sections
-2. Ionization Cross Sections
-3. Total Cross Sections Plots
-4. Angular DCS Plots
-5. Partial Wave Analysis
-6. Fit Potential (new atom)
-7. Change Run Name
-
 ### Output Directory Structure
 
 All output files are organized in dedicated directories:
@@ -193,6 +193,19 @@ python DW_main.py --generate-config --config-type ionization -o ion_config.yaml
 **Example Configuration**: See `examples/` directory for complete templates (`examples/config_excitation.yaml` and `examples/config_ionization.yaml`).
 
 **Config File Discovery**: When starting an excitation or ionization calculation interactively, the program will prompt to use existing `.yaml` config files if found.
+
+### Interactive Driver (`DW_main.py`)
+```bash
+python DW_main.py
+```
+Menu:
+1. Excitation Cross Sections
+2. Ionization Cross Sections
+3. Total Cross Sections Plots
+4. Angular DCS Plots
+5. Partial Wave Analysis
+6. Fit Potential (new atom)
+7. Change Run Name
 
 ### Excitation Scan
 
@@ -260,96 +273,68 @@ Features:
 
 All numerical defaults are organized by category and displayed before calculation:
 
+| Category | Key Parameters |
+|----------|----------------|
+| **Grid** | `strategy`, `r_max`, `n_points`, scale factors |
+| **Excitation** | `L_max_integrals`, `L_max_projectile`, pilot settings |
+| **Ionization** | `l_eject_max`, `L_max`, `n_energy_steps` |
+| **Oscillatory** | `method`, `CC_nodes`, thresholds |
+| **Hardware** | `gpu_block_size`, `gpu_memory_mode`, `n_workers` |
+| **Output** | `save_dcs`, `save_partial`, `calibrate` |
+
+<details>
+<summary>📋 Full Parameter Display (click to expand)</summary>
+
 ```
-  ┌─ GRID ─────────────────────────────
-  │  strategy               = "global"   # "global" / "local" / "manual" (v2.6+)
-  │  r_max                  = 200
-  │  n_points               = 3000
-  │  r_max_scale_factor     = 2.5
-  │  n_points_max           = 15000      
-  │  min_pts_per_λ          = 15         
-  └────────────────────────────────────
+┌─ GRID ─────────────────────────────────┐
+│  strategy               = "global"     │
+│  r_max                  = 200          │
+│  n_points               = 3000         │
+│  r_max_scale_factor     = 2.5          │
+│  n_points_max           = 15000        │
+│  min_points_per_wavelength = 15        │
+└────────────────────────────────────────┘
 
-  ┌─ EXCITATION ───────────────────────
-  │  L_max_integrals        = 15
-  │  L_max_projectile       = 5
-  │  n_theta                = 200
-  │  pilot_energy_eV        = 1000
-  │  pilot_L_max_integrals  = "auto"    
-  │  pilot_L_max_projectile = "auto"    
-  │  pilot_n_theta          = 50         
-  └────────────────────────────────────
+┌─ EXCITATION ───────────────────────────┐
+│  L_max_integrals        = 15           │
+│  L_max_projectile       = 5            │
+│  n_theta                = 200          │
+│  pilot_energy_eV        = 1000         │
+│  pilot_L_max_integrals  = "auto"       │
+│  pilot_L_max_projectile = "auto"       │
+│  pilot_n_theta          = 50           │
+└────────────────────────────────────────┘
 
-  ┌─ IONIZATION ───────────────────────
-  │  l_eject_max            = 3          
-  │  L_max                  = 15         
-  │  L_max_projectile       = 50         
-  │  n_energy_steps         = 10         
-  └────────────────────────────────────
+┌─ IONIZATION ───────────────────────────┐
+│  l_eject_max            = 3            │
+│  L_max                  = 15           │
+│  L_max_projectile       = 50           │
+│  n_energy_steps         = 10           │
+└────────────────────────────────────────┘
 
-  ┌─ OSCILLATORY ──────────────────────
-  │  method                 = "advanced" # "legacy" / "advanced" / "full_split"
-  │  CC_nodes               = 5
-  │  phase_increment        = 1.571      # (π/2)
-  │  min_grid_fraction      = 0.1
-  │  k_threshold            = 0.5
-  │  gpu_block_size         = "auto"       
-  │  gpu_memory_mode        = "auto"     
-  │  gpu_memory_threshold   = 0.7        
-  │  max_chi_cached         = 20         
-  │  n_workers              = "auto"       
-  └────────────────────────────────────
+┌─ OSCILLATORY ──────────────────────────┐
+│  method                 = "advanced"   │
+│  CC_nodes               = 5            │
+│  phase_increment        = 1.571 (π/2)  │
+│  min_grid_fraction      = 0.1          │
+│  k_threshold            = 0.5          │
+│  max_chi_cached         = 20           │
+└────────────────────────────────────────┘
+
+┌─ HARDWARE ─────────────────────────────┐
+│  gpu_block_size         = "auto"       │
+│  gpu_memory_mode        = "auto"       │
+│  gpu_memory_threshold   = 0.7          │
+│  n_workers              = "auto"       │
+└────────────────────────────────────────┘
+
+┌─ OUTPUT ───────────────────────────────┐
+│  save_dcs               = true         │
+│  save_partial           = true         │
+│  calibrate              = true         │
+└────────────────────────────────────────┘
 ```
-
-### Adaptive Grid Strategies (v2.6+)
-
-The code supports three strategies for determining the radial grid (`r_max`, `n_points`):
-
-1. **Global (Default)**
-   - Calculates optimal grid parameters based on the *lowest* energy in the scan.
-   - Pre-calculates target properties once.
-   - **Pros**: Balanced performance/accuracy, single target prep.
-   - **Cons**: Excessive grid size for high-energy points in wide scans.
-
-2. **Local**
-   - Recalculates optimal grid parameters for *each* energy point.
-   - Re-runs target preparation (bound states, core potential) for every point.
-   - **Pros**: Most accurate, optimal grid size per energy.
-   - **Cons**: Slower due to repeated target preparation.
-
-3. **Manual**
-   - Uses fixed `r_max` and `n_points` defined in configuration.
-   - **Pros**: Complete user control, predictable memory usage.
-   - **Cons**: Risk of insufficient grid for low energies or high partial waves.
-
-### Pilot Light Mode (v2.5+)
-
-Fast calibration with reduced parameters for faster startup:
-
-| Parameter | Production | Pilot Light | Impact |
-|-----------|------------|-------------|--------|
-| `L_max_integrals` | 15 | auto* | Fewer multipole terms |
-| `L_max_projectile` | (auto) | auto* | Limited partial waves |
-| `n_theta` | 200 | 50 | TCS-only (DCS not needed) |
-
-**Note (v2.7+)**: *Pilot L_max parameters now support `"auto"` mode (default) which dynamically scales based on `k × r_max × 0.6`. Users can override with explicit integer values if needed.
-
-**Speedup**: Pilot runs 5-10x faster with minimal effect on calibration α.
-
-**Configuration** (in `excitation` section of YAML):
-```yaml
-excitation:
-  pilot_L_max_integrals: "auto"    # "auto" or int (e.g., 8)
-  pilot_L_max_projectile: "auto"   # "auto" or int (e.g., 30)
-  pilot_n_theta: 50
-```
-
-When prompted, enter:
-- **Y** (or Enter): Use all defaults unchanged
-- **n**: Edit any parameter individually
-- **d**: Display parameter details before deciding
-
----
+</details>
 
 ## Parameter Reference
 
@@ -372,8 +357,8 @@ When prompted, enter:
 | `L_max_projectile` | 5 | Base partial wave $L_{max}$ for projectile. Automatically increased relative to $k \cdot r_{max}$ at runtime. |
 | `n_theta` | 200 | Number of scattering angle points for DCS calculation ($0^\circ-180^\circ$). |
 | `pilot_energy_eV` | 1000 | Reference energy for pre-calculating calibration $\alpha$. |
-| `pilot_L_max_integrals` | `"auto"` | **(v2.5+)** $L_{max}$ for integrals during calibration. |
-| `pilot_L_max_projectile`| `"auto"` | **(v2.5+)** $L_{max}$ for projectile during calibration. |
+| `pilot_L_max_integrals` | `"auto"` | Dynamically scales based on `k × r_max × 0.6` |
+| `pilot_L_max_projectile`| `"auto"` | Dynamically scales based on `k × r_max × 0.6` |
 | `pilot_n_theta` | 50 | Angular grid for pilot run (TCS only). |
 
 ### Ionization Parameters
@@ -389,31 +374,70 @@ When prompted, enter:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `method` | "advanced" | Oscillatory quadrature method: |
-| | | • **legacy**: Clenshaw-Curtis only (fastest, less accurate at high k) |
-| | | • **advanced**: CC + Levin/Filon tail correction (balanced, recommended) |
-| | | • **full_split**: Full I_in/I_out separation with oscillatory tails (most accurate) |
-| `CC_nodes` | 5 | Clenshaw-Curtis nodes per oscillation interval. Higher = more accurate but slower. |
-| `phase_increment` | π/2 | Phase increment for sub-interval division in oscillatory integrals. |
-| `min_grid_fraction` | 0.1 | Minimum match point as fraction of grid: `r_m ≥ 0.1 × r_max`. |
-| `k_threshold` | 0.5 | Total momentum threshold for Filon quadrature: if `k_i + k_f > threshold`, use Filon. |
+| `method` | `"advanced"` | Quadrature method: `legacy` (CC only), `advanced` (CC+Filon), `full_split` (most accurate) |
+| `CC_nodes` | `5` | Clenshaw-Curtis nodes per oscillation interval |
+| `phase_increment` | `π/2` | Phase increment for sub-interval division |
+| `min_grid_fraction` | `0.1` | Minimum match point fraction: `r_m ≥ 0.1 × r_max` |
+| `k_threshold` | `0.5` | Momentum threshold for Filon/Levin activation |
+| `max_chi_cached` | `20` | LRU cache size for continuum waves (v2.5+) |
 
-### Hardware optimization Parameters
+---
+
+### Hardware Parameters
+
+> [!TIP]
+> These parameters are now in a separate `hardware:` section in YAML configuration (v2.10+).
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `gpu_block_size` | auto (0) | GPU block size for matrix operations. `auto` computes optimal size based on VRAM. Explicit value (e.g., 4096) overrides. |
-| `gpu_memory_mode` | "auto" | GPU memory strategy: |
-| | | • **auto**: Check VRAM, use full matrix if possible, else block-wise (recommended) |
-| | | • **full**: Force full matrix construction (fastest, may OOM) |
-| | | • **block**: Force block-wise (slowest, constant memory) |
-| `gpu_memory_threshold` | 0.7 | Maximum fraction of free GPU memory to use for matrix allocation. |
-| `max_chi_cached` | 20 | **(v2.5+)** LRU cache size for GPU continuum wave objects. |
-| `n_workers` | "auto" | CPU worker count for multiprocessing: |
-| | | • **auto**: Auto-detect with balance (`min(cpu_count, 8)`) |
-| | | • **max**: Use all available CPU cores |
-| | | • **N**: Explicit count (capped at cpu_count) |
-| | | *Actual count used is logged at start of calculation.* |
+| `gpu_block_size` | `"auto"` | GPU block size. `"auto"` = tune based on VRAM, or explicit `int` |
+| `gpu_memory_mode` | `"auto"` | GPU strategy: `auto` / `full` / `block` |
+| `gpu_memory_threshold` | `0.7` | Max VRAM fraction for matrix allocation |
+| `n_workers` | `"auto"` | CPU workers: `"auto"` / `"max"` / explicit `int` |
+
+**GPU Memory Modes:**
+- **auto** — Check VRAM, use full matrix if fits, else block-wise *(recommended)*
+- **full** — Force full matrix construction *(fastest, may OOM)*
+- **block** — Force block-wise processing *(slowest, constant memory)*
+
+---
+
+### Output Parameters
+
+> [!NOTE]
+> New in v2.10. Controls what gets saved and whether calibration is applied.
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `save_dcs` | `true` | Save differential cross section (θ, dσ/dΩ) data |
+| `save_partial` | `true` | Save partial wave contributions (σ_L) |
+| `calibrate` | `true` | Apply Tong model calibration (pilot run + α matching) |
+
+**When `calibrate: false`:**
+- Pilot calculation is skipped (faster)
+- Uses α = 1.0 (no empirical correction)
+- Plots show only raw DWBA curve (no Tong reference)
+
+### Adaptive Grid Strategies (v2.6+)
+
+The code supports three strategies for determining the radial grid (`r_max`, `n_points`):
+
+1. **Global (Default)**
+   - Calculates optimal grid parameters based on the *lowest* energy in the scan.
+   - Pre-calculates target properties once.
+   - **Pros**: Balanced performance/accuracy, single target prep.
+   - **Cons**: Excessive grid size for high-energy points in wide scans.
+
+2. **Local**
+   - Recalculates optimal grid parameters for *each* energy point.
+   - Re-runs target preparation (bound states, core potential) for every point.
+   - **Pros**: Most accurate, optimal grid size per energy.
+   - **Cons**: Slower due to repeated target preparation.
+
+3. **Manual**
+   - Uses fixed `r_max` and `n_points` defined in configuration.
+   - **Pros**: Complete user control, predictable memory usage.
+   - **Cons**: Risk of insufficient grid for low energies or high partial waves.
 
 ### GPU Computation Modes
 
@@ -463,11 +487,80 @@ export DWBA_LOG_LEVEL=DEBUG # Linux/Mac
 ```
 Levels: DEBUG, INFO, WARNING, ERROR, CRITICAL
 
-### Health Checks
+### Comprehensive Diagnostic Suite
+
+The `debug/` folder contains a unified diagnostic framework for verifying all aspects of DWBA calculations.
+
+**Launch the diagnostic menu:**
 ```bash
-python debug.py
+python debug/debug.py
 ```
-Verifies bound-state norms, continuum waves, and partial-wave convergence.
+<details>
+<summary>📋 Full Menu Structure (click to expand)</summary>
+
+**Menu Structure:**
+```
+DWBA COMPREHENSIVE DIAGNOSTIC SUITE
+=====================================
+[QUICK TESTS]
+  1. Quick Health Check         - Runs excitation + ionization test
+  2. Convergence Study          - Theta and grid convergence analysis
+
+[BOUND STATES]
+  3. Bound State Analysis       - Norms, energies, nodes, orthogonality
+
+[CONTINUUM WAVES]
+  4. Continuum Wave Analysis    - Phase shifts, asymptotic amplitude
+  5. Phase Extraction           - Multi-point phase stability diagnostic
+  6. High-L Stability Scan      - Scan up to L=30 for instabilities
+
+[POTENTIALS]
+  7. Potential Analysis         - Core potential V(r) and Z_eff(r)
+  8. Multi-Atom Comparison      - Compare H, Li, Na potentials
+
+[RADIAL INTEGRALS]
+  9. Radial Integral Breakdown  - I_L per multipole analysis
+ 10. Method Comparison          - Legacy vs Advanced oscillatory methods
+
+[ANGULAR COUPLING]
+ 11. Angular Coefficient Check  - Verify CG and Racah coefficients
+
+[CROSS SECTIONS]
+ 12. Cross Section Analysis     - σ(E) and partial wave contributions
+ 13. L0/L1 Anomaly              - Investigate 11-17 eV anomaly
+ 14. High-Energy Upturn         - Analyze 69.26 eV upturn phenomenon
+
+[FULL TRACES]
+ 15. Full Physics Trace (Exc)   - Complete excitation pipeline trace
+ 16. Full Physics Trace (Ion)   - Complete ionization pipeline trace
+
+[BATCH]
+ 20. Run ALL Diagnostics        - Execute all tests with summary
+
+  q. Quit
+```
+</details>
+
+**Output:**
+- Results saved to `debug/results/` as timestamped JSON files
+- Plots saved to `debug/plots/`
+
+### Individual Diagnostic Scripts
+
+| Script | Purpose |
+|--------|---------|
+| `diag_bound.py` | Standalone bound state analysis |
+| `diag_angular.py` | Angular coupling coefficient tests |
+| `diag_amplitude.py` | Amplitude contribution per M channel |
+| `diag_phase_extraction.py` | Phase shift analysis with plots |
+| `diag_radial_integrals.py` | I_L breakdown for various energies |
+| `diag_method_compare.py` | Legacy vs Advanced method comparison |
+| `diag_upturn.py` | High-energy partial wave convergence |
+| `diag_L0_L1_anomaly.py` | L0/L1 ratio investigation |
+| `diag_atoms.py` | Multi-atom potential comparison |
+| `diag_oscillatory.py` | Oscillatory integral function tests |
+| `diag_partial_waves.py` | Analyze partial waves from result JSON |
+
 
 ## Performance Tips
 

@@ -102,10 +102,14 @@ class OscillatoryConfig:
     phase_increment: float = 1.5708
     min_grid_fraction: float = 0.1
     k_threshold: float = 0.5
+    max_chi_cached: int = 20  # v2.5: LRU cache size for GPU continuum waves
+
+@dataclass
+class HardwareConfig:
+    """Hardware acceleration configuration (GPU/CPU)."""
     gpu_block_size: Union[int, str] = "auto"  # "auto" or explicit int
     gpu_memory_mode: Literal["auto", "full", "block"] = "auto"
     gpu_memory_threshold: float = 0.7
-    max_chi_cached: int = 20  # v2.5: LRU cache size for GPU continuum waves
     n_workers: Union[int, str] = "auto"  # "auto", "max", or explicit int count
 
 @dataclass
@@ -134,6 +138,7 @@ class DWBAConfig:
     excitation: ExcitationConfig = field(default_factory=ExcitationConfig)
     ionization: IonizationConfig = field(default_factory=IonizationConfig)
     oscillatory: OscillatoryConfig = field(default_factory=OscillatoryConfig)
+    hardware: HardwareConfig = field(default_factory=HardwareConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
 
 
@@ -316,11 +321,22 @@ def load_config(path: Union[str, Path]) -> DWBAConfig:
             phase_increment=osc.get('phase_increment', 1.5708),
             min_grid_fraction=osc.get('min_grid_fraction', 0.1),
             k_threshold=osc.get('k_threshold', 0.5),
-            gpu_block_size=_parse_gpu_block_size(osc.get('gpu_block_size', 'auto')),
-            gpu_memory_mode=osc.get('gpu_memory_mode', 'auto'),
-            gpu_memory_threshold=osc.get('gpu_memory_threshold', 0.7),
-            n_workers=osc.get('n_workers', 'auto')
+            max_chi_cached=osc.get('max_chi_cached', 20)
         )
+    
+    # Hardware (new section, with backward compatibility for oscillatory GPU params)
+    hw_data = raw_data.get('hardware', {})
+    osc_data = raw_data.get('oscillatory', {})
+    
+    # Backward compatibility: if GPU params are in oscillatory (old format), use them
+    config.hardware = HardwareConfig(
+        gpu_block_size=_parse_gpu_block_size(
+            hw_data.get('gpu_block_size', osc_data.get('gpu_block_size', 'auto'))
+        ),
+        gpu_memory_mode=hw_data.get('gpu_memory_mode', osc_data.get('gpu_memory_mode', 'auto')),
+        gpu_memory_threshold=hw_data.get('gpu_memory_threshold', osc_data.get('gpu_memory_threshold', 0.7)),
+        n_workers=hw_data.get('n_workers', osc_data.get('n_workers', 'auto'))
+    )
     
     # Output
     if 'output' in raw_data:
@@ -390,8 +406,10 @@ def validate_config(config: DWBAConfig) -> List[str]:
     # Oscillatory
     if config.oscillatory.method not in ("legacy", "advanced", "full_split"):
         errors.append(f"Invalid oscillatory method: '{config.oscillatory.method}'")
-    if config.oscillatory.gpu_memory_mode not in ("auto", "full", "block"):
-        errors.append(f"Invalid gpu_memory_mode: '{config.oscillatory.gpu_memory_mode}'")
+    
+    # Hardware
+    if config.hardware.gpu_memory_mode not in ("auto", "full", "block"):
+        errors.append(f"Invalid gpu_memory_mode: '{config.hardware.gpu_memory_mode}'")
     
     return errors
 
@@ -412,6 +430,7 @@ def config_to_params_dict(config: DWBAConfig) -> Dict[str, Dict[str, Any]]:
             'n_points': config.grid.n_points,
             'r_max_scale_factor': config.grid.r_max_scale_factor,
             'n_points_max': config.grid.n_points_max,
+            'min_points_per_wavelength': config.grid.min_points_per_wavelength,
         },
         'excitation': {
             'L_max_integrals': config.excitation.L_max_integrals,
@@ -435,11 +454,18 @@ def config_to_params_dict(config: DWBAConfig) -> Dict[str, Dict[str, Any]]:
             'phase_increment': config.oscillatory.phase_increment,
             'min_grid_fraction': config.oscillatory.min_grid_fraction,
             'k_threshold': config.oscillatory.k_threshold,
-            'gpu_block_size': config.oscillatory.gpu_block_size,
-            'gpu_memory_mode': config.oscillatory.gpu_memory_mode,
-            'gpu_memory_threshold': config.oscillatory.gpu_memory_threshold,
             'max_chi_cached': config.oscillatory.max_chi_cached,  # v2.5+
-            'n_workers': config.oscillatory.n_workers,
+        },
+        'hardware': {
+            'gpu_block_size': config.hardware.gpu_block_size,
+            'gpu_memory_mode': config.hardware.gpu_memory_mode,
+            'gpu_memory_threshold': config.hardware.gpu_memory_threshold,
+            'n_workers': config.hardware.n_workers,
+        },
+        'output': {
+            'save_dcs': config.output.save_dcs,
+            'save_partial': config.output.save_partial,
+            'calibrate': config.output.calibrate,
         },
     }
 

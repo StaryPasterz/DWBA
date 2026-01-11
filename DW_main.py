@@ -116,11 +116,22 @@ DEFAULTS = {
         "phase_increment": 1.5708,    # π/2 radians per sub-interval
         "min_grid_fraction": 0.10,    # Minimum match point fraction
         "k_threshold": 0.5,           # k_total threshold for Filon
+        "max_chi_cached": 20,         # v2.5+: LRU cache size for GPU continuum waves
+    },
+    
+    # --- Hardware (GPU/CPU) ---
+    "hardware": {
         "gpu_block_size": "auto",     # "auto" = auto-tune based on VRAM, int = explicit size
         "gpu_memory_mode": "auto",    # "auto" / "full" / "block" - GPU matrix strategy
         "gpu_memory_threshold": 0.7,  # Max fraction of GPU memory to use (for auto mode)
-        "max_chi_cached": 20,         # v2.5+: LRU cache size for GPU continuum waves
         "n_workers": "auto",          # "auto" (balanced), "max" (all cores), or int count
+    },
+    
+    # --- Output Options ---
+    "output": {
+        "save_dcs": True,             # Save differential cross section data
+        "save_partial": True,         # Save partial wave contributions
+        "calibrate": True,            # Apply Tong empirical calibration
     },
     
     # --- Energy Grid ---
@@ -192,7 +203,17 @@ def prompt_use_defaults(categories: list = None) -> dict:
             print(f"\n  ── {cat_name.upper()} ──")
             for key, default_val in DEFAULTS[cat_name].items():
                 old_val = params[cat_name][key]
-                if isinstance(default_val, int):
+                if isinstance(default_val, bool):
+                    # Special handling for boolean values
+                    current = "Y" if default_val else "N"
+                    val = input(f"    {key} [{current}]: ").strip().lower()
+                    if val in ('y', 'yes', 'true', '1'):
+                        params[cat_name][key] = True
+                    elif val in ('n', 'no', 'false', '0'):
+                        params[cat_name][key] = False
+                    else:
+                        params[cat_name][key] = default_val
+                elif isinstance(default_val, int):
                     params[cat_name][key] = get_input_int(f"    {key}", default_val)
                 elif isinstance(default_val, float):
                     params[cat_name][key] = get_input_float(f"    {key}", default_val)
@@ -217,7 +238,7 @@ def prompt_use_defaults(categories: list = None) -> dict:
                         elif choice == '2': params[cat_name][key] = "advanced"
                         elif choice == '3': params[cat_name][key] = "full_split"
                         else: params[cat_name][key] = default_val
-                    elif key == "gpu_memory_mode" and cat_name == "oscillatory":
+                    elif key == "gpu_memory_mode" and cat_name == "hardware":
                         print(f"\n    GPU Memory Strategy:")
                         print("      1. auto  - Check memory, fast if possible (recommended)")
                         print("      2. full  - Force full matrix (fastest, may OOM)")
@@ -744,15 +765,17 @@ def run_scan_excitation(run_name):
         return
 
     # Use centralized defaults with improved UI
-    params = prompt_use_defaults(categories=['grid', 'excitation', 'oscillatory'])
+    params = prompt_use_defaults(categories=['grid', 'excitation', 'oscillatory', 'hardware', 'output'])
     
     L_max_integrals = params['excitation']['L_max_integrals']
     L_max_proj = params['excitation']['L_max_projectile']
     n_theta = params['excitation']['n_theta']
     pilot_E = params['excitation']['pilot_energy_eV']
+    do_calibrate = params['output']['calibrate']
     
-    # Set oscillatory configuration globally
-    set_oscillatory_config(params['oscillatory'])
+    # Set oscillatory configuration globally (merge oscillatory + hardware for backward compat)
+    osc_config = {**params['oscillatory'], **params['hardware']}
+    set_oscillatory_config(osc_config)
 
 
     spec = ExcitationChannelSpec(
@@ -772,85 +795,84 @@ def run_scan_excitation(run_name):
     results = []
     
     print_subheader("Calibration")
-    print_progress("Running pilot at 1000 eV...")
-    pilot_E = 1000.0
     
     # Transition class for calibration: dipole (|Dl|=1) vs non-dipole (|Dl|!=1)
     delta_l = abs(lf - li)
-    if delta_l == 1:
-        t_class = "dipole"
-    else:
-        t_class = "non_dipole"
+    t_class = "dipole" if delta_l == 1 else "non_dipole"
     logger.debug(f"Transition |Dl|={delta_l} mapped to class '{t_class}'")
     
-    # We need threshold energy to init model.
-    # We can get it from a quick bound state check or run one calc.
-    # compute_total_excitation_cs runs bound state solve internally each time (inefficient but safe).
-    # We will run it once.
-    
-    # Pilot L_max configuration: "auto" = dynamic scaling, int = explicit value
-    pilot_L_proj_cfg = params['excitation'].get('pilot_L_max_projectile', 'auto')
-    pilot_L_int_cfg = params['excitation'].get('pilot_L_max_integrals', 'auto')
-    
-    if pilot_L_proj_cfg == 'auto' or pilot_L_int_cfg == 'auto':
-        # Dynamic L_max calculation based on energy
-        k_pilot = np.sqrt(2 * pilot_E / 27.2114)  # k in a.u.
-        r_max_grid = params['grid']['r_max']
-        pilot_L_proj_dynamic = int(k_pilot * r_max_grid * 0.6)
-        
-        if pilot_L_proj_cfg == 'auto':
-            pilot_L_proj = max(L_max_proj, min(pilot_L_proj_dynamic, 150))
-        else:
-            pilot_L_proj = int(pilot_L_proj_cfg)
-        
-        if pilot_L_int_cfg == 'auto':
-            pilot_L_int = max(L_max_integrals, min(25, pilot_L_proj // 4))
-        else:
-            pilot_L_int = int(pilot_L_int_cfg)
-        
-        logger.debug("Pilot dynamic L_max: L_proj=%d, L_int=%d (k=%.2f)", pilot_L_proj, pilot_L_int, k_pilot)
-    else:
-        # User specified explicit values
-        pilot_L_proj = int(pilot_L_proj_cfg)
-        pilot_L_int = int(pilot_L_int_cfg)
-        logger.debug("Pilot explicit L_max: L_proj=%d, L_int=%d", pilot_L_proj, pilot_L_int)
-    
-    try:
-        # Article uses large box (200 au)
-        res_pilot = compute_total_excitation_cs(
-            pilot_E, spec, core_params, 
-            r_max=200.0, n_points=3000, 
-            use_polarization_potential=use_pol,
-            n_theta=n_theta,
-            L_max_integrals_override=pilot_L_int,
-            L_max_projectile_override=pilot_L_proj,
-        )
-    except Exception as e:
-        logger.debug("Pilot calculation failed: %s", e)
-        print(" failed")
-        res_pilot = None
-
-    dE_thr = res_pilot.E_excitation_eV if res_pilot else atom_entry.ip_ev
-    
-    if res_pilot:
-        E_init_eV = -atom_entry.ip_ev
-        E_final_eV = E_init_eV + dE_thr
-        epsilon_exc_au = ev_to_au(E_final_eV)
-    else:
-        epsilon_exc_au = -0.5 * (Z**2) / (nf**2) 
-
-    tong_model = TongModel(dE_thr, epsilon_exc_au, transition_class=t_class)
     alpha = 1.0
+    dE_thr = atom_entry.ip_ev  # Default threshold from atom library
+    epsilon_exc_au = -0.5 * (Z**2) / (nf**2)  # Rough estimate
+    tong_model = None
+    res_pilot = None
     
-    if res_pilot and res_pilot.sigma_total_cm2 > 0:
-        sigma_calc = res_pilot.sigma_total_cm2
-        alpha = tong_model.calibrate_alpha(pilot_E, sigma_calc)
-        print(" done")
-        print_info(f"Threshold: {dE_thr:.2f} eV, α = {alpha:.3f}")
-        logger.debug("Pilot σ=%.2e, Tong ref=%.2e, α=%.4f", sigma_calc, tong_model.calculate_sigma_cm2(pilot_E), alpha)
+    if do_calibrate:
+        print_progress("Running pilot at 1000 eV...")
+        pilot_E = 1000.0
+        
+        # Pilot L_max configuration: "auto" = dynamic scaling, int = explicit value
+        pilot_L_proj_cfg = params['excitation'].get('pilot_L_max_projectile', 'auto')
+        pilot_L_int_cfg = params['excitation'].get('pilot_L_max_integrals', 'auto')
+        
+        if pilot_L_proj_cfg == 'auto' or pilot_L_int_cfg == 'auto':
+            # Dynamic L_max calculation based on energy
+            k_pilot = np.sqrt(2 * pilot_E / 27.2114)  # k in a.u.
+            r_max_grid = params['grid']['r_max']
+            pilot_L_proj_dynamic = int(k_pilot * r_max_grid * 0.6)
+            
+            if pilot_L_proj_cfg == 'auto':
+                pilot_L_proj = max(L_max_proj, min(pilot_L_proj_dynamic, 150))
+            else:
+                pilot_L_proj = int(pilot_L_proj_cfg)
+            
+            if pilot_L_int_cfg == 'auto':
+                pilot_L_int = max(L_max_integrals, min(25, pilot_L_proj // 4))
+            else:
+                pilot_L_int = int(pilot_L_int_cfg)
+            
+            logger.debug("Pilot dynamic L_max: L_proj=%d, L_int=%d (k=%.2f)", pilot_L_proj, pilot_L_int, k_pilot)
+        else:
+            # User specified explicit values
+            pilot_L_proj = int(pilot_L_proj_cfg)
+            pilot_L_int = int(pilot_L_int_cfg)
+            logger.debug("Pilot explicit L_max: L_proj=%d, L_int=%d", pilot_L_proj, pilot_L_int)
+        
+        try:
+            # Article uses large box (200 au)
+            res_pilot = compute_total_excitation_cs(
+                pilot_E, spec, core_params, 
+                r_max=200.0, n_points=3000, 
+                use_polarization_potential=use_pol,
+                n_theta=n_theta,
+                L_max_integrals_override=pilot_L_int,
+                L_max_projectile_override=pilot_L_proj,
+            )
+        except Exception as e:
+            logger.debug("Pilot calculation failed: %s", e)
+            print(" failed")
+            res_pilot = None
+
+        if res_pilot:
+            dE_thr = res_pilot.E_excitation_eV
+            E_init_eV = -atom_entry.ip_ev
+            E_final_eV = E_init_eV + dE_thr
+            epsilon_exc_au = ev_to_au(E_final_eV)
+
+        tong_model = TongModel(dE_thr, epsilon_exc_au, transition_class=t_class)
+        
+        if res_pilot and res_pilot.sigma_total_cm2 > 0:
+            sigma_calc = res_pilot.sigma_total_cm2
+            alpha = tong_model.calibrate_alpha(pilot_E, sigma_calc)
+            print(" done")
+            print_info(f"Threshold: {dE_thr:.2f} eV, α = {alpha:.3f}")
+            logger.debug("Pilot σ=%.2e, Tong ref=%.2e, α=%.4f", sigma_calc, tong_model.calculate_sigma_cm2(pilot_E), alpha)
+        else:
+            print(" skipped")
+            print_info("Using default α = 1.0")
     else:
-        print(" skipped")
-        print_info("Using default α = 1.0")
+        print_info("Calibration DISABLED (output.calibrate=false)")
+        print_info("Using α = 1.0, no Tong model curve will be generated")
 
     # --- Smart Grid Adjustment ---
     # If user's start is below threshold, regenerate grid with threshold as new start
@@ -1007,17 +1029,24 @@ def run_scan_excitation(run_name):
                     sorted_pws = sorted(res.partial_waves.items(), key=lambda x: x[1], reverse=True)[:3]
                     logger.debug("E=%.1f: %s", E, ", ".join(f"{k}={v:.1e}" for k,v in sorted_pws))
                 
-                try:
-                    tong_sigma = tong_model.calculate_sigma_cm2(E)
-                    cal_factor = 1.0
-                    if res.sigma_total_cm2 > 0 and tong_model.is_calibrated:
-                        cal_factor = tong_sigma / res.sigma_total_cm2
-                except Exception as cal_err:
-                    logger.debug("Calibration calc failed: %s", cal_err)
-                    tong_sigma = 0.0
-                    cal_factor = 1.0
+                # Calibration values (only if calibration is enabled)
+                tong_sigma = None
+                cal_factor = 1.0
+                if do_calibrate and tong_model is not None:
+                    try:
+                        tong_sigma = tong_model.calculate_sigma_cm2(E)
+                        if res.sigma_total_cm2 > 0 and tong_model.is_calibrated:
+                            cal_factor = tong_sigma / res.sigma_total_cm2
+                    except Exception as cal_err:
+                        logger.debug("Calibration calc failed: %s", cal_err)
+                        tong_sigma = None
+                        cal_factor = 1.0
                 
-                print_result(E, res.sigma_total_cm2, extra=f"[C(E)={cal_factor:.3f}]")
+                # Print result with or without calibration factor
+                if do_calibrate:
+                    print_result(E, res.sigma_total_cm2, extra=f"[C(E)={cal_factor:.3f}]")
+                else:
+                    print_result(E, res.sigma_total_cm2)
                 
                 # Calibrate DCS (a.u.) if available
                 dcs_raw_au = None
@@ -1026,13 +1055,16 @@ def run_scan_excitation(run_name):
                 if res.dcs_au is not None and res.theta_deg is not None:
                     theta_deg = res.theta_deg.tolist() if hasattr(res.theta_deg, "tolist") else list(res.theta_deg)
                     dcs_raw_au = res.dcs_au.tolist() if hasattr(res.dcs_au, "tolist") else list(res.dcs_au)
-                    dcs_cal_au = (res.dcs_au * cal_factor).tolist()
+                    if do_calibrate:
+                        dcs_cal_au = (res.dcs_au * cal_factor).tolist()
+                    else:
+                        dcs_cal_au = None
 
                 results.append({
                     "energy_eV": E,
                     "sigma_au": res.sigma_total_au,
                     "sigma_cm2": res.sigma_total_cm2,
-                    "sigma_mtong_cm2": tong_sigma,
+                    "sigma_mtong_cm2": tong_sigma,  # null when calibration disabled
                     "calibration_alpha": alpha,
                     "calibration_factor": cal_factor,
                     "theta_deg": theta_deg,
@@ -1135,15 +1167,16 @@ def run_scan_ionization(run_name):
         return
     
     # Use centralized defaults with improved UI
-    params = prompt_use_defaults(categories=['grid', 'ionization', 'oscillatory'])
+    params = prompt_use_defaults(categories=['grid', 'ionization', 'oscillatory', 'hardware', 'output'])
     
     l_eject_max = params['ionization']['l_eject_max']
     L_max = params['ionization']['L_max']
     L_max_proj = params['ionization']['L_max_projectile']
     n_energy_steps = params['ionization']['n_energy_steps']
     
-    # Set oscillatory configuration globally
-    set_oscillatory_config(params['oscillatory'])
+    # Set oscillatory configuration globally (merge oscillatory + hardware for backward compat)
+    osc_config = {**params['oscillatory'], **params['hardware']}
+    set_oscillatory_config(osc_config)
 
     spec = IonizationChannelSpec(
         l_i=li,
@@ -1625,8 +1658,9 @@ def run_from_config(config_path: str, verbose: bool = False) -> None:
     # Set up parameters
     params = config_to_params_dict(config)
     
-    # Set oscillatory configuration
-    set_oscillatory_config(params['oscillatory'])
+    # Set oscillatory configuration (merge oscillatory + hardware for backward compat)
+    osc_config = {**params['oscillatory'], **params['hardware']}
+    set_oscillatory_config(osc_config)
     
     # Get atom and core parameters
     try:

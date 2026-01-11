@@ -70,10 +70,10 @@ def run_diagnostic():
                 wave_i = solve_continuum_wave(grid, U_i, L, E_inc, z_ion=0.0)
                 wave_f = solve_continuum_wave(grid, U_f, L, E_f_au * 27.211386, z_ion=0.0)
                 
-                delta_i = wave_i.delta_l
-                delta_f = wave_f.delta_l
-                chi_i_max = np.max(np.abs(wave_i.chi))
-                chi_f_max = np.max(np.abs(wave_f.chi))
+                delta_i = wave_i.phase_shift
+                delta_f = wave_f.phase_shift
+                chi_i_max = np.max(np.abs(wave_i.chi_of_r))
+                chi_f_max = np.max(np.abs(wave_f.chi_of_r))
                 
                 notes = ""
                 if chi_i_max > 2.0:
@@ -115,14 +115,14 @@ def run_diagnostic():
         wave_i = solve_continuum_wave(grid, U_i, L, E_test, z_ion=0.0)
         
         # Overlap <1s|chi_L_i>
-        integrand_1s = orb_1s.u_of_r * wave_i.chi
+        integrand_1s = orb_1s.u_of_r * wave_i.chi_of_r
         overlap_1s = np.sum(integrand_1s * dr)
         
         # Overlap <2s|chi_L_i>
-        integrand_2s = orb_2s.u_of_r * wave_i.chi
+        integrand_2s = orb_2s.u_of_r * wave_i.chi_of_r
         overlap_2s = np.sum(integrand_2s * dr)
         
-        print(f"  L={L}: <1s|chi_L> = {overlap_1s:.4f}, <2s|chi_L> = {overlap_2s:.4f}, delta = {wave_i.delta_l:.4f}")
+        print(f"  L={L}: <1s|chi_L> = {overlap_1s:.4f}, <2s|chi_L> = {overlap_2s:.4f}, delta = {wave_i.phase_shift:.4f}")
 
 if __name__ == "__main__":
     run_diagnostic()

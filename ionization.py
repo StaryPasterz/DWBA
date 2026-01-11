@@ -399,7 +399,8 @@ def _compute_sdcs_at_energy(
                         min_grid_fraction=OSCILLATORY_CONFIG["min_grid_fraction"],
                         k_threshold=OSCILLATORY_CONFIG["k_threshold"],
                         gpu_memory_mode=OSCILLATORY_CONFIG["gpu_memory_mode"],
-                        gpu_memory_threshold=OSCILLATORY_CONFIG["gpu_memory_threshold"]
+                        gpu_memory_threshold=OSCILLATORY_CONFIG["gpu_memory_threshold"],
+                        U_f_array=U_ion_obj.U_of_r  # Bug #2 fix: check final-state potential
                     )
                 else:
                     integrals = radial_ME_all_L(
@@ -412,7 +413,8 @@ def _compute_sdcs_at_energy(
                         CC_nodes=OSCILLATORY_CONFIG["CC_nodes"],
                         phase_increment=OSCILLATORY_CONFIG["phase_increment"],
                         min_grid_fraction=OSCILLATORY_CONFIG["min_grid_fraction"],
-                        k_threshold=OSCILLATORY_CONFIG["k_threshold"]
+                        k_threshold=OSCILLATORY_CONFIG["k_threshold"],
+                        U_f_array=U_ion_obj.U_of_r  # Bug #2 fix: check final-state potential
                     )
 
                 # Accumulate angle-integrated coefficients over magnetic substates

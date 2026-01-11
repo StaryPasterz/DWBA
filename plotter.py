@@ -227,13 +227,16 @@ def main():
             ax.legend(loc='best', fontsize=9)
             continue
 
-        Sig_tong = np.array([p.get("sigma_mtong_cm2", 0.0) for p in pts])
-        Factor = np.array([p.get("calibration_factor", 0.0) for p in pts])
+        Sig_tong = np.array([p.get("sigma_mtong_cm2") for p in pts])
+        Factor = np.array([p.get("calibration_factor", 1.0) for p in pts])
         
-        if not np.any(Factor):
-            Factor = np.zeros_like(E_raw)
-            mask = Sig_raw > 1e-50
-            Factor[mask] = Sig_tong[mask] / Sig_raw[mask]
+        # Check if calibration is available (sigma_mtong_cm2 is not None for all points)
+        has_calibration = all(s is not None for s in Sig_tong)
+        if has_calibration:
+            Sig_tong = np.array([s if s is not None else 0.0 for s in Sig_tong])
+        else:
+            Sig_tong = None  # No calibration data
+            Factor = np.ones_like(E_raw)  # Default to 1.0
         
         # For Ionization or Excitation threshold behavior
         thr = 1.0 
@@ -242,39 +245,51 @@ def main():
         
         X = [conv_E(e, thr) for e in E_raw]
         Y = [conv_S(s) for s in Sig_raw]
-        Y_tong = [conv_S(s) for s in Sig_tong]
         
         # --- Left Axis (Cross Sections) ---
         color1 = 'tab:blue'
         color2 = 'tab:orange'
         
-        # Article Style: Dotted for DWBA (Uncalibrated), Solid for Calibrated
-        if style == 'article':
-            l1, = ax.plot(X, Y, 'k:', linewidth=2, label='DWBA (Uncalibrated)')
-            l2, = ax.plot(X, Y_tong, 'k-', linewidth=2, label='Tong model')
+        if has_calibration:
+            Y_tong = [conv_S(s) for s in Sig_tong]
+            # Article Style: Dotted for DWBA (Uncalibrated), Solid for Calibrated
+            if style == 'article':
+                l1, = ax.plot(X, Y, 'k:', linewidth=2, label='DWBA (Uncalibrated)')
+                l2, = ax.plot(X, Y_tong, 'k-', linewidth=2, label='Tong model')
+            else:
+                l1, = ax.plot(X, Y, 'o--', linewidth=2, color=color1, label='DWBA')
+                l2, = ax.plot(X, Y_tong, 's-', linewidth=2, color=color2, label='Tong model')
         else:
-            l1, = ax.plot(X, Y, 'o--', linewidth=2, color=color1, label='DWBA')
-            l2, = ax.plot(X, Y_tong, 's-', linewidth=2, color=color2, label='Tong model')
+            # No calibration - plot only DWBA curve
+            if style == 'article':
+                l1, = ax.plot(X, Y, 'k-', linewidth=2, label='DWBA')
+            else:
+                l1, = ax.plot(X, Y, 'o-', linewidth=2, color=color1, label='DWBA')
+            l2 = None
         
         ax.set_xlabel(xlab, fontsize=11)
         ax.set_ylabel(ylab, fontsize=11)
         ax.grid(True, linestyle=':', alpha=0.7)
         ax.set_title(key.replace("_", " "), fontsize=12, fontweight='bold')
         
-        # --- Right Axis (Calibration Factor) ---
-        ax2 = ax.twinx()
-        color3 = 'tab:green'
-        l3, = ax2.plot(X, Factor, ':', linewidth=1.5, color=color3, label='Norm. Factor')
-        ax2.set_ylabel("Calibration Factor C(E)", fontsize=11, color=color3)
-        ax2.tick_params(axis='y', labelcolor=color3)
-        # Dynamic limits for factor
-        if np.max(Factor) > 0:
-            ax2.set_ylim(0, max(1.1, np.max(Factor)*1.1))
-        
-        # Legend (merge handles)
-        lns = [l1, l2, l3]
-        labs = [l.get_label() for l in lns]
-        ax.legend(lns, labs, loc='best', fontsize=9)
+        # --- Right Axis (Calibration Factor) - only if calibration available ---
+        if has_calibration:
+            ax2 = ax.twinx()
+            color3 = 'tab:green'
+            l3, = ax2.plot(X, Factor, ':', linewidth=1.5, color=color3, label='Norm. Factor')
+            ax2.set_ylabel("Calibration Factor C(E)", fontsize=11, color=color3)
+            ax2.tick_params(axis='y', labelcolor=color3)
+            # Dynamic limits for factor
+            if np.max(Factor) > 0:
+                ax2.set_ylim(0, max(1.1, np.max(Factor)*1.1))
+            
+            # Legend (merge handles)
+            lns = [l1, l2, l3]
+            labs = [l.get_label() for l in lns]
+            ax.legend(lns, labs, loc='best', fontsize=9)
+        else:
+            # Simple legend without calibration
+            ax.legend(loc='best', fontsize=9)
         
         # Threshold Mark
         if style == 'article':

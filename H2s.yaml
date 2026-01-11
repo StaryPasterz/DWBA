@@ -55,14 +55,16 @@ oscillatory:
   phase_increment: 1.5708        # [rad] Phase increment (π/2)
   min_grid_fraction: 0.1         # [dimensionless] Min match point fraction
   k_threshold: 0.5               # [a.u.] Momentum threshold for Filon/Levin
-  # GPU Configuration (v2.5+)
+  max_chi_cached: 30             # [count] LRU cache size for continuum waves
+
+hardware:
   gpu_block_size: "auto"         # "auto" = auto-tune, int = explicit size
   gpu_memory_mode: "auto"        # "auto" (smart), "full" (fast), "block" (safe)
   gpu_memory_threshold: 0.7      # [dimensionless] Max VRAM fraction to use
-  max_chi_cached: 30             # [count] LRU cache size for continuum waves
   n_workers: "max"               # "auto" (balanced), "max" (all cores), or int
 
 output:
   save_dcs: true                 # Save differential cross section
   save_partial: true             # Save partial wave contributions
-  calibrate: false                # Apply Tong empirical calibration
+  calibrate: true                # Apply Tong empirical calibration
+

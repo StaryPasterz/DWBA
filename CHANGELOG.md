@@ -6,6 +6,102 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v2.10] — 2026-01-11 — Configuration Refactoring & Output Controls
+
+Restructured configuration system with separate Hardware category and full Output options support.
+
+### Configuration Changes
+
+**New `hardware:` section** in YAML configuration:
+- Extracted GPU/CPU parameters from `oscillatory:` into dedicated section
+- Parameters: `gpu_block_size`, `gpu_memory_mode`, `gpu_memory_threshold`, `n_workers`
+- Backward compatibility maintained (old configs with GPU params in oscillatory still work)
+
+**New `HardwareConfig` dataclass** in `config_loader.py`:
+- Clean separation of concerns: oscillatory integrals vs hardware acceleration
+- Automatic migration from legacy configs
+
+### Output Controls
+
+**`output.calibrate` now fully functional**:
+- When `false`: skips pilot calculation, uses α=1.0, no Tong model curve in plots
+- Interactive mode: calibration can be toggled via `output` category
+- Fixed: setting `calibrate: false` in config no longer causes permanent calibration skip
+
+**`output.save_dcs` and `output.save_partial` implemented**:
+- Parameters now visible and modifiable in interactive mode
+- Respected in both interactive and batch execution
+
+### Plotter Updates
+
+**Conditional calibration display**:
+- Plots now detect when `sigma_mtong_cm2` is null
+- When calibration disabled: DWBA curve only, no Tong curve or C(E) factor
+- Cleaner legends for non-calibrated results
+
+### Files Modified
+
+- `config_loader.py`: Added `HardwareConfig`, updated parsing with backward compatibility
+- `DW_main.py`: Separated `DEFAULTS` into hardware/output, updated `prompt_use_defaults` for bools
+- `H2s.yaml`: Restructured with new `hardware:` section
+- `plotter.py`: Conditional calibration curve rendering
+
+---
+
+## [v2.9] — 2026-01-11 — Enhanced Diagnostic Framework
+
+Comprehensive diagnostic suite with unified menu and result tracking.
+
+### New Features
+
+**Enhanced `debug/debug.py`**:
+- **20-option categorized menu** for all diagnostic functions
+- **`DiagnosticResult` class** with pass/fail tracking for each test
+- **JSON export** to `debug/results/` with automatic timestamps
+- **Timing measurements** for each diagnostic section
+
+**Menu Categories**:
+| Category | Options | Description |
+|----------|---------|-------------|
+| Quick Tests | 1-2 | Health check, convergence study |
+| Bound States | 3 | Normalization, energy, nodes, orthogonality |
+| Continuum Waves | 4-6 | Phase shifts, high-L stability |
+| Potentials | 7-8 | Core, distorting, multi-atom |
+| Radial Integrals | 9-10 | I_L breakdown, method comparison |
+| Angular Coupling | 11 | CG, Racah coefficients |
+| Cross Sections | 12-14 | Partial waves, anomalies |
+| Full Traces | 15-16 | Excitation, ionization pipelines |
+| Batch | 20 | Run all diagnostics |
+
+### File Reorganization
+
+**Unified naming convention** (`diag_*.py`):
+- `debug_amplitude.py` → `diag_amplitude.py`
+- `debug_angular.py` → `diag_angular.py`
+- `debug_bound.py` → `diag_bound.py`
+- `compare_methods.py` → `diag_method_compare.py`
+- `verify_oscillatory.py` → `diag_oscillatory.py`
+
+**Output directories** moved inside `debug/`:
+- `debug/results/` — JSON diagnostic results
+- `debug/plots/` — Generated diagnostic plots
+
+**Removed redundant scripts** (merged into main `debug.py`):
+- `test_h_energy.py`
+- `test_bypass_disabled.py`
+- `check_orthogonality.py`
+
+### Bug Fixes
+
+- Fixed `NameError` in `ionization.py` (`L_max_projectile` → `L_max_proj`)
+- Fixed asymptotic amplitude check in `debug.py` (expected `sqrt(2/π)` not `1.0`)
+- Fixed attribute names in `diag_L0_L1_anomaly.py` (`delta_l` → `phase_shift`, `chi` → `chi_of_r`)
+- Fixed JSON serialization for complex numbers and numpy types
+- Fixed CG coefficient test to compare absolute values (sign depends on phase convention)
+- **Added `U_f_array` to ionization.py radial integrals** — Bug #2 fix was missing from ionization module, now both `radial_ME_all_L` and `radial_ME_all_L_gpu` calls pass final-state potential for proper asymptotic validation
+
+---
+
 ## [v2.8] — 2026-01-11 — Oscillatory Integral Stability Fixes — Edit_78 (`f757d1d`)
 
 Critical fixes for oscillatory integral factorization and phase calculations at high energies.
