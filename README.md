@@ -1,4 +1,4 @@
-# DW\_antigravity\_v2 – Distorted Wave Born Approximation Toolkit
+# DWBA – Distorted Wave Born Approximation Toolkit
 
 Comprehensive Python suite for computing electron–atom excitation and ionization cross sections using the Distorted Wave Born Approximation (DWBA), with optional empirical calibration (Tong model) and plotting/diagnostic tools.
 
@@ -14,20 +14,30 @@ Comprehensive Python suite for computing electron–atom excitation and ionizati
   - [Excitation Scan](#excitation-scan)
   - [Ionization Scan](#ionization-scan)
   - [Plotting Results](#plotting-results)
+  - [Partial Wave Analysis](#partial-wave-analysis-partial_wave_plotterpy)
   - [Potential Fitting](#potential-fitting)
+- [Numerics and Parameters](#numerics-and-parameters)
+  - [Centralized Default Parameters](#centralized-default-parameters)
+  - [Adaptive Grid Strategies](#adaptive-grid-strategies-v26)
+  - [Pilot Light Mode](#pilot-light-mode-v25)
+  - [Parameter Reference](#parameter-reference)
 - [Atom Library (`atoms.json`)](#atom-library-atomsjson)
-- [Calibration (Tong / DWBA)](#calibration-tong--dwba)
 - [Debugging and Logging](#debugging-and-logging)
 - [Performance Tips](#performance-tips)
 - [Troubleshooting](#troubleshooting)
+- [Changelog](#changelog)
 - [References](#references)
 
 ## Features
 - **GPU Acceleration**: Core radial matrix element calculations are GPU-accelerated via CuPy.
-- **Scalable GPU Memory**: Implemented **block-wise construction** for radial kernels (default 8192 points). This ensures a constant VRAM footprint, allowing large grids ($N_{grid}=10000$) to run on standard hardware without "Pagefile too small" errors.
+- **Scalable GPU Memory**: Implemented **block-wise construction** for radial kernels. This ensures a constant VRAM footprint, allowing large grids ($N_{grid}=15000$) to run on standard hardware.
 - **Improved Phase Extraction**: Uses **5-point Fornberg stencils** for finite derivatives on non-uniform grids, ensuring stable phase extraction for high energies (1.0 keV+).
 - **High-Accuracy Integrals**: Support for **Full-Split** quadrature with full-grid integration parity across CPU and GPU paths.
+- **Bound State Extent Handling** *(v2.8)*: Automatic detection of bound state extent ensures match point is beyond 99% of density, critical for accurate oscillatory integral factorization.
+- **Centrifugal Phase Corrections** *(v2.8)*: First-order centrifugal terms in asymptotic phase for stable high-L partial wave calculations.
+- **Diagnostic Tools**: Comprehensive scripts in `debug/` for analyzing partial wave convergence, radial integrals, and method comparisons.
 - **Progress Reporting**: Real-time feedback and ETA for long-running partial wave summations.
+
 
 ## Repository Layout
 ```
@@ -53,7 +63,11 @@ DW_antigravity_v2/
 ├── plotter.py              # Result plotting utility
 ├── partial_wave_plotter.py # Partial wave analysis plotter
 ├── logging_config.py       # Centralized logging
-├── debug.py                # Health checks and diagnostics
+├── debug/                  # Diagnostic scripts for analysis
+│   ├── debug.py            # Health checks and diagnostics
+│   ├── diag_upturn.py      # Partial wave convergence analysis
+│   ├── diag_radial_integrals.py  # Radial integral diagnostics
+│   └── compare_methods.py  # Legacy vs Advanced method comparison
 ├── article.md              # Reference paper (theory)
 ├── results/                # All output files (auto-created)
 │   ├── results_*.json      # Calculation results
@@ -62,17 +76,52 @@ DW_antigravity_v2/
 ```
 
 ## Theory Snapshot
-- DWBA amplitudes follow Eq. (216), (412), (448) of the article: direct `f` and exchange `g` from multipole expansion of `1/r₁₂`, with distorted continuum waves.
-- Distorting potentials: `U_j(r) = V_core(r) + V_H(r)` (static), with optional `V_pol`.
-- SAE core potential (Eq. 69):
-  ```
-  V(r) = -[Zc + a₁e^(-a₂r) + a₃re^(-a₄r) + a₅e^(-a₆r)] / r
-  ```
-- Calibration: Tong model (Eq. ~34, 493) provides TCS; normalization factor `C(E)` rescales DWBA TCS. For DCS, multiply by `calibration_factor` if you need calibrated angular distributions.
 
-### Cross Section Formulas
-- **Excitation DCS**: `dσ/dΩ = (2π)⁴ × (k_f/k_i) × |T|²` (Eq. 216)
-- **Ionization TDCS**: `d³σ/(dΩ₁dΩ₂dE) = (2π)⁴ × (k_f×k_ej/k_i) × |T|²` (Jones/Madison 2003)
+The core of the package implements the **Distorted-wave Born Approximation (DWBA)** for electron-impact transitions in the Single-Active-Electron (SAE) approximation.
+
+### 1. Transition Amplitudes
+The calculation evaluates both **direct ($f$)** and **exchange ($g$)** scattering amplitudes (Eq. 120, 134). These are computed via partial-wave expansion of the distorted continuum waves and the multipole-expanded interaction $1/r_{12}$:
+- **Direct ($f$):** Evaluated using Eq. (412) of the article.
+- **Exchange ($g$):** Evaluated using Eq. (448) of the article.
+
+### 2. Differential Cross Section (DCS)
+The unpolarized DCS for excitation (Eq. 226) includes proper spin-weighting for singlet and triplet channels:
+$$\frac{d\sigma}{d\Omega} = N (2\pi)^4 \frac{k_f}{k_i} \frac{1}{2L_i+1} \sum_{M_i, M_f} \left[ \frac{3}{4}|f-g|^2 + \frac{1}{4}|f+g|^2 \right]$$
+*Note: For Ionization, the (e, 2e) TDCS follows a similar $(2\pi)^4$ kinematic convention (Jones/Madison 1993).*
+
+### 3. Potential Models
+- **SAE Core Potential (Eq. 69):** Used to solve for target bound states $\Phi_j$ and the core potential:
+  $$V_{A^+}(r) = -\frac{1 + a_1 e^{-a_2 r} + a_3 r e^{-a_4 r} + a_5 e^{-a_6 r}}{r}$$
+- **Distorting Potentials (Eq. 457):** The distorted waves $\chi_k$ for the projectile are solved in a static-exchange potential $U_j$:
+  $$U_j(r) = V_{A^+}(r) + \int \frac{|\Phi_j(\mathbf{r}')|^2}{|\mathbf{r} - \mathbf{r}'|} d\mathbf{r}' + V_{pol}(r)$$
+  *Where $V_{pol}$ is an optional polarization term.*
+
+### 4. Calibration (Tong / DWBA)
+
+The calibration procedure corrects the overestimation of Total Cross Sections (TCS) at low energies by scaling DWBA results using an empirical BE-scaled formula.
+
+#### Theoretical Basis
+The empirical TCS for a given transition follows Eq. (493):
+$$\sigma_{\text{Tong}}(E) = \alpha \cdot \frac{\pi}{\Delta E_{thr}^2} \exp\left[ \frac{1.5(\Delta E_{thr} - \epsilon)}{E} \right] f\left( \frac{E}{\Delta E_{thr}} \right) $$
+
+where the shape function $f(x)$ represents the energy dependence (Eq. 480):
+$$f(x) = \frac{1}{x} \left[ \beta \ln x + \gamma \left( 1 - \frac{1}{x} \right) + \delta \frac{\ln x}{x} \right]$$
+
+**Parameters**:
+- $\Delta E_{thr}$: Threshold excitation energy.
+- $\epsilon$: Eigenenergy of the final excited state (e.g., $-0.125$ a.u. for H $2s$).
+- $\alpha$: Matching coefficient, determined at $E_{ref} = 1000$ eV.
+- **Sets**:
+  - **Dipole-allowed** ($|\Delta l|=1$): $\beta=1.32, \gamma=-1.08, \delta=-0.04$
+  - **Dipole-forbidden** ($|\Delta l|\neq 1$): $\beta=0.7638, \gamma=1.1759, \delta=0.6706$
+
+#### Normalization Procedure
+1. **Alpha Matching**: A "Pilot Run" is performed at 1000 eV to find $\alpha = \sigma_{DWBA}(1000) / \sigma_{\text{Tong}, \alpha=1}(1000)$.
+2. **Per-energy scaling**: For each energy $E$, a normalization factor $C(E) = \sigma_{\text{Tong}}(E) / \sigma_{\text{DWBA}}(E)$ is derived.
+3. **Calibrated Results**: Both raw and calibrated TCS are saved. Calibrated DCS are obtained via: $(d\sigma/d\Omega)_{\text{cal}} = C(E) \cdot (d\sigma/d\Omega)_{\text{raw}}$.
+
+> [!NOTE]
+> Calibration applies to **excitation only**. Ionization calculations use raw DWBA results with proper kinematic factors.
 
 ## Units and Normalization
 | Quantity | Internal Unit | Output Unit |
@@ -141,55 +190,32 @@ python DW_main.py --generate-config -o my_config.yaml
 python DW_main.py --generate-config --config-type ionization -o ion_config.yaml
 ```
 
-**Example Configuration** (`examples/config_excitation.yaml`):
-```yaml
-run_name: "H_1s2s_batch"
-
-calculation:
-  type: "excitation"
-
-target:
-  atom: "H"
-
-states:
-  initial: {n: 1, l: 0}
-  final: {n: 2, l: 0}
-
-energy:
-  type: "log"
-  start_eV: 10.2
-  end_eV: 300
-  density: 0.5
-
-oscillatory:
-  method: "advanced"
-  gpu_memory_mode: "auto"
-```
-
-See `examples/` directory for complete templates.
+**Example Configuration**: See `examples/` directory for complete templates (`examples/config_excitation.yaml` and `examples/config_ionization.yaml`).
 
 **Config File Discovery**: When starting an excitation or ionization calculation interactively, the program will prompt to use existing `.yaml` config files if found.
 
 ### Excitation Scan
-- Select target from `atoms.json` or enter custom parameters
-- Configure initial/final states (n, l)
-- Choose model: DWBA (static) or DWBA + polarization
-- Numerics: L_max (multipole), L_max_projectile (base, auto-scaled), n_theta (DCS grid)
-- Results saved to `results_<run>_exc.json`
+
+Interactive workflow for calculating electron-impact excitation transitions.
+- **Workflow**: Select target atom/ion $\to$ Define $(n_i, l_i) \to (n_f, l_f)$ transition $\to$ Choose physics model.
+- **Calibration**: Automatic **Tong Model** pilot run at 1 keV used to derive the normalization factor $\alpha$.
+- **Physics**: Hybrid DWBA treatment of exchange and static-exchange potentials.
+- **Diagnostics**: Convergence of partial waves is monitored and logged in real-time.
+- **Results**: Cross sections (TCS, DCS) are saved to `results/results_<run>_exc.json`.
 
 ### Ionization Scan
-- Similar setup to excitation
-- Uses (2π)⁴ kinematic factor for proper continuum normalization (TDWBA convention)
-- Results include TICS and SDCS data; optional TDCS for specified angle triplets
-- SDCS is integrated over both outgoing electron angles using Y_lm orthonormality
-- Tong calibration applies to excitation only; ionization plots show DWBA only.
-- Partial-wave diagnostics are stored (integrated over ejected energy).
-- TDCS uses angles (theta_scatt, theta_eject, phi_eject) with phi_scatt = 0 (scattering plane).
-- Exchange term uses swapped detection angles for indistinguishable electrons (Jones/Madison).
-- Numerics: l_eject_max, L_max (multipole), L_max_projectile (base, auto-scaled from k_i), n_energy_steps.
-- **L_max floor**: Minimum L_max=3 ensures s-, p-, d-wave contributions at all energies, even near threshold.
-- Polarization option is heuristic and not part of the article DWBA.
-- **k_threshold**: When k_total > 0.5 a.u., specialized Filon/Levin oscillatory quadrature is used; below this threshold, standard Simpson integration is faster and sufficiently accurate.
+
+Comprehensive (e, 2e) pipeline for computing ionization cross sections.
+- **Quantities**:
+  - **SDCS**: Single Differential Cross Section $d\sigma/dE_{ej}$, integrated over both electron angles.
+  - **TICS**: Total Ionization Cross Section, integrated over ejected energy.
+  - **TDCS**: Triple Differential Cross Section for specified scattering/ejection angle triplets $(\theta_s, \theta_e, \phi_e)$ in the scattering plane ($\phi_s=0$).
+- **Key Features**:
+  - **Normalization**: Follows TDWBA convention with proper $(2\pi)^4$ kinematic factors.
+  - **Exchange**: Handled via angle-swapping logic (Jones/Madison) for indistinguishable electrons.
+  - **Automation**: Minimum $L_{max}=3$ floor and adaptive $L_{max}$ scaling based on incident momentum.
+- **Calibration**: Normalization applies to **excitation only**; ionization plots and results show raw DWBA data.
+- **Results**: Integrated and differential data saved to `results/results_<run>_ion.json`.
 
 ### Plotting Results
 
@@ -208,13 +234,27 @@ python partial_wave_plotter.py
 ```
 
 Features:
-- **File selection** — Choose from available result files in `results/`
-- **Convergence analysis** — Cumulative sum vs L across energies
-- **L_90% indicator** — Shows L value at which sum reaches 90% of total
-- **Energy dependence** — Partial cross sections σ_L(E) for selected waves
-- **Distribution plots** — Bar chart of contributions at specific energy
-- **Summary statistics** — Energy range, max L, total cross sections
+- **File selection** — Choose from available result files in `results/`.
+- **Convergence analysis** — Cumulative sum vs L across energies.
+- **L\_90% indicator** — Shows L value at which sum reaches 90% of total.
+- **Energy dependence** — Partial cross sections $\sigma_L(E)$ for selected waves.
+- **Distribution plots** — Bar chart of contributions at specific energy.
+- **Summary statistics** — Energy range, max L, total cross sections.
 
+### Potential Fitting
+
+Interactive tool for calibrating atomic core potentials to match NIST binding energies:
+```bash
+python fit_potential.py
+```
+Features:
+- **Reference Protection**: Parameters from Tong-Lin (2005) are marked and protected.
+- **Global Optimizer**: Uses `differential_evolution` for robust fitting.
+- **Proper Bounds**: Support for complex core structures (negative $a_3, a_5$).
+- **Auto-save**: Updates `atoms.json` directly upon successful fit.
+
+
+## Numerics and Parameters
 
 ### Centralized Default Parameters
 
@@ -226,7 +266,8 @@ All numerical defaults are organized by category and displayed before calculatio
   │  r_max                  = 200
   │  n_points               = 3000
   │  r_max_scale_factor     = 2.5
-  │  n_points_max           = 10000
+  │  n_points_max           = 15000      
+  │  min_pts_per_λ          = 15         
   └────────────────────────────────────
 
   ┌─ EXCITATION ───────────────────────
@@ -234,22 +275,29 @@ All numerical defaults are organized by category and displayed before calculatio
   │  L_max_projectile       = 5
   │  n_theta                = 200
   │  pilot_energy_eV        = 1000
-  │  pilot_L_max_integrals  = 8      # v2.5+
-  │  pilot_L_max_projectile = 30     # v2.5+
-  │  pilot_n_theta          = 50     # v2.5+
+  │  pilot_L_max_integrals  = "auto"    
+  │  pilot_L_max_projectile = "auto"    
+  │  pilot_n_theta          = 50         
+  └────────────────────────────────────
+
+  ┌─ IONIZATION ───────────────────────
+  │  l_eject_max            = 3          
+  │  L_max                  = 15         
+  │  L_max_projectile       = 50         
+  │  n_energy_steps         = 10         
   └────────────────────────────────────
 
   ┌─ OSCILLATORY ──────────────────────
-  │  method                 = "advanced"
+  │  method                 = "advanced" # "legacy" / "advanced" / "full_split"
   │  CC_nodes               = 5
-  │  phase_increment        = 1.571
+  │  phase_increment        = 1.571      # (π/2)
   │  min_grid_fraction      = 0.1
   │  k_threshold            = 0.5
-  │  gpu_block_size         = auto
-  │  gpu_memory_mode        = "auto"
-  │  gpu_memory_threshold   = 0.7
-  │  max_chi_cached         = 20     # v2.5+
-  │  n_workers              = auto
+  │  gpu_block_size         = "auto"       
+  │  gpu_memory_mode        = "auto"     
+  │  gpu_memory_threshold   = 0.7        
+  │  max_chi_cached         = 20         
+  │  n_workers              = "auto"       
   └────────────────────────────────────
 ```
 
@@ -309,30 +357,33 @@ When prompted, enter:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `strategy` | `"global"` | Grid mode: `"manual"` = fixed params, `"global"` = adaptive for E_min, `"local"` = per-energy |
+| `strategy` | `"global"` | Grid mode: `"manual"` = fixed params, `"global"` = adaptive for $E_{min}$, `"local"` = per-energy |
 | `r_max` | 200 a.u. | Base maximum radius. For manual mode: used as-is. For adaptive: minimum floor. |
 | `n_points` | 3000 | Base grid points. For manual: fixed. For adaptive: minimum value. |
-| `r_max_scale_factor` | 2.5 | Safety factor for turning point: `r_max = factor × r_turn(L_max)` |
-| `n_points_max` | 8000 | Maximum grid points (caps adaptive scaling, limits memory). |
-| `min_points_per_wavelength` | 15 | **(v2.7+)** Min pts/λ at large r. Increases n_points for high energies. Set to 0 to disable. |
+| `r_max_scale_factor` | 2.5 | Safety factor for turning point: $r_{max} = factor \times r_{turn}(L_{max})$ |
+| `n_points_max` | 15000 | Maximum grid points (caps adaptive scaling, limits memory). *(v2.8: increased from 8000)* |
+| `min_points_per_wavelength` | 15 | **(v2.7+)** Min pts/λ at large r. Increases $n_{points}$ for high energies. Set to 0 to disable. |
 
 ### Excitation Parameters
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `L_max_integrals` | 15 | Maximum multipole order L for radial Coulomb integrals. Higher values improve accuracy for monopole/dipole/quadrupole coupling. Convergence is typically achieved at L=10-20. |
-| `L_max_projectile` | 5 | Maximum angular momentum for projectile partial waves (initial/final). Automatically increased based on classical turning point at runtime. |
-| `n_theta` | 200 | Number of scattering angle points for DCS calculation (0°-180°). |
-| `pilot_energy_eV` | 1000 | Reference energy for pre-calculating convergence parameters. |
+| `L_max_integrals` | 15 | Maximum multipole order L for radial Coulomb integrals. |
+| `L_max_projectile` | 5 | Base partial wave $L_{max}$ for projectile. Automatically increased relative to $k \cdot r_{max}$ at runtime. |
+| `n_theta` | 200 | Number of scattering angle points for DCS calculation ($0^\circ-180^\circ$). |
+| `pilot_energy_eV` | 1000 | Reference energy for pre-calculating calibration $\alpha$. |
+| `pilot_L_max_integrals` | `"auto"` | **(v2.5+)** $L_{max}$ for integrals during calibration. |
+| `pilot_L_max_projectile`| `"auto"` | **(v2.5+)** $L_{max}$ for projectile during calibration. |
+| `pilot_n_theta` | 50 | Angular grid for pilot run (TCS only). |
 
 ### Ionization Parameters
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `l_eject_max` | 3 | Maximum angular momentum of ejected electron (0=s, 1=p, 2=d, 3=f). |
+| `l_eject_max` | 3 | Maximum angular momentum of ejected electron ($0=s, 1=p, 2=d, 3=f$). |
 | `L_max` | 15 | Maximum multipole order for ionization integrals. |
 | `L_max_projectile` | 50 | Maximum projectile angular momentum (ionization requires more partial waves). |
-| `n_energy_steps` | 10 | Number of ejected electron energy points for SDCS integration. |
+| `n_energy_steps` | 10 | Number of ejected electron energy points for $d\sigma/dE_{ej}$ integration. |
 
 ### Oscillatory Integral Parameters
 
@@ -347,7 +398,7 @@ When prompted, enter:
 | `min_grid_fraction` | 0.1 | Minimum match point as fraction of grid: `r_m ≥ 0.1 × r_max`. |
 | `k_threshold` | 0.5 | Total momentum threshold for Filon quadrature: if `k_i + k_f > threshold`, use Filon. |
 
-### GPU Parameters
+### Hardware optimization Parameters
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
@@ -357,6 +408,7 @@ When prompted, enter:
 | | | • **full**: Force full matrix construction (fastest, may OOM) |
 | | | • **block**: Force block-wise (slowest, constant memory) |
 | `gpu_memory_threshold` | 0.7 | Maximum fraction of free GPU memory to use for matrix allocation. |
+| `max_chi_cached` | 20 | **(v2.5+)** LRU cache size for GPU continuum wave objects. |
 | `n_workers` | "auto" | CPU worker count for multiprocessing: |
 | | | • **auto**: Auto-detect with balance (`min(cpu_count, 8)`) |
 | | | • **max**: Use all available CPU cores |
@@ -380,22 +432,6 @@ GPU mode: Filon/full-matrix
 
 Outputs: `results_<run>_exc.json`, `results_<run>_ion.json` in project root. Excitation entries include angular grids (`theta_deg`) and both raw/calibrated DCS in a.u. for later plotting. Ionization entries include SDCS data and optional TDCS entries (`angles_deg`, `values`).
 
-### Plotting Results
-```bash
-python plotter.py [style] [results_file.json]
-```
-Styles: `std` (eV/cm²), `atomic` (Ha/a₀²), `article` (E/E_thr), `ev_au`
-
-### Potential Fitting
-```bash
-python fit_potential.py
-```
-Features:
-- **Reference Protection**: Parameters from Tong-Lin (2005) are marked with `source: "Tong-Lin (2005) Table 1"` and show a warning if you try to re-fit them
-- **Global Optimizer**: Uses `differential_evolution` for robust fitting
-- **Proper Bounds**: Allows negative a₃, a₅ (required for He, Ne, Ar)
-- Auto-saves to `atoms.json`
-
 ## Atom Library (`atoms.json`)
 
 Contains SAE model potential parameters for various atoms:
@@ -416,15 +452,6 @@ Contains SAE model potential parameters for various atoms:
 2. Enter atomic data (Z, Zc, n, l, binding energy)
 3. Wait for optimization (~30-60s)
 4. Parameters are automatically saved to `atoms.json`
-
-## Calibration (Tong / DWBA)
-- Calibration applies to excitation only; ionization uses raw DWBA results.
-- Tong model parameters:
-  - Dipole-allowed (|Δl|=1): Set “np” (β=1.32, γ=−1.08, δ=−0.04)
-  - Dipole-forbidden (|Δl|≠1): Set “ns” (β=0.7638, γ=1.1759, δ=0.6706)
-- Classification is automatic based on |l_f−l_i|.
-- α fitted per channel at 1000 eV.
-- Per-energy normalization: `C(E) = σ_Tong(E) / σ_DWBA(E)`. TCS are saved as raw and calibrated; to obtain calibrated DCS multiply raw DCS by `calibration_factor`.
 
 ## Debugging and Logging
 
@@ -710,9 +737,6 @@ gpu_cache.clear()
 - Pre-computed ratio/log_ratio matrices for kernel construction
 - Phase-adaptive subdivision with constant Δφ = π/2
 - **GPU:** Pure-GPU interpolation via `cp.interp` (no CPU transfers)
-
-
-
 
 ### Numerical Safeguards
 

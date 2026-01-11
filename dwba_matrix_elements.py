@@ -469,6 +469,44 @@ def radial_ME_all_L(
             idx_limit, idx_turn if 'idx_turn' in dir() else 0, MIN_IDX
         )
         idx_limit = MIN_IDX
+    # ==========================================================================
+    # BOUND STATE EXTENT CHECK (CRITICAL for "advanced" method)
+    # ==========================================================================
+    # The "advanced" oscillatory method factorizes the 2D integral as:
+    #   I_out = moment_L * ∫[r_m,∞] χ_i χ_f / r^(L+1) dr
+    # 
+    # This is ONLY valid when the bound states u_i, u_f are negligible beyond r_m!
+    # If significant bound state density exists beyond r_m, the factorization
+    # produces WRONG results (factor of ~10x error for H 2s).
+    #
+    # Solution: Use the MAX of individual state extents (conservative estimate).
+    # For H 1s→2s: 1s extends to ~4 a₀, 2s to ~13 a₀, so use 13 a₀.
+    # ==========================================================================
+    
+    BOUND_STATE_THRESHOLD = 0.99
+    w_trapz = grid.w_trapz if hasattr(grid, 'w_trapz') else np.gradient(r)
+    
+    # Find 99% extent for EACH bound state individually, then take max
+    idx_99_max = 0
+    for u_state in [u_i, u_f]:
+        u_sq = u_state ** 2
+        if np.sum(u_sq) > 1e-30:
+            prob_cum = np.cumsum(u_sq * w_trapz)
+            prob_cum /= (prob_cum[-1] + 1e-300)
+            idx_99 = np.searchsorted(prob_cum, BOUND_STATE_THRESHOLD)
+            idx_99_max = max(idx_99_max, idx_99)
+    
+    if idx_99_max > idx_limit:
+        r_old = r[idx_limit - 1] if idx_limit > 0 else r[0]
+        r_new = r[idx_99_max] if idx_99_max < len(r) else r[-1]
+        logger.debug(
+            "Bound state extent check: extending r_m from %.1f to %.1f a₀ "
+            "(idx %d -> %d) to cover 99%% of bound state density.",
+            r_old, r_new, idx_limit, idx_99_max + 1
+        )
+        idx_limit = idx_99_max + 1
+    
+    
     
     # ==========================================================================
     # ASYMPTOTIC VALIDATION

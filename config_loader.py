@@ -280,7 +280,7 @@ def load_config(path: Union[str, Path]) -> DWBAConfig:
             r_max=g.get('r_max', 200.0),
             n_points=g.get('n_points', 3000),
             r_max_scale_factor=g.get('r_max_scale_factor', 2.5),
-            n_points_max=g.get('n_points_max', 8000),
+            n_points_max=g.get('n_points_max', 15000),
             min_points_per_wavelength=g.get('min_points_per_wavelength', 15)
         )
     

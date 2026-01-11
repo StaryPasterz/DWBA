@@ -6,7 +6,60 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [v2.7] — 2026-01-10 — Calibration & Stability Fixes
+## [v2.8] — 2026-01-11 — Oscillatory Integral Stability Fixes — Edit_78 (`f757d1d`)
+
+Critical fixes for oscillatory integral factorization and phase calculations at high energies.
+
+### Critical Bug Fixes
+
+**Bug #6: Bound State Extent Check (CRITICAL)**
+- **Files**: `dwba_matrix_elements.py`
+- **Problem**: The "advanced" oscillatory method factorized the 2D radial integral assuming bound states are localized within `r_match`. For H 1s→2s, `r_match ≈ 4 a₀` but the 2s state extends to ~13 a₀. This caused **~10x underestimation** of radial integrals.
+- **Root Cause**: Match point was determined by continuum wave properties (potential decay), ignoring bound state extent.
+- **Fix**: Added bound state extent check that computes 99% cumulative density radius for **each** bound state independently, then uses MAX. For H 1s→2s: `max(4.2 a₀, 12.7 a₀) = 12.7 a₀`.
+- **Impact**: "Legacy" and "advanced" methods now agree within 5% (previously differed by 10x).
+
+**Bug #7: Centrifugal Phase Corrections**
+- **Files**: `oscillatory_integrals.py`
+- **Problem**: Asymptotic phase calculation for oscillatory tail integrals ignored centrifugal terms, causing phase mismatch for high-L partial waves.
+- **Fix**: Added first-order centrifugal correction to all phase functions:
+  - `compute_asymptotic_phase`: Added `-l(l+1)/(2kr)` term
+  - `compute_phase_derivative`: Added `+l(l+1)/(2kr²)` term
+  - `compute_phase_second_derivative`: Added `-l(l+1)/(kr³)` term
+  - `dwba_outer_integral_1d`: Updated `phi_minus`, `phi_plus` and their derivatives to include centrifugal terms for both incoming and outgoing waves.
+- **Impact**: Improved tail integral accuracy for L > 5.
+
+**Bug #8: Centrifugal Potential in Match Point Validation**
+- **Files**: `dwba_matrix_elements.py`
+- **Problem**: Asymptotic validation only checked `U_i`, `U_f` potentials against kinetic energy threshold, ignoring the dominant centrifugal barrier `L(L+1)/(2r²)` for high L.
+- **Fix**: `get_max_V_eff()` now includes centrifugal term: `V_eff = max(|U_i|, |U_f|) + L(L+1)/(2r²)`.
+- **Impact**: Proper asymptotic validation for high partial waves.
+
+### Diagnostic Improvements
+
+**New Diagnostic Scripts** (`debug/` folder):
+- `diag_upturn.py`: Analyzes partial wave convergence at specific energies, flags non-monotonic behavior
+- `diag_radial_integrals.py`: Detailed I_L breakdown across energy range
+- `compare_methods.py`: Side-by-side comparison of "legacy" vs "advanced" methods
+
+**Physical Findings**:
+- **Cross section dip at 11-17 eV**: Confirmed as physical node in I₀ integral (not numerical artifact)
+- **L=5 "upturn" at 69 eV**: Confirmed as physical interference pattern (radial integrals cross zero between L=3-4, peak at L=5)
+
+### Configuration Changes
+
+**Updated** `n_points_max` default: 8000 → **15000** in:
+- `DW_main.py`
+- `config_loader.py`
+- `H2s.yaml`
+- `examples/config_excitation.yaml`
+- `examples/config_ionization.yaml`
+
+This allows better grid resolution for high-energy (>100 eV) calculations.
+
+---
+
+## [v2.7] — 2026-01-10 — Calibration & Stability Fixes — Edit_77 (`aaff973`)
 
 Critical bug fixes improving calibration accuracy and numerical stability.
 
@@ -73,7 +126,7 @@ Critical bug fixes improving calibration accuracy and numerical stability.
 
 ---
 
-## [v2.6] — 2026-01-03 — Adaptive Grid Strategies
+## [v2.6] — 2026-01-03 — Adaptive Grid Strategies — Edit_73 (`d077221`)
 
 Introduces user-selectable strategies for radial grid adaptation, optimizing performance and accuracy.
 
@@ -113,7 +166,7 @@ New `grid.strategy` configuration option with 3 modes:
 
 ---
 
-## [v2.6.2] — 2026-01-03 — Logging & Validation Improvements
+## [v2.6.2] — 2026-01-03 — Logging & Validation Improvements — Edit_74 (`8c55cba`)
 
 Quality-of-life improvements for logging readability, physical validation, and documentation.
 
@@ -177,7 +230,7 @@ Quality-of-life improvements for logging readability, physical validation, and d
 
 ---
 
-## [v2.5] — 2026-01-03 — GPU Optimization V3
+## [v2.5] — 2026-01-03 — GPU Optimization V3 — Edit_72 (`43d816d`)
 
 Major GPU performance improvements reducing synchronization overhead and adding energy-level caching.
 
