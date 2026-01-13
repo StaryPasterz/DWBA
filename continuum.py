@@ -1317,6 +1317,7 @@ def solve_continuum_wave(
     rtol: float = 1e-6,
     atol: float = 1e-8,
     phase_extraction_method: str = "hybrid",  # v2.11+: "hybrid", "logderiv", or "lsq"
+    solver: str = "numerov",  # v2.12+: "numerov", "johnson", or "rk45"
 ) -> ContinuumWave:
     """
     Solve for the distorted-wave scattering solution χ_l(k,r) in channel j.
@@ -1552,154 +1553,155 @@ def solve_continuum_wave(
     # ==========================================================================
     # NUMEROV PROPAGATION (Primary Method)
     # ==========================================================================
-    # Numerov is O(h⁶) accurate and more stable than log-derivative 
-    # reconstruction. Uses Q(r) = l(l+1)/r² + 2U(r) - k².
+    # ==========================================================================
+    # v2.12+: CONFIGURABLE SOLVER DISPATCH WITH FALLBACK CHAIN
+    # ==========================================================================
+    # User can select primary solver (numerov, johnson, rk45).
+    # The other two solvers serve as automatic fallbacks in defined order.
     # ==========================================================================
     
-    # Build Q(r) array for Numerov
-    # Note: ell and k2 already defined above in turning point detection
+    # Build solver order: primary first, then remaining two
+    ALL_SOLVERS = ["numerov", "johnson", "rk45"]
+    primary_solver = solver.lower()
+    if primary_solver not in ALL_SOLVERS:
+        logger.warning(f"Unknown solver '{solver}', defaulting to 'numerov'")
+        primary_solver = "numerov"
+    
+    # Build fallback chain: primary + remaining solvers in order
+    solver_order = [primary_solver] + [s for s in ALL_SOLVERS if s != primary_solver]
+    
+    # Helper functions for each solver
+    def _run_numerov():
+        """Run Numerov propagator and return (chi, dchi, success)."""
+        chi_out, log_scale = _numerov_propagate(
+            r_eval, Q_eval, chi0, chi1, 
+            renorm_interval=adaptive_renorm_interval, renorm_scale=1e50
+        )
+        dchi_out = np.zeros_like(chi_out)
+        for i in range(len(chi_out)):
+            dchi_out[i] = _derivative_5point(chi_out, r_eval, i)
+        return chi_out, dchi_out, True
+    
+    def _run_johnson():
+        """Run Johnson log-derivative solver and return (chi, dchi, success)."""
+        U_eval_fb = U_arr[idx_start:]
+        r_eval_fb = r[idx_start:]
+        chi_out, dchi_out = _johnson_log_derivative_solve(
+            r_eval_fb, U_eval_fb, l, k_au, 
+            renorm_interval=max(30, adaptive_renorm_interval // 2)
+        )
+        return chi_out, dchi_out, True
+    
+    def _run_rk45():
+        """Run RK45 solver and return (chi, dchi, success)."""
+        r0_int = float(r[idx_start])
+        r_eval_rk = r[idx_start:]
+        
+        if abs(z_ion) < 1e-3:
+            y0 = _initial_conditions_high_L(r0_int, l, k_au, z_ion=0.0)
+        else:
+            y0 = _initial_conditions_high_L(r0_int, l, k_au, z_ion=z_ion)
+        
+        rhs = _schrodinger_rhs_factory(l=l, U_spline=U_spline, k_au=k_au)
+        
+        wavelength = 2.0 * np.pi / k_au if k_au > 1e-3 else 1.0
+        max_step_val = min(wavelength / 20.0, 0.2)
+        
+        sol = solve_ivp(
+            fun=rhs,
+            t_span=(r0_int, float(r_eval_rk[-1])),
+            y0=y0,
+            t_eval=r_eval_rk,
+            method="RK45",
+            max_step=max_step_val,
+            rtol=adaptive_rtol,
+            atol=adaptive_atol,
+            dense_output=False
+        )
+        
+        if sol.success:
+            return sol.y[0, :], sol.y[1, :], True
+        else:
+            return None, None, False
+    
+    # Map solver names to runner functions
+    solver_runners = {
+        "numerov": _run_numerov,
+        "johnson": _run_johnson,
+        "rk45": _run_rk45
+    }
+    
+    # Build Q(r) array for Numerov (needed for numerov, harmless for others)
     Q_full = ell * (ell + 1.0) / (r * r) + 2.0 * U_arr - k2
     Q_eval = Q_full[idx_start:]
     
-    # Initial conditions: χ ~ r^(l+1) at small r
-    # ADAPTIVE: Check if potential is strong even at idx_start
+    # Initial conditions for Numerov
     r0_init = r_eval[0]
     r1_init = r_eval[1]
     h_init = r1_init - r0_init
     S0_init = ell * (ell + 1.0) / (r0_init * r0_init) + 2.0 * U_arr[idx_start] - k2
     
     if S0_init > 0:
-        # Inside barrier (even at origin for strong potential) - use WKB
         kappa = np.sqrt(S0_init)
-        chi0 = 1e-20  # Small amplitude
+        chi0 = 1e-20
         chi1 = chi0 * np.exp(kappa * h_init)
         logger.debug(f"L={l}: Using WKB initial conditions (S0={S0_init:.2f}, κ={kappa:.4f})")
     else:
-        # Outside barrier - use standard regular boundary condition
         if ell < 20:
             chi0 = r0_init ** (ell + 1.0)
             chi1 = r1_init ** (ell + 1.0)
         else:
-            # For very high l, use safer scaled values
             chi0 = 1e-10
             chi1 = chi0 * (r1_init / r0_init) ** (ell + 1.0)
     
-    # Propagate using Numerov (with adaptive precision for high energies)
-    chi_computed, log_scale = _numerov_propagate(
-        r_eval, Q_eval, chi0, chi1, 
-        renorm_interval=adaptive_renorm_interval, renorm_scale=1e50
-    )
+    # Try solvers in order until one succeeds
+    chi_computed = None
+    dchi_computed = None
+    method_used = None
     
-    # Compute derivative using central difference with local step sizes
-    dchi_computed = np.zeros_like(chi_computed)
-    for i in range(len(chi_computed)):
-        dchi_computed[i] = _derivative_5point(chi_computed, r_eval, i)
-    
-    method_used = "Numerov"
-    
-    # Place in full grid
-    if idx_start > 0:
-        chi_raw = np.zeros_like(r, dtype=float)
-        chi_raw[idx_start:] = chi_computed
-        dchi_raw = np.zeros_like(r, dtype=float)
-        dchi_raw[idx_start:] = dchi_computed
-    else:
-        chi_raw = chi_computed
-        dchi_raw = dchi_computed
-
-
-    # Sanity: remove any global sign if necessary (not physically important).
-    # We won't flip sign here because the asymptotic fit will absorb it into δ_l anyway.
-
-    # ==========================================================================
-    # PHASE EXTRACTION VIA LOG-DERIVATIVE MATCHING
-    # ==========================================================================
-    #
-    # Instead of fitting over an entire tail region, we match at a single point
-    # r_m where the potential is negligible. This is more stable and accurate.
-    #
-    # Formula: tan(δ_l) = [Y_m · j_l - j_l'] / [n_l' - Y_m · n_l]
-    # where Y_m = χ'(r_m) / χ(r_m) is the log-derivative from numerical propagation.
-    #
-    # ==========================================================================
-    
-    # --- Step 1: Find optimal match point (must be beyond idx_start) ---
-    idx_match, r_m = _find_match_point(r, U_arr, k_au, l, threshold=1e-4, idx_start=idx_start)
-    
-    # Get log-derivative at match point
-    chi_m = chi_raw[idx_match]
-    dchi_m = dchi_raw[idx_match]
-    
-    if abs(chi_m) < 1e-100:
-        # =======================================================================
-        # FALLBACK CHAIN: Numerov failed -> Try Johnson -> Try RK45
-        # =======================================================================
-        logger.debug(f"L={l}: Numerov produced χ≈0, trying Johnson fallback")
-        
-        # --- Fallback 1: Johnson log-derivative method ---
-        U_eval = U_arr[idx_start:]
-        r_eval_fb = r[idx_start:]
-        chi_johnson, dchi_johnson = _johnson_log_derivative_solve(
-            r_eval_fb, U_eval, l, k_au, 
-            renorm_interval=max(30, adaptive_renorm_interval // 2)
-        )
-        
-        if idx_start > 0:
-            chi_raw = np.zeros_like(r, dtype=float)
-            chi_raw[idx_start:] = chi_johnson
-            dchi_raw = np.zeros_like(r, dtype=float)
-            dchi_raw[idx_start:] = dchi_johnson
-        else:
-            chi_raw = chi_johnson
-            dchi_raw = dchi_johnson
-        
-        chi_m = chi_raw[idx_match]
-        dchi_m = dchi_raw[idx_match]
-        method_used = "Johnson (fallback)"
-        
-        if abs(chi_m) < 1e-100:
-            # --- Fallback 2: RK45 ---
-            logger.debug(f"L={l}: Johnson also produced χ≈0, trying RK45")
+    for solver_name in solver_order:
+        try:
+            chi_out, dchi_out, success = solver_runners[solver_name]()
             
-            r0_int = float(r[idx_start])
-            r_eval_rk = r[idx_start:]
+            if not success:
+                logger.debug(f"L={l}: {solver_name.capitalize()} solver returned failure, trying next")
+                continue
             
-            if abs(z_ion) < 1e-3:
-                y0 = _initial_conditions_high_L(r0_int, l, k_au, z_ion=0.0)
+            # Place in full grid
+            if idx_start > 0:
+                chi_raw = np.zeros_like(r, dtype=float)
+                chi_raw[idx_start:] = chi_out
+                dchi_raw = np.zeros_like(r, dtype=float)
+                dchi_raw[idx_start:] = dchi_out
             else:
-                y0 = _initial_conditions_high_L(r0_int, l, k_au, z_ion=z_ion)
+                chi_raw = chi_out
+                dchi_raw = dchi_out
             
-            rhs = _schrodinger_rhs_factory(l=l, U_spline=U_spline, k_au=k_au)
+            # Find match point and test solution
+            idx_match, r_m = _find_match_point(r, U_arr, k_au, l, threshold=1e-4, idx_start=idx_start)
+            chi_m = chi_raw[idx_match]
+            dchi_m = dchi_raw[idx_match]
             
-            wavelength = 2.0 * np.pi / k_au if k_au > 1e-3 else 1.0
-            max_step_val = min(wavelength / 20.0, 0.2)
+            if abs(chi_m) < 1e-100:
+                is_fallback = solver_name != primary_solver
+                fallback_str = " (fallback)" if is_fallback else ""
+                logger.debug(f"L={l}: {solver_name.capitalize()}{fallback_str} produced χ≈0, trying next")
+                continue
             
-            sol = solve_ivp(
-                fun=rhs,
-                t_span=(r0_int, float(r_eval_rk[-1])),
-                y0=y0,
-                t_eval=r_eval_rk,
-                method="RK45",
-                max_step=max_step_val,
-                rtol=adaptive_rtol,  # v2.6.2: adaptive precision
-                atol=adaptive_atol,
-                dense_output=False
-            )
+            # Success!
+            is_fallback = solver_name != primary_solver
+            method_used = solver_name.capitalize() + (" (fallback)" if is_fallback else "")
+            chi_computed = chi_raw
+            dchi_computed = dchi_raw
+            break
             
-            if sol.success:
-                chi_raw[idx_start:] = sol.y[0, :]
-                dchi_raw[idx_start:] = sol.y[1, :]
-                method_used = "RK45 (fallback)"
-                
-                chi_m = chi_raw[idx_match]
-                dchi_m = dchi_raw[idx_match]
-                
-                if abs(chi_m) < 1e-100:
-                    logger.warning(f"L={l}: All solvers (Numerov, Johnson, RK45) failed")
-                    return None
-            else:
-                logger.warning(f"L={l}: RK45 fallback also failed (solver error)")
-                return None
+        except Exception as e:
+            logger.debug(f"L={l}: {solver_name.capitalize()} raised exception: {e}, trying next")
+            continue
+    
+    if chi_computed is None:
+        logger.warning(f"L={l}: All solvers ({', '.join(solver_order)}) failed")
+        return None
 
 
     

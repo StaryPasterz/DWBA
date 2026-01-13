@@ -6,6 +6,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v2.12] — 2026-01-13 — LOCAL Adaptive Grid Fix
+
+**Critical bug fix** resolving "index out of bounds" errors when using LOCAL adaptive grid strategy.
+
+### 🔴 Critical Bug Fix
+
+**Turning point index overflow in LOCAL adaptive mode** (`dwba_matrix_elements.py`):
+- **Bug**: When `r_turn > r_max` (high L partial waves on small grids), `searchsorted()` returned `N_grid`, causing `MIN_IDX = N_grid + 20` → out of bounds
+- **Impact**: LOCAL adaptive strategy failed with "index N+1 out of bounds for size N" errors
+- **Root Cause**: `idx_turn + 20` safety margin exceeded array bounds when turning point was beyond grid
+- **Fix**: Added clamping: `idx_turn = min(idx_turn, N_grid - 20)` and `MIN_IDX = min(..., N_grid)`
+- **Affected functions**:
+  - `radial_ME_all_L()` (CPU path, line ~475)
+  - `radial_ME_all_L_gpu()` (GPU path, line ~1182)
+
+> [!NOTE]
+> This bug only affected LOCAL adaptive mode. GLOBAL and MANUAL strategies were unaffected.
+
+### Diagnostic Improvements
+
+**Enhanced debug logging** for grid/array size tracking:
+- `driver.py`: Added pre-GPU-integrals logging with all array sizes and `idx_match` values
+- `dwba_matrix_elements.py`: Entry-point logging with full input validation details
+- `continuum.py`: ContinuumWave creation logging with `chi_size`, `idx_match`, `grid_size`
+- `DW_main.py`: Pre-calculation logging with `prep` array sizes
+
+### Files Modified
+
+| File | Change |
+|------|--------|
+| `dwba_matrix_elements.py` | Critical bounds fix in both CPU and GPU paths; added entry-point debug logging |
+| `driver.py` | Added pre-GPU-integrals debug logging |
+| `continuum.py` | Added ContinuumWave creation logging |
+| `DW_main.py` | Added pre-calculation prep size logging |
+
+---
+
 ## [v2.11] — 2026-01-13 — Phase Extraction Fix & Hybrid Method
 
 **Critical bug fix** in phase shift extraction and new hybrid approach for improved robustness.

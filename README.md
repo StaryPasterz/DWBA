@@ -41,6 +41,7 @@ Comprehensive Python suite for computing electron–atom excitation and ionizati
 - **High-Accuracy Integrals**: Support for **Full-Split** quadrature with full-grid integration parity across CPU and GPU paths.
 - **Bound State Extent Handling** *(v2.8)*: Automatic detection of bound state extent ensures match point is beyond 99% of density, critical for accurate oscillatory integral factorization.
 - **Centrifugal Phase Corrections** *(v2.8)*: First-order centrifugal terms in asymptotic phase for stable high-L partial wave calculations.
+- **LOCAL Adaptive Grid Strategy** *(v2.12)*: Per-energy optimal grid sizing now fully functional with turning point bounds safeguards.
 - **Diagnostic Tools**: Comprehensive scripts in `debug/` for analyzing partial wave convergence, radial integrals, and method comparisons.
 - **Progress Reporting**: Real-time feedback and ETA for long-running partial wave summations.
 
@@ -429,11 +430,12 @@ The code supports three strategies for determining the radial grid (`r_max`, `n_
    - **Pros**: Balanced performance/accuracy, single target prep.
    - **Cons**: Excessive grid size for high-energy points in wide scans.
 
-2. **Local**
+2. **Local** *(v2.12 bounds fix)*
    - Recalculates optimal grid parameters for *each* energy point.
    - Re-runs target preparation (bound states, core potential) for every point.
    - **Pros**: Most accurate, optimal grid size per energy.
    - **Cons**: Slower due to repeated target preparation.
+   - *Note: v2.12 fixed turning point overflow when high-L waves extend beyond small grids.*
 
 3. **Manual**
    - Uses fixed `r_max` and `n_points` defined in configuration.
@@ -854,6 +856,7 @@ The oscillatory integral module includes automatic safeguards:
 | Phase unstable warnings | Normal for L near cutoff; results still usable |
 | "r_m not in asymptotic region" | Fixed in v2.1 - relaxed threshold to 1% |
 | Non-finite integral warnings | Check input wavefunctions; reduce L_max |
+| LOCAL "index out of bounds" | Fixed in v2.12 - turning point bounds now clamped |
 
 ## Changelog
 

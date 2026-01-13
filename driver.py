@@ -103,7 +103,9 @@ OSCILLATORY_CONFIG = {
     # Memory threshold for auto mode: fraction of free GPU memory to use
     "gpu_memory_threshold": 0.7,
     # CPU worker count: "auto" = auto-detect (min(cpu_count, 8)), int > 0 = explicit count
-    "n_workers": "auto"
+    "n_workers": "auto",
+    # v2.12+: ODE solver for continuum waves: "numerov", "johnson", "rk45"
+    "solver": "numerov"
 }
 
 # =============================================================================

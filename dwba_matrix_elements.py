@@ -472,7 +472,9 @@ def radial_ME_all_L(
         idx_turn = np.searchsorted(r, r_turn)
         
         # Match point should be beyond turning point with safety margin
-        MIN_IDX = max(idx_turn + 20, int(N_grid * min_grid_fraction))  # Past turning + minimum grid fraction
+        # CRITICAL: Clamp idx_turn to prevent MIN_IDX exceeding N_grid (LOCAL adaptive fix)
+        idx_turn = min(idx_turn, N_grid - 20)  # Ensure room for +20 safety margin
+        MIN_IDX = min(max(idx_turn + 20, int(N_grid * min_grid_fraction)), N_grid)
     else:
         # Very low energy: use 10% of grid as fallback
         MIN_IDX = max(1, int(N_grid * min_grid_fraction))
@@ -1179,7 +1181,9 @@ def radial_ME_all_L_gpu(
     if k_eff > 1e-3:
         r_turn = (max(l_i, l_f) + 0.5) / k_eff
         idx_turn = np.searchsorted(r, r_turn)
-        MIN_IDX = max(idx_turn + 20, int(N_grid * min_grid_fraction))
+        # CRITICAL: Clamp idx_turn to prevent MIN_IDX exceeding N_grid (LOCAL adaptive fix)
+        idx_turn = min(idx_turn, N_grid - 20)  # Ensure room for +20 safety margin
+        MIN_IDX = min(max(idx_turn + 20, int(N_grid * min_grid_fraction)), N_grid)
     else:
         MIN_IDX = max(1, int(N_grid * min_grid_fraction))
     
