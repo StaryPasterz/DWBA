@@ -380,6 +380,7 @@ All numerical defaults are organized by category and displayed before calculatio
 | `min_grid_fraction` | `0.1` | Minimum match point fraction: `r_m ≥ 0.1 × r_max` |
 | `k_threshold` | `0.5` | Momentum threshold for Filon/Levin activation |
 | `max_chi_cached` | `20` | LRU cache size for continuum waves (v2.5+) |
+| `phase_extraction` | `"hybrid"` | Phase extraction method: `hybrid` (cross-validated), `logderiv`, `lsq` *(v2.11+)* |
 
 ---
 
@@ -568,9 +569,9 @@ DWBA COMPREHENSIVE DIAGNOSTIC SUITE
 
 The classical turning point constraint is critical for numerical stability:
 
-$$r_t(L) = \frac{L + 0.5}{k}$$    # Turning point for partial wave L
+$$r_t(L) = \frac{L + 0.5}{k}$$    
 
-$$L_{max} \le k \cdot \frac{r_{max}}{C} - 0.5 \quad (C \approx 2.5)$$    # Safe L_max for given r_max (C ≈ 2.5)
+$$L_{max} \le k \cdot \frac{r_{max}}{C} - 0.5 \quad (C \approx 2.5)$$    
 
 The code automatically enforces this via `compute_safe_L_max()`:
 - At **low energies** (small $k$): $L_{max}$ is automatically reduced
@@ -584,21 +585,27 @@ The code automatically enforces this via `compute_safe_L_max()`:
 
 ### Adaptive Grid (Automatic $r_{max}$ Scaling)
 
-The interactive scans (`DW_main.py`) now **automatically compute optimal $r_{max}$** based on:
-1. Minimum energy in the scan (lowest kinetic energy = most restrictive)
-2. Requested $L_{max}$ for projectile
-3. Classical turning point formula
+The code automatically computes optimal grid parameters via `calculate_optimal_grid_params()`:
 
-$$k_{min} = \sqrt{2(E_{min} - E_{threshold})}$$
+**Step 1: Turning Point Requirement**
+$$r_{max} \ge C \cdot \frac{L_{max} + 0.5}{k} \quad (C = 2.5)$$
 
-$$r_{max}^{opt} = \max\left(200, \; C \cdot \frac{L_{max} + 0.5}{k_{min}}\right)$$    # C ≈ 2.5
+**Step 2: Wavelength Sampling (v2.7+)**
 
-$$n_{points} = 3000 \times \frac{r_{max}}{200}$$
+For high-energy scans, ensure sufficient points per wavelength:
+$$\lambda = \frac{2\pi}{k}, \quad dr_{max} = \frac{\lambda}{N_{pts/\lambda}}$$
 
-This ensures **all energies in the scan** have sufficient grid extent. The console shows:
-```
-  • Adaptive Grid: E_min=15.0 eV, k_min=0.27 -> r_max=480, n_points=7200
-```
+At $r_{check} = 0.7 \cdot r_{max}$, the exponential grid step is:
+$$dr(r) \approx r \cdot \frac{\ln(r_{max}/r_{min})}{n_{points}}$$
+
+Required points: $n_{pts} \ge r_{check} \cdot \ln(ratio) / dr_{max}$
+
+**Step 3: Density Scaling**
+
+If $r_{max}$ increases beyond base, scale points proportionally:
+$$n_{points} = \max\left(n_{base}, \; \frac{n_{base}}{r_{base}} \cdot r_{max}\right)$$
+
+**Final**: Apply memory cap `n_points_max` (default 15000).
 
 ### Radial Solver: Numerical Methods
 

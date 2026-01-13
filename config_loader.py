@@ -103,6 +103,8 @@ class OscillatoryConfig:
     min_grid_fraction: float = 0.1
     k_threshold: float = 0.5
     max_chi_cached: int = 20  # v2.5: LRU cache size for GPU continuum waves
+    # v2.11: Phase extraction method selection
+    phase_extraction: Literal["hybrid", "logderiv", "lsq"] = "hybrid"
 
 @dataclass
 class HardwareConfig:
@@ -321,7 +323,8 @@ def load_config(path: Union[str, Path]) -> DWBAConfig:
             phase_increment=osc.get('phase_increment', 1.5708),
             min_grid_fraction=osc.get('min_grid_fraction', 0.1),
             k_threshold=osc.get('k_threshold', 0.5),
-            max_chi_cached=osc.get('max_chi_cached', 20)
+            max_chi_cached=osc.get('max_chi_cached', 20),
+            phase_extraction=osc.get('phase_extraction', 'hybrid')  # v2.11+
         )
     
     # Hardware (new section, with backward compatibility for oscillatory GPU params)
@@ -455,6 +458,7 @@ def config_to_params_dict(config: DWBAConfig) -> Dict[str, Dict[str, Any]]:
             'min_grid_fraction': config.oscillatory.min_grid_fraction,
             'k_threshold': config.oscillatory.k_threshold,
             'max_chi_cached': config.oscillatory.max_chi_cached,  # v2.5+
+            'phase_extraction': config.oscillatory.phase_extraction,  # v2.11+
         },
         'hardware': {
             'gpu_block_size': config.hardware.gpu_block_size,

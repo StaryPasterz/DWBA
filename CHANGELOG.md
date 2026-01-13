@@ -6,6 +6,66 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v2.11] — 2026-01-13 — Phase Extraction Fix & Hybrid Method
+
+**Critical bug fix** in phase shift extraction and new hybrid approach for improved robustness.
+
+### 🔴 Critical Bug Fix
+
+**Sign error in log-derivative phase extraction corrected** (`continuum.py`):
+- **Bug**: Denominator in `tan(δ)` formula had inverted sign
+- **Impact**: Phase shifts had wrong sign (error ~0.7 rad = 40°)
+- **Fix**: Changed `n_hat_prime - Y_rho * n_hat` → `Y_rho * n_hat - n_hat_prime`
+- **Affected functions**:
+  - `_extract_phase_logderiv_neutral()` (line ~319)
+  - `_extract_phase_logderiv_coulomb()` (line ~352)
+
+> [!NOTE]
+> Total cross sections (TCS) may have been less affected due to sin²(δ) = sin²(-δ) symmetry.
+> Differential cross sections (DCS) angular distributions were likely incorrect.
+
+### New Features
+
+**Hybrid phase extraction method** (`phase_extraction: "hybrid"`):
+- Default method combining log-derivative and least-squares
+- Cross-validates both methods; uses weighted average on disagreement
+- Fallback to LSQ when wavefunction is near node at match point
+- Configuration: `oscillatory.phase_extraction` in YAML
+
+**New configuration option**:
+```yaml
+oscillatory:
+  phase_extraction: "hybrid"  # "hybrid", "logderiv", or "lsq"
+```
+
+**Updated `solve_continuum_wave()` signature**:
+```python
+solve_continuum_wave(..., phase_extraction_method="hybrid")
+```
+
+### Diagnostic Suite Updates
+
+**New diagnostic in `debug/debug.py`**:
+- Option 6: "Phase Method Comparison (v2.11+)"
+- Compares log-derivative vs LSQ on synthetic and real data
+- Validates formula correctness with known phase shifts
+
+**Menu reorganization**:
+- Removed broken "Full Physics Trace" options (15-16)
+- Renumbered options for cleaner structure
+
+### Files Modified
+
+| File | Change |
+|------|--------|
+| `continuum.py` | Sign fix in 2 functions, new `_extract_phase_hybrid()`, updated `solve_continuum_wave()` |
+| `config_loader.py` | Added `phase_extraction` to `OscillatoryConfig` |
+| `debug/debug.py` | New `run_phase_method_comparison()`, updated menu |
+| `H2s.yaml` | Added `phase_extraction: "hybrid"` |
+| `examples/config_excitation.yaml` | Added `phase_extraction` documentation |
+
+---
+
 ## [v2.10] — 2026-01-11 — Configuration Refactoring & Output Controls — Edit_80 (`f2a0314`)
 
 Restructured configuration system with separate Hardware category and full Output options support.

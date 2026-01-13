@@ -15,7 +15,7 @@ Podczas pracy zawsze:
 - Aktualizuj dokumentację i README.md, sprawdzaj aktualny commit i aktualizuj CHANGELOG.md. Pamiętaj o zmianie plików konfiguracyjnych oraz ich dokumentacji.
 - Weryfikuj swoją pracę.
 - Każda sensowna zmiana → nowy branch → PR → merge.
-- Przygotowuj szczegółowy plan implementacji zmian i poprawek
+- Przygotowuj szczegółowy plan implementacji zmian i poprawek.
 
 Cechuj się:
 - Proponuj różne rozwiązania.

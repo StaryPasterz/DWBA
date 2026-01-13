@@ -45,8 +45,8 @@ excitation:
   pilot_energy_eV: 1000  # [eV] Calibration pilot energy
   # Pilot light mode (v2.5+) - "auto" = dynamic scaling based on energy, int = explicit value
   # Note (v2.7+): "auto" calculates L_max from k*r_max to ensure convergence at high energies
-  pilot_L_max_integrals: "auto"    # "auto" or int (e.g., 8)
-  pilot_L_max_projectile: "auto"   # "auto" or int (e.g., 30)
+  pilot_L_max_integrals: 8    # "auto" or int (e.g., 8)
+  pilot_L_max_projectile: 30   # "auto" or int (e.g., 30)
   pilot_n_theta: 50                # [count] TCS only, DCS not needed
 
 oscillatory:
@@ -55,12 +55,13 @@ oscillatory:
   phase_increment: 1.5708        # [rad] Phase increment (π/2)
   min_grid_fraction: 0.1         # [dimensionless] Min match point fraction
   k_threshold: 0.5               # [a.u.] Momentum threshold for Filon/Levin
-  max_chi_cached: 30             # [count] LRU cache size for continuum waves
+  max_chi_cached: 20             # [count] LRU cache size for continuum waves
+  phase_extraction: "hybrid"     # [v2.11+] "hybrid", "logderiv", or "lsq"
 
 hardware:
   gpu_block_size: "auto"         # "auto" = auto-tune, int = explicit size
   gpu_memory_mode: "auto"        # "auto" (smart), "full" (fast), "block" (safe)
-  gpu_memory_threshold: 0.7      # [dimensionless] Max VRAM fraction to use
+  gpu_memory_threshold: 0.9      # [dimensionless] Max VRAM fraction to use
   n_workers: "max"               # "auto" (balanced), "max" (all cores), or int
 
 output:

@@ -647,7 +647,7 @@ def quick_health_check() -> DiagnosticResult:
 # =============================================================================
 
 def run_phase_extraction_diagnostic():
-    """Run diag_phase_extraction.py"""
+    """Run diag_phase_extraction.py - analyzes phase extraction for H 1s→2s."""
     print("\n[INFO] Running phase extraction diagnostic...")
     try:
         import importlib.util
@@ -658,6 +658,86 @@ def run_phase_extraction_diagnostic():
     except Exception as e:
         print(f"[ERROR] {e}")
         traceback.print_exc()
+
+
+def run_phase_method_comparison() -> DiagnosticResult:
+    """
+    Compare log-derivative vs LSQ phase extraction methods (v2.11+).
+    Tests both methods on synthetic and real potential data.
+    """
+    result = DiagnosticResult("phase_method_comparison")
+    print("\n" + "=" * 60)
+    print("PHASE EXTRACTION METHOD COMPARISON")
+    print("=" * 60)
+    
+    from continuum import (
+        _extract_phase_logderiv_neutral,
+        _fit_asymptotic_phase_neutral,
+        solve_continuum_wave
+    )
+    
+    # 1. Synthetic data test (known phase shift)
+    print("\n--- Synthetic Data Test (Known δ) ---")
+    known_phases = [0.0, 0.3, 0.5, -0.5]
+    k_test = 1.5
+    L_test = 0
+    r_test = np.linspace(50, 200, 500)
+    A_true = np.sqrt(2/np.pi)
+    
+    for delta_true in known_phases:
+        chi_synth = A_true * np.sin(k_test * r_test - L_test * np.pi/2 + delta_true)
+        dchi_synth = A_true * k_test * np.cos(k_test * r_test - L_test * np.pi/2 + delta_true)
+        
+        # LSQ
+        A_lsq, delta_lsq = _fit_asymptotic_phase_neutral(r_test, chi_synth, L_test, k_test)
+        
+        # Log-derivative at midpoint
+        idx_mid = len(r_test) // 2
+        Y_mid = dchi_synth[idx_mid] / chi_synth[idx_mid]
+        delta_ld = _extract_phase_logderiv_neutral(Y_mid, k_test, r_test[idx_mid], L_test)
+        
+        err_lsq = abs(delta_true - delta_lsq)
+        err_ld = abs(delta_true - delta_ld)
+        err_ld = min(err_ld, 2*np.pi - err_ld)
+        
+        lsq_ok = err_lsq < 0.01
+        ld_ok = err_ld < 0.1
+        
+        result.add_check(f"LSQ δ={delta_true:+.1f}", lsq_ok, f"err={err_lsq:.6f}")
+        result.add_check(f"LD δ={delta_true:+.1f}", ld_ok, f"err={err_ld:.6f}")
+        
+        print(f"  δ_true={delta_true:+.2f} | LSQ: {delta_lsq:+.4f} (err={err_lsq:.6f}) | LD: {delta_ld:+.4f} (err={err_ld:.6f})")
+    
+    # 2. Real potential test
+    print("\n--- Real Potential Test (H) ---")
+    atom = get_atom("H")
+    grid = make_r_grid(200.0, 5000)
+    V_core = V_core_on_grid(grid, atom.core_params)
+    states = solve_bound_states(grid, V_core, l=0, n_states_max=2)
+    orb_1s = states[0]
+    k = k_from_E_eV(50.0)
+    U_i, _ = build_distorting_potentials(grid, V_core, orb_1s, orb_1s, k, k, use_exchange=False)
+    
+    print(f"\n  {'L':>3} | {'δ_hybrid':>10} | {'δ_logderiv':>10} | {'δ_lsq':>10} | {'Method Used':<15}")
+    print("  " + "-" * 65)
+    
+    for L in [0, 1, 2, 5]:
+        try:
+            cw_hybrid = solve_continuum_wave(grid, U_i, L, 50.0, phase_extraction_method="hybrid")
+            cw_ld = solve_continuum_wave(grid, U_i, L, 50.0, phase_extraction_method="logderiv")
+            cw_lsq = solve_continuum_wave(grid, U_i, L, 50.0, phase_extraction_method="lsq")
+            
+            if cw_hybrid and cw_ld and cw_lsq:
+                diff = abs(cw_ld.phase_shift - cw_lsq.phase_shift)
+                diff = min(diff, 2*np.pi - diff)
+                result.add_check(f"L={L} agreement", diff < 0.1, f"Δ={diff:.4f}")
+                print(f"  {L:>3} | {cw_hybrid.phase_shift:>+10.6f} | {cw_ld.phase_shift:>+10.6f} | {cw_lsq.phase_shift:>+10.6f} | hybrid")
+        except Exception as e:
+            print(f"  {L:>3} | ERROR: {str(e)[:40]}")
+    
+    save_result("phase_methods", result.summary())
+    return result
+
 
 def run_L0_L1_anomaly_diagnostic():
     """Run diag_L0_L1_anomaly.py"""
@@ -691,13 +771,14 @@ def run_atoms_diagnostic():
         traceback.print_exc()
 
 def run_method_comparison():
-    """Run compare_methods.py"""
-    print("\n[INFO] Running legacy vs advanced comparison...")
+    """Run diag_method_compare.py - compare oscillatory integral methods."""
+    print("\n[INFO] Running legacy vs advanced method comparison...")
     try:
-        exec(open("debug/compare_methods.py").read())
+        exec(open("debug/diag_method_compare.py").read())
     except Exception as e:
         print(f"[ERROR] {e}")
         traceback.print_exc()
+
 
 def run_all_diagnostics():
     """Run all diagnostic tests."""
@@ -750,23 +831,21 @@ def print_menu():
     print("  3. Bound State Analysis")
     print("\n[CONTINUUM WAVES]")
     print("  4. Continuum Wave Analysis")
-    print("  5. Phase Extraction Diagnostic")
-    print("  6. High-L Stability Scan")
+    print("  5. Phase Extraction Diagnostic (Energy Scan)")
+    print("  6. Phase Method Comparison (v2.11+)")
+    print("  7. High-L Stability Scan")
     print("\n[POTENTIALS]")
-    print("  7. Potential Analysis")
-    print("  8. Multi-Atom Comparison")
+    print("  8. Potential Analysis")
+    print("  9. Multi-Atom Comparison")
     print("\n[RADIAL INTEGRALS]")
-    print("  9. Radial Integral Breakdown")
-    print(" 10. Method Comparison (legacy vs advanced)")
+    print(" 10. Radial Integral Breakdown")
+    print(" 11. Method Comparison (legacy vs advanced)")
     print("\n[ANGULAR COUPLING]")
-    print(" 11. Angular Coefficient Verification")
+    print(" 12. Angular Coefficient Verification")
     print("\n[CROSS SECTIONS]")
-    print(" 12. Cross Section Analysis")
-    print(" 13. L0/L1 Anomaly Investigation")
-    print(" 14. High-Energy Upturn Analysis")
-    print("\n[FULL TRACES]")
-    print(" 15. Full Physics Trace (Excitation)")
-    print(" 16. Full Physics Trace (Ionization)")
+    print(" 13. Cross Section Analysis")
+    print(" 14. L0/L1 Anomaly Investigation")
+    print(" 15. High-Energy Upturn Analysis")
     print("\n[BATCH]")
     print(" 20. Run ALL Diagnostics")
     print("\n  q. Quit")
@@ -791,32 +870,25 @@ def main():
             elif choice == '5':
                 run_phase_extraction_diagnostic()
             elif choice == '6':
-                run_continuum_diagnostic(L_max=30)
+                run_phase_method_comparison()
             elif choice == '7':
-                run_potential_diagnostic(["H"])
+                run_continuum_diagnostic(L_max=30)
             elif choice == '8':
-                run_atoms_diagnostic()
+                run_potential_diagnostic(["H"])
             elif choice == '9':
-                run_radial_integral_diagnostic(method_compare=False)
+                run_atoms_diagnostic()
             elif choice == '10':
-                run_method_comparison()
+                run_radial_integral_diagnostic(method_compare=False)
             elif choice == '11':
-                run_angular_diagnostic()
+                run_method_comparison()
             elif choice == '12':
-                run_cross_section_diagnostic()
+                run_angular_diagnostic()
             elif choice == '13':
-                run_L0_L1_anomaly_diagnostic()
+                run_cross_section_diagnostic()
             elif choice == '14':
-                run_upturn_diagnostic()
+                run_L0_L1_anomaly_diagnostic()
             elif choice == '15':
-                cfg = DebugConfig(mode="excitation")
-                # Legacy full trace preserved
-                from debug.debug import DWBADebugger
-                DWBADebugger(cfg).run_full_trace()
-            elif choice == '16':
-                cfg = DebugConfig(mode="ionization")
-                from debug.debug import DWBADebugger
-                DWBADebugger(cfg).run_full_trace()
+                run_upturn_diagnostic()
             elif choice == '20':
                 run_all_diagnostics()
             elif choice == 'q':
