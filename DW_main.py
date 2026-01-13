@@ -1004,13 +1004,9 @@ def run_scan_excitation(run_name):
                     r_local, n_local = calculate_optimal_grid_params(
                         E, L_max_proj, base_r_max, base_n_points, scale_factor, n_points_max, min_pts_per_wl
                     )
-                    # Check if grid parameters changed
-                    current_r_max = current_prep.grid.r[-1]
-                    current_n_pts = len(current_prep.grid.r)
-                    params_changed = (abs(r_local - current_r_max) > 0.1 or 
-                                     abs(n_local - current_n_pts) > 1)
                     
-                    if params_changed or i_E == 0:
+                    # For first iteration, ALWAYS recalculate to ensure correct size
+                    if i_E == 0:
                         current_prep = prepare_target(
                             chan=spec,
                             core_params=core_params,
@@ -1018,9 +1014,27 @@ def run_scan_excitation(run_name):
                             r_max=r_local,
                             n_points=n_local
                         )
-                        logger.info("Local Adaptive  | E=%.1f eV: r_max=%.1f a.u., n_points=%d", 
+                        logger.info("Local Adaptive  | E=%.1f eV: r_max=%.1f a.u., n_points=%d (initial)", 
                                    E, r_local, n_local)
-                        prep = current_prep  # Update reference for next comparison
+                        prep = current_prep
+                    else:
+                        # Check if grid parameters changed
+                        current_r_max = prep.grid.r[-1]
+                        current_n_pts = len(prep.grid.r)
+                        params_changed = (abs(r_local - current_r_max) > 0.1 or 
+                                         abs(n_local - current_n_pts) > 1)
+                        
+                        if params_changed:
+                            current_prep = prepare_target(
+                                chan=spec,
+                                core_params=core_params,
+                                use_polarization=use_pol,
+                                r_max=r_local,
+                                n_points=n_local
+                            )
+                            logger.info("Local Adaptive  | E=%.1f eV: r_max=%.1f a.u., n_points=%d", 
+                                       E, r_local, n_local)
+                            prep = current_prep  # Update reference for next comparison
                 
                 res = compute_excitation_cs_precalc(E, current_prep, n_theta=n_theta)
                 
@@ -1884,13 +1898,10 @@ def run_from_config(config_path: str, verbose: bool = False) -> None:
                             E, params['excitation']['L_max_projectile'],
                             base_r_max, base_n_points, scale_factor, n_points_max, min_pts_per_wl
                         )
-                        # Check if parameters changed from current prep
-                        current_r_max = current_prep.grid.r[-1]
-                        current_n_pts = len(current_prep.grid.r)
-                        params_changed = (abs(r_local - current_r_max) > 0.1 or 
-                                         abs(n_local - current_n_pts) > 1)
                         
-                        if params_changed or i_e == 0:
+                        # For first iteration, ALWAYS recalculate to ensure correct size
+                        # (initial prep may have been made with different E_min before filtering)
+                        if i_e == 0:
                             current_prep = prepare_target(
                                 chan=spec,
                                 core_params=core_params,
@@ -1898,10 +1909,36 @@ def run_from_config(config_path: str, verbose: bool = False) -> None:
                                 r_max=r_local,
                                 n_points=n_local
                             )
-                            logger.info("Local Adaptive  | E=%.1f eV: r_max=%.1f a.u., n_points=%d", 
+                            logger.info("Local Adaptive  | E=%.1f eV: r_max=%.1f a.u., n_points=%d (initial)", 
                                        E, r_local, n_local)
-                            prep = current_prep  # Update reference for next comparison
+                            prep = current_prep
+                        else:
+                            # Check if parameters changed from current prep
+                            current_r_max = prep.grid.r[-1]
+                            current_n_pts = len(prep.grid.r)
+                            params_changed = (abs(r_local - current_r_max) > 0.1 or 
+                                             abs(n_local - current_n_pts) > 1)
+                            
+                            if params_changed:
+                                current_prep = prepare_target(
+                                    chan=spec,
+                                    core_params=core_params,
+                                    use_polarization=use_pol,
+                                    r_max=r_local,
+                                    n_points=n_local
+                                )
+                                logger.info("Local Adaptive  | E=%.1f eV: r_max=%.1f a.u., n_points=%d", 
+                                           E, r_local, n_local)
+                                prep = current_prep  # Update reference for next comparison
 
+                    # === DEBUG: Log prep sizes before calculation ===
+                    logger.debug(
+                        "BEFORE calc | E=%.2f | prep.grid=%d | orb_i.u=%d, orb_f.u=%d | V_core=%d",
+                        E, len(current_prep.grid.r), 
+                        len(current_prep.orb_i.u_of_r), len(current_prep.orb_f.u_of_r),
+                        len(current_prep.V_core)
+                    )
+                    
                     res = compute_excitation_cs_precalc(E, current_prep, n_theta=n_theta)
                     
                     # Calibration factor

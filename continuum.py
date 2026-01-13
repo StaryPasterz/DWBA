@@ -1866,4 +1866,6 @@ def solve_continuum_wave(
         sigma_l=sigma_l_val,
         phase_method=method_used
     )
+    logger.debug("ContinuumWave created | l=%d, k=%.3f | chi_size=%d, idx_match=%d, grid_size=%d",
+                 l, k_au, len(chi_final), idx_match, len(r))
     return cw

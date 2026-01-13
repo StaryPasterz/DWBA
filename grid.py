@@ -342,7 +342,8 @@ def compute_required_r_max(k_au: float, L_max_target: int, safety_factor: float 
     r_max = safety_factor * (L_max_target + 0.5) / k_au
     
     # Clamp to reasonable bounds
-    r_max = max(50.0, min(2000.0, r_max))
+    # Min 10 a.u. ensures bound states (e.g., H 2s extends to ~10-15 a.u.) are contained
+    r_max = max(10.0, min(2000.0, r_max))
     
     return r_max
 

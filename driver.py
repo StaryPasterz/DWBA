@@ -688,6 +688,19 @@ def compute_total_excitation_cs(
                 
                 any_valid_lf = True
                 
+                # --- DEBUG: Log array sizes before GPU integrals ---
+                logger.debug(
+                    "GPU INTEGRALS DEBUG | l_i=%d, l_f=%d | "
+                    "grid.r=%d, V_core=%d, U_i=%d, U_f=%d | "
+                    "orb_i.u=%d, orb_f.u=%d | "
+                    "chi_i.chi=%d (idx_m=%d), chi_f.chi=%d (idx_m=%d)",
+                    l_i, l_f,
+                    len(grid.r), len(V_core), len(U_i.U_of_r), len(U_f.U_of_r),
+                    len(orb_i.u_of_r), len(orb_f.u_of_r),
+                    len(chi_i.chi_of_r), chi_i.idx_match,
+                    len(chi_f.chi_of_r), chi_f.idx_match
+                )
+                
                 # --- GPU INTEGRALS ---
                 integrals = radial_ME_all_L_gpu(
                     grid, V_core, U_i.U_of_r, orb_i, orb_f, chi_i, chi_f, chan.L_max_integrals,

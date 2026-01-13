@@ -187,17 +187,31 @@ class GPUCache:
             Continuum wave on GPU.
         """
         key = (channel, chi_wave.l)
+        N_grid = len(self.r_gpu)  # Current grid size
         
         # Check cache
         if key in self.chi_cache:
-            # Update LRU
-            if key in self.chi_lru:
-                self.chi_lru.remove(key)
-            self.chi_lru.append(key)
-            return self.chi_cache[key]
+            cached_chi = self.chi_cache[key]
+            # Validate size matches current grid (LOCAL adaptive may change grid)
+            if len(cached_chi) == N_grid:
+                # Update LRU
+                if key in self.chi_lru:
+                    self.chi_lru.remove(key)
+                self.chi_lru.append(key)
+                return cached_chi
+            else:
+                # Size mismatch - invalidate and recompute
+                del self.chi_cache[key]
+                if key in self.chi_lru:
+                    self.chi_lru.remove(key)
         
-        # Not in cache - transfer to GPU
-        chi_gpu = cp.asarray(chi_wave.chi_of_r)
+        # Not in cache or size mismatch - transfer to GPU (truncate if needed)
+        chi_raw = chi_wave.chi_of_r
+        if len(chi_raw) > N_grid:
+            chi_raw = chi_raw[:N_grid]
+        elif len(chi_raw) < N_grid:
+            raise ValueError(f"Continuum wave chi has {len(chi_raw)} pts but grid has {N_grid}")
+        chi_gpu = cp.asarray(chi_raw)
         
         # LRU eviction if needed
         while len(self.chi_cache) >= self.max_chi_cached and self.chi_lru:
@@ -439,9 +453,10 @@ def radial_ME_all_L(
     idx_limit = N_grid  # Default: use full grid
     
     # Use minimum of match points (where both waves are in asymptotic regime)
-    if hasattr(cont_i, 'idx_match') and cont_i.idx_match > 0:
+    # NOTE: Also clamp to N_grid to handle grid size changes in LOCAL adaptive mode
+    if hasattr(cont_i, 'idx_match') and 0 < cont_i.idx_match < N_grid:
         idx_limit = min(idx_limit, cont_i.idx_match + 1)
-    if hasattr(cont_f, 'idx_match') and cont_f.idx_match > 0:
+    if hasattr(cont_f, 'idx_match') and 0 < cont_f.idx_match < N_grid:
         idx_limit = min(idx_limit, cont_f.idx_match + 1)
     
     # Physics-based validation: match point should be beyond turning points
@@ -1090,6 +1105,62 @@ def radial_ME_all_L_gpu(
     N_grid = len(r)
     idx_limit = N_grid
     
+    # === DEBUG LOGGING: Capture all input sizes ===
+    logger.debug(
+        "radial_ME_all_L_gpu ENTRY | N_grid=%d | V_core=%d, U_i=%d | "
+        "bound_i.u=%d, bound_f.u=%d | cont_i.chi=%d (idx_m=%d), cont_f.chi=%d (idx_m=%d)",
+        N_grid, len(V_core_array), len(U_i_array),
+        len(bound_i.u_of_r), len(bound_f.u_of_r),
+        len(cont_i.chi_of_r), cont_i.idx_match,
+        len(cont_f.chi_of_r), cont_f.idx_match
+    )
+    if U_f_array is not None:
+        logger.debug("radial_ME_all_L_gpu ENTRY | U_f=%d", len(U_f_array))
+    
+    # ==========================================================================
+    # ARRAY SIZE VALIDATION (v2.9+: LOCAL adaptive mode safety)
+    # ==========================================================================
+    # In LOCAL adaptive mode, prep may have orbitals/potentials from a different
+    # grid size. We validate all input arrays and truncate/error as needed.
+    # ==========================================================================
+    
+    # Check V_core and U_i arrays
+    if len(V_core_array) != N_grid:
+        if len(V_core_array) > N_grid:
+            logger.debug("Truncating V_core from %d to %d pts", len(V_core_array), N_grid)
+            V_core_array = V_core_array[:N_grid]
+        else:
+            raise ValueError(f"V_core has {len(V_core_array)} pts but grid has {N_grid}")
+    
+    if len(U_i_array) != N_grid:
+        if len(U_i_array) > N_grid:
+            logger.debug("Truncating U_i from %d to %d pts", len(U_i_array), N_grid)
+            U_i_array = U_i_array[:N_grid]
+        else:
+            raise ValueError(f"U_i has {len(U_i_array)} pts but grid has {N_grid}")
+    
+    # Check continuum waves
+    if len(cont_i.chi_of_r) != N_grid:
+        if len(cont_i.chi_of_r) > N_grid:
+            logger.debug("Truncating cont_i.chi from %d to %d pts", len(cont_i.chi_of_r), N_grid)
+            # Note: can't modify dataclass, slicing will be done at use site
+        else:
+            raise ValueError(f"cont_i.chi has {len(cont_i.chi_of_r)} pts but grid has {N_grid}")
+    
+    if len(cont_f.chi_of_r) != N_grid:
+        if len(cont_f.chi_of_r) > N_grid:
+            logger.debug("Truncating cont_f.chi from %d to %d pts", len(cont_f.chi_of_r), N_grid)
+        else:
+            raise ValueError(f"cont_f.chi has {len(cont_f.chi_of_r)} pts but grid has {N_grid}")
+    
+    # Check U_f if provided
+    if U_f_array is not None and len(U_f_array) != N_grid:
+        if len(U_f_array) > N_grid:
+            logger.debug("Truncating U_f from %d to %d pts", len(U_f_array), N_grid)
+            U_f_array = U_f_array[:N_grid]
+        else:
+            raise ValueError(f"U_f has {len(U_f_array)} pts but grid has {N_grid}")
+    
     # Extract wave parameters for logic and tails
     k_i = cont_i.k_au
     k_f = cont_f.k_au
@@ -1097,9 +1168,10 @@ def radial_ME_all_L_gpu(
     l_f = cont_f.l
     k_total = k_i + k_f
 
-    if hasattr(cont_i, 'idx_match') and cont_i.idx_match > 0:
+    # NOTE: Also clamp to N_grid to handle grid size changes in LOCAL adaptive mode
+    if hasattr(cont_i, 'idx_match') and 0 < cont_i.idx_match < N_grid:
         idx_limit = min(idx_limit, cont_i.idx_match + 1)
-    if hasattr(cont_f, 'idx_match') and cont_f.idx_match > 0:
+    if hasattr(cont_f, 'idx_match') and 0 < cont_f.idx_match < N_grid:
         idx_limit = min(idx_limit, cont_f.idx_match + 1)
     
     # Physics-based validation for match point
@@ -1144,22 +1216,51 @@ def radial_ME_all_L_gpu(
         w_full_gpu = cp.asarray(grid.w_simpson)
     
     # Bound state data (must be transferred - depends on target)
-    u_i_full_gpu = cp.asarray(bound_i.u_of_r)
+    # NOTE: In LOCAL adaptive mode, bound orbitals may come from a PreparedTarget
+    # with a DIFFERENT grid size. We must validate and truncate if necessary.
+    u_i_raw = bound_i.u_of_r
+    if len(u_i_raw) > N_grid:
+        logger.debug("Truncating u_i from %d to %d pts (LOCAL adaptive grid change)", len(u_i_raw), N_grid)
+        u_i_raw = u_i_raw[:N_grid]
+    elif len(u_i_raw) < N_grid:
+        raise ValueError(f"Bound state u_i has {len(u_i_raw)} pts but grid has {N_grid} - cannot interpolate")
+    u_i_full_gpu = cp.asarray(u_i_raw)
+    
     if isinstance(bound_f, BoundOrbital):
-        u_f_full_gpu = cp.asarray(bound_f.u_of_r)
+        u_f_raw = bound_f.u_of_r
+        if len(u_f_raw) > N_grid:
+            logger.debug("Truncating u_f from %d to %d pts (LOCAL adaptive grid change)", len(u_f_raw), N_grid)
+            u_f_raw = u_f_raw[:N_grid]
+        elif len(u_f_raw) < N_grid:
+            raise ValueError(f"Bound state u_f has {len(u_f_raw)} pts but grid has {N_grid} - cannot interpolate")
+        u_f_full_gpu = cp.asarray(u_f_raw)
     elif hasattr(bound_f, 'chi_of_r'):
-        u_f_full_gpu = cp.asarray(bound_f.chi_of_r) # Ionization path
+        u_f_raw = bound_f.chi_of_r
+        if len(u_f_raw) > N_grid:
+            u_f_raw = u_f_raw[:N_grid]
+        elif len(u_f_raw) < N_grid:
+            raise ValueError(f"Continuum u_f has {len(u_f_raw)} pts but grid has {N_grid}")
+        u_f_full_gpu = cp.asarray(u_f_raw)  # Ionization path
     else:
-        u_f_full_gpu = u_i_full_gpu # Fallback
+        u_f_full_gpu = u_i_full_gpu  # Fallback
     
     # Match point sliced data for standard integrals
-    u_i_gpu = cp.asarray(bound_i.u_of_r[:idx_limit])
-    u_f_gpu = u_f_full_gpu[:idx_limit] # already array
+    u_i_gpu = u_i_full_gpu[:idx_limit]
+    u_f_gpu = u_f_full_gpu[:idx_limit]
     
     # Phase 4: Use cached continuum waves when gpu_cache is available
     if gpu_cache is not None:
         chi_i_full = gpu_cache.get_chi(cont_i, 'i')
         chi_f_full = gpu_cache.get_chi(cont_f, 'f')
+        # Verify sizes match grid after get_chi truncation
+        if len(chi_i_full) != N_grid:
+            logger.warning("chi_i_full size mismatch: %d vs N_grid=%d (idx_limit=%d)", 
+                          len(chi_i_full), N_grid, idx_limit)
+            chi_i_full = chi_i_full[:N_grid] if len(chi_i_full) > N_grid else chi_i_full
+        if len(chi_f_full) != N_grid:
+            logger.warning("chi_f_full size mismatch: %d vs N_grid=%d (idx_limit=%d)", 
+                          len(chi_f_full), N_grid, idx_limit)
+            chi_f_full = chi_f_full[:N_grid] if len(chi_f_full) > N_grid else chi_f_full
         chi_i_gpu = chi_i_full[:idx_limit]
         chi_f_gpu = chi_f_full[:idx_limit]
     else:
