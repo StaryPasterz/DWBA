@@ -42,6 +42,7 @@ Comprehensive Python suite for computing electron–atom excitation and ionizati
 - **Bound State Extent Handling** *(v2.8)*: Automatic detection of bound state extent ensures match point is beyond 99% of density, critical for accurate oscillatory integral factorization.
 - **Centrifugal Phase Corrections** *(v2.8)*: First-order centrifugal terms in asymptotic phase for stable high-L partial wave calculations.
 - **LOCAL Adaptive Grid Strategy** *(v2.12)*: Per-energy optimal grid sizing now fully functional with turning point bounds safeguards.
+- **Configurable ODE Solver** *(v2.12)*: Choose primary solver (Numerov/Johnson/RK45) with automatic fallback chain.
 - **Diagnostic Tools**: Comprehensive scripts in `debug/` for analyzing partial wave convergence, radial integrals, and method comparisons.
 - **Progress Reporting**: Real-time feedback and ETA for long-running partial wave summations.
 
@@ -382,6 +383,7 @@ All numerical defaults are organized by category and displayed before calculatio
 | `k_threshold` | `0.5` | Momentum threshold for Filon/Levin activation |
 | `max_chi_cached` | `20` | LRU cache size for continuum waves (v2.5+) |
 | `phase_extraction` | `"hybrid"` | Phase extraction method: `hybrid` (cross-validated), `logderiv`, `lsq` *(v2.11+)* |
+| `solver` | `"numerov"` | ODE solver: `numerov` (default), `johnson`, `rk45` — others as fallback *(v2.12+)* |
 
 ---
 

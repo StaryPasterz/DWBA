@@ -184,9 +184,7 @@ def get_worker_count(silent: bool = False) -> int:
             selected_count = min(cpu_count, 8)
             mode_desc = "auto (fallback)"
             
-    if not silent:
-        logger.info("Multiprocessing: using %d worker(s) [Mode: %s]", selected_count, mode_desc)
-        
+    # Log removed (v2.12+) - redundant with "Numerical Config | CPU Workers" log
     return selected_count
 
 
@@ -394,11 +392,17 @@ def _worker_solve_wave(
     E_eV: float,
     z_ion: float,
     U: DistortingPotential,
-    grid: RadialGrid
+    grid: RadialGrid,
+    phase_method: str = "hybrid",
+    solver: str = "numerov"
 ) -> Tuple[int, Optional[ContinuumWave]]:
     """Worker for parallel wave solving."""
     try:
-        chi = solve_continuum_wave(grid, U, l, E_eV, z_ion)
+        chi = solve_continuum_wave(
+            grid, U, l, E_eV, z_ion,
+            phase_extraction_method=phase_method,
+            solver=solver
+        )
         return l, chi
     except:
         return l, None
@@ -418,8 +422,11 @@ def precompute_continuum_waves(
     import os
     import concurrent.futures
 
-    max_workers = os.cpu_count()
-    if max_workers is None: max_workers = 1
+    max_workers = get_worker_count(silent=True)  # Silent: avoid repeated log per energy
+    
+    # Retrieve config explicitly to pass to workers (crucial for Windows/spawn)
+    phase_method = OSCILLATORY_CONFIG.get("phase_extraction", "hybrid")
+    solver = OSCILLATORY_CONFIG.get("solver", "numerov")
     
     # We only precompute up to L_max.
     # Note: solve_continuum_wave is purely CPU.
@@ -428,12 +435,22 @@ def precompute_continuum_waves(
     # Create valid inputs
     # DistortingPotential is picklable (dataclass with arrays).
     
-    # Batch submission
     with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(_worker_solve_wave, l, E_eV, z_ion, U, grid): l for l in range(L_max + 1)}
+        # Submit tasks
+        future_to_l = {
+            executor.submit(
+                _worker_solve_wave, l, E_eV, z_ion, U, grid, 
+                phase_method=phase_method, solver=solver
+            ): l
+            for l in range(L_max + 1)
+        }
         
-        for future in concurrent.futures.as_completed(futures):
-            l = futures[future]
+        # Collect results with progress logging
+        completed = 0
+        total = L_max + 1
+        
+        for future in concurrent.futures.as_completed(future_to_l):
+            l = future_to_l[future]
             try:
                 rl, chi = future.result()
                 if chi is not None:
@@ -442,7 +459,21 @@ def precompute_continuum_waves(
                 # If one fails, we just don't have it in cache.
                 # Loop will try to re-solve or skip.
                 pass
-                
+            completed += 1
+            if completed % 10 == 0 or completed == total:
+                logger.debug(f"Precomputing waves: {completed}/{total} ({(completed/total)*100:.0f}%)")
+    
+    # Log solver usage statistics (DEBUG level to avoid clutter)
+    solver_stats = {}
+    for w in waves.values():
+        # Fallback for waves created before v2.12 (safety)
+        method = getattr(w, 'solver_method', 'Unknown')
+        solver_stats[method] = solver_stats.get(method, 0) + 1
+    
+    if solver_stats:
+        stats_str = ", ".join(f"{s}: {n}" for s, n in solver_stats.items())
+        logger.info(f"Continuum waves computed (E={E_eV:.2f} eV): {stats_str}")
+
     return waves
 
 

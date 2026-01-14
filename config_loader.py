@@ -462,6 +462,7 @@ def config_to_params_dict(config: DWBAConfig) -> Dict[str, Dict[str, Any]]:
             'k_threshold': config.oscillatory.k_threshold,
             'max_chi_cached': config.oscillatory.max_chi_cached,  # v2.5+
             'phase_extraction': config.oscillatory.phase_extraction,  # v2.11+
+            'solver': config.oscillatory.solver,  # v2.12+
         },
         'hardware': {
             'gpu_block_size': config.hardware.gpu_block_size,

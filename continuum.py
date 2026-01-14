@@ -110,6 +110,7 @@ class ContinuumWave:
     eta: float = 0.0          # Sommerfeld parameter (-z_ion/k)
     sigma_l: float = 0.0      # Coulomb phase shift arg(Γ(l+1+iη))
     phase_method: str = "unknown"  # Phase extraction method used (v2.11+)
+    solver_method: str = "numerov" # ODE solver used (v2.12+)
 
 
     @property
@@ -1866,7 +1867,8 @@ def solve_continuum_wave(
         idx_match=idx_match,
         eta=eta_val,
         sigma_l=sigma_l_val,
-        phase_method=method_used
+        phase_method=phase_extraction_method,
+        solver_method=method_used
     )
     logger.debug("ContinuumWave created | l=%d, k=%.3f | chi_size=%d, idx_match=%d, grid_size=%d",
                  l, k_au, len(chi_final), idx_match, len(r))

@@ -117,6 +117,8 @@ DEFAULTS = {
         "min_grid_fraction": 0.10,    # Minimum match point fraction
         "k_threshold": 0.5,           # k_total threshold for Filon
         "max_chi_cached": 20,         # v2.5+: LRU cache size for GPU continuum waves
+        "phase_extraction": "hybrid", # v2.11+: "hybrid", "logderiv", "lsq"
+        "solver": "numerov",          # v2.12+: "numerov", "johnson", "rk45"
     },
     
     # --- Hardware (GPU/CPU) ---

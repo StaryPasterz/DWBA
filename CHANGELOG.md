@@ -6,40 +6,50 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [v2.12] — 2026-01-13 — LOCAL Adaptive Grid Fix
+## [v2.12] — 2026-01-14 — Configurable ODE Solver & LOCAL Grid Fix
 
-**Critical bug fix** resolving "index out of bounds" errors when using LOCAL adaptive grid strategy.
+**Critical bug fix** for LOCAL adaptive grid + new configurable ODE solver selection.
+
+### New Features
+
+**Configurable ODE solver** for continuum waves:
+- **Primary solver selection**: Choose `"numerov"` (default), `"johnson"`, or `"rk45"` as primary
+- **Automatic fallback chain**: If primary fails, remaining solvers tried in order
+- **Per-energy logging**: Stats on which solver was used (`Continuum waves computed (E=12.50 eV): Numerov: 48, Johnson: 2`)
+
+```yaml
+oscillatory:
+  solver: "numerov"  # "numerov" (default), "johnson", "rk45"
+```
+
+**Updated `solve_continuum_wave()` signature**:
+```python
+solve_continuum_wave(..., solver="numerov")
+```
+
+**`ContinuumWave` now stores `solver_method`** for tracking which solver produced each wave.
 
 ### 🔴 Critical Bug Fix
 
 **Turning point index overflow in LOCAL adaptive mode** (`dwba_matrix_elements.py`):
-- **Bug**: When `r_turn > r_max` (high L partial waves on small grids), `searchsorted()` returned `N_grid`, causing `MIN_IDX = N_grid + 20` → out of bounds
-- **Impact**: LOCAL adaptive strategy failed with "index N+1 out of bounds for size N" errors
-- **Root Cause**: `idx_turn + 20` safety margin exceeded array bounds when turning point was beyond grid
+- **Bug**: When `r_turn > r_max`, `idx_turn + 20` exceeded array bounds
 - **Fix**: Added clamping: `idx_turn = min(idx_turn, N_grid - 20)` and `MIN_IDX = min(..., N_grid)`
-- **Affected functions**:
-  - `radial_ME_all_L()` (CPU path, line ~475)
-  - `radial_ME_all_L_gpu()` (GPU path, line ~1182)
 
-> [!NOTE]
-> This bug only affected LOCAL adaptive mode. GLOBAL and MANUAL strategies were unaffected.
+### Improvements
 
-### Diagnostic Improvements
-
-**Enhanced debug logging** for grid/array size tracking:
-- `driver.py`: Added pre-GPU-integrals logging with all array sizes and `idx_match` values
-- `dwba_matrix_elements.py`: Entry-point logging with full input validation details
-- `continuum.py`: ContinuumWave creation logging with `chi_size`, `idx_match`, `grid_size`
-- `DW_main.py`: Pre-calculation logging with `prep` array sizes
+- **Removed redundant log**: "Multiprocessing: using X worker(s)" (duplicate of "Numerical Config | CPU Workers")
+- **Added `phase_extraction` and `solver` to `DEFAULTS`** in `DW_main.py` for interactive mode
 
 ### Files Modified
 
 | File | Change |
 |------|--------|
-| `dwba_matrix_elements.py` | Critical bounds fix in both CPU and GPU paths; added entry-point debug logging |
-| `driver.py` | Added pre-GPU-integrals debug logging |
-| `continuum.py` | Added ContinuumWave creation logging |
-| `DW_main.py` | Added pre-calculation prep size logging |
+| `continuum.py` | Dynamic solver dispatch with fallback chain; `ContinuumWave.solver_method` field |
+| `driver.py` | Solver config propagation to workers; solver stats logging; removed redundant log |
+| `config_loader.py` | `OscillatoryConfig.solver` field; `config_to_params_dict()` solver mapping |
+| `DW_main.py` | `DEFAULTS['oscillatory']` now includes `phase_extraction` and `solver` |
+| `dwba_matrix_elements.py` | Critical bounds fix for LOCAL adaptive mode |
+| `H2s.yaml`, `examples/config_excitation.yaml` | Added `solver: "numerov"` option |
 
 ---
 
