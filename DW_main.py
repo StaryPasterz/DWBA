@@ -118,7 +118,7 @@ DEFAULTS = {
         "k_threshold": 0.5,           # k_total threshold for Filon
         "max_chi_cached": 20,         # v2.5+: LRU cache size for GPU continuum waves
         "phase_extraction": "hybrid", # v2.11+: "hybrid", "logderiv", "lsq"
-        "solver": "numerov",          # v2.12+: "numerov", "johnson", "rk45"
+        "solver": "auto",             # v2.13+: "auto" (recommended), "rk45", "johnson", "numerov"
     },
     
     # --- Hardware (GPU/CPU) ---

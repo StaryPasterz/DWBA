@@ -42,7 +42,7 @@ Comprehensive Python suite for computing electron–atom excitation and ionizati
 - **Bound State Extent Handling** *(v2.8)*: Automatic detection of bound state extent ensures match point is beyond 99% of density, critical for accurate oscillatory integral factorization.
 - **Centrifugal Phase Corrections** *(v2.8)*: First-order centrifugal terms in asymptotic phase for stable high-L partial wave calculations.
 - **LOCAL Adaptive Grid Strategy** *(v2.12)*: Per-energy optimal grid sizing now fully functional with turning point bounds safeguards.
-- **Configurable ODE Solver** *(v2.12)*: Choose primary solver (Numerov/Johnson/RK45) with automatic fallback chain.
+- **Intelligent Auto Solver** *(v2.13)*: Physics-based solver selection (`"auto"`) chooses RK45 or Johnson per partial wave based on L, energy, and barrier conditions.
 - **Diagnostic Tools**: Comprehensive scripts in `debug/` for analyzing partial wave convergence, radial integrals, and method comparisons.
 - **Progress Reporting**: Real-time feedback and ETA for long-running partial wave summations.
 
@@ -383,7 +383,7 @@ All numerical defaults are organized by category and displayed before calculatio
 | `k_threshold` | `0.5` | Momentum threshold for Filon/Levin activation |
 | `max_chi_cached` | `20` | LRU cache size for continuum waves (v2.5+) |
 | `phase_extraction` | `"hybrid"` | Phase extraction method: `hybrid` (cross-validated), `logderiv`, `lsq` *(v2.11+)* |
-| `solver` | `"numerov"` | ODE solver: `numerov` (default), `johnson`, `rk45` — others as fallback *(v2.12+)* |
+| `solver` | `"auto"` | ODE solver: `auto` (physics-based), `rk45`, `johnson`, `numerov` *(v2.13+)* |
 
 ---
 
@@ -613,14 +613,22 @@ $$n_{points} = \max\left(n_{base}, \; \frac{n_{base}}{r_{base}} \cdot r_{max}\ri
 
 ### Radial Solver: Numerical Methods
 
-The continuum wave solver uses **Numerov propagation** with asymptotic stitching:
+The continuum wave solver uses multiple methods with physics-based selection:
 
-**Numerov Method** (Primary):
-- Solves the radial Schrödinger equation:
-  $$\chi''(r) = Q(r) \cdot \chi(r), \quad Q(r) = \frac{l(l+1)}{r^2} + 2U(r) - k^2$$
-- $O(h^4)$ accuracy for non-uniform (exponential) grids
-- Uses **separate step sizes** $h_1^2$, $h_2^2$ instead of averaged $h^2$ for better accuracy
-- Periodic renormalization prevents over/underflow
+**RK45 Method** (Default for most cases):
+- Standard Runge-Kutta-Fehlberg 4(5) with adaptive step control
+- Best accuracy on **non-uniform (exponential) grids**
+- Automatic error estimation and step adjustment
+
+**Johnson Log-Derivative** (For tunneling regions):
+- Propagates $Y = \chi'/\chi$ directly
+- Numerically stable when $\chi \to 0$ (inside barrier)
+- Preferred for high-L or low-energy cases
+
+**Numerov Method** (Uniform grids only):
+- Solves: $\chi''(r) = Q(r) \cdot \chi(r)$
+- $O(h^4)$ accuracy but requires **constant step size**
+- Not recommended for standard exponential grids
 
 **Fornberg Phase Extraction** (v2.2+):
 - Replaced 3-point central differences with a **5-point Fornberg stencil**
@@ -654,8 +662,22 @@ $$\tan(\delta_l) = \frac{Y_m \cdot \hat{j}_l - \hat{j}_l'}{\hat{n}_l' - Y_m \cdo
 - Amplitude $A = \sqrt{2/\pi}$ for $\delta(k-k')$ normalization
 - Eliminates numerical noise in oscillatory tail
 
+**Solver Selection** *(v2.13+)*:
+
+The `"auto"` mode (default) selects optimal solver per partial wave:
+
+| Condition | Solver | Reason |
+|-----------|--------|--------|
+| L > 25 | Johnson | Extensive tunneling region |
+| E < 15 eV | Johnson | Potential-dominated regime |
+| Inside barrier | Johnson | Avoids underflow |
+| Otherwise | RK45 | Best phase accuracy |
+
+> [!CAUTION]
+> Numerov should only be used with uniform grids. Standard exponential grids cause ~100x cross-section errors.
+
 **Fallback Chain**:
-If Numerov fails → Johnson log-derivative → RK45
+If primary fails → next solver in chain (auto-selected order)
 
 **Split Radial Integrals**:
 - Integration uses numerical $\chi$ for $[0, r_m]$ and analytic for $[r_m, \infty)$

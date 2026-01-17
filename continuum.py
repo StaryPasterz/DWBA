@@ -1122,28 +1122,50 @@ def _johnson_log_derivative_solve(
     chi = np.zeros(N, dtype=float)
     dchi = np.zeros(N, dtype=float)
     
-    # --- Initial Conditions ---
-    # For high L in tunneling region, use WKB approximation
-    # Y_WKB = sqrt(S(r)) where S > 0 (inside barrier)
+    # --- Initial Conditions (v2.13+: use exact Bessel for oscillatory region) ---
     r0 = r_grid[0]
     S0 = ell * (ell + 1.0) / (r0 * r0) + 2.0 * U_arr[0] - k2
     
     if S0 > 0:
-        # Inside barrier: WKB gives Y ≈ +sqrt(S)
+        # Inside barrier: WKB gives Y ≈ +sqrt(S) for growing solution
         Y_init = np.sqrt(S0)
+        chi[0] = 1.0
+        dchi[0] = Y_init * chi[0]
     else:
-        # Outside barrier: oscillatory, Y ≈ (l+1)/r as small r
-        Y_init = (ell + 1.0) / r0
-    
-    # Start with unit amplitude - will be renormalized anyway
-    chi[0] = 1.0
-    dchi[0] = Y_init * chi[0]
+        # Outside barrier (oscillatory): use exact Bessel functions
+        # This is much more accurate than Y = (l+1)/r approximation
+        rho0 = k_au * r0
+        jl = spherical_jn(l, rho0)
+        chi0 = r0 * jl
+        
+        # Derivative: d/dr[r·j_l(kr)] = j_l(kr) + kr·j'_l(kr)
+        # Using j'_l = j_{l-1} - (l+1)/x · j_l for l>0, or cos(x)/x - sin(x)/x² for l=0
+        if l == 0:
+            # d/dr[sin(kr)/k] = cos(kr)
+            dchi0 = np.cos(rho0)
+        else:
+            jl_m1 = spherical_jn(l - 1, rho0)
+            # j'_l(x) = j_{l-1}(x) - (l+1)/x * j_l(x)
+            jl_prime = jl_m1 - (l + 1.0) / rho0 * jl
+            dchi0 = jl + k_au * r0 * jl_prime
+        
+        # Avoid division by very small chi
+        if abs(chi0) > 1e-50:
+            Y_init = dchi0 / chi0
+        else:
+            Y_init = (ell + 1.0) / r0  # Fallback
+        
+        chi[0] = chi0 if abs(chi0) > 1e-100 else 1.0
+        dchi[0] = dchi0 if abs(chi0) > 1e-100 else Y_init
     
     Y_current = Y_init
     
     # --- RK4 Propagation for Y ---
-    # dY/dr = -Y² - S(r)
-    # More stable than simple Euler
+    # From χ'' = S·χ and Y = χ'/χ:
+    #   χ' = Y·χ
+    #   χ'' = Y'·χ + Y·χ' = (Y' + Y²)·χ
+    # So: Y' + Y² = S  =>  dY/dr = S - Y²
+    # v2.13+: Fixed sign error (was -Y² - S, now S - Y²)
     
     for i in range(N - 1):
         r = r_grid[i]
@@ -1160,9 +1182,9 @@ def _johnson_log_derivative_solve(
                 U_interp = U_arr[-1]
             return ell * (ell + 1.0) / (rr * rr) + 2.0 * U_interp - k2
         
-        # RK4 for Y
+        # RK4 for Y: dY/dr = S(r) - Y²
         def dY(rr, Y_val, idx):
-            return -Y_val**2 - S_func(rr, idx)
+            return S_func(rr, idx) - Y_val**2  # FIXED: was -Y²-S, now S-Y²
         
         k1 = dY(r, Y_current, i)
         k2_rk = dY(r + 0.5*h, Y_current + 0.5*h*k1, i)
@@ -1318,7 +1340,7 @@ def solve_continuum_wave(
     rtol: float = 1e-6,
     atol: float = 1e-8,
     phase_extraction_method: str = "hybrid",  # v2.11+: "hybrid", "logderiv", or "lsq"
-    solver: str = "numerov",  # v2.12+: "numerov", "johnson", or "rk45"
+    solver: str = "auto",  # v2.13+: "auto" (recommended), "rk45", "johnson", or "numerov"
 ) -> ContinuumWave:
     """
     Solve for the distorted-wave scattering solution χ_l(k,r) in channel j.
@@ -1557,19 +1579,54 @@ def solve_continuum_wave(
     # ==========================================================================
     # v2.12+: CONFIGURABLE SOLVER DISPATCH WITH FALLBACK CHAIN
     # ==========================================================================
-    # User can select primary solver (numerov, johnson, rk45).
+    # User can select primary solver (numerov, johnson, rk45, auto).
     # The other two solvers serve as automatic fallbacks in defined order.
     # ==========================================================================
     
     # Build solver order: primary first, then remaining two
     ALL_SOLVERS = ["numerov", "johnson", "rk45"]
     primary_solver = solver.lower()
-    if primary_solver not in ALL_SOLVERS:
-        logger.warning(f"Unknown solver '{solver}', defaulting to 'numerov'")
-        primary_solver = "numerov"
     
-    # Build fallback chain: primary + remaining solvers in order
-    solver_order = [primary_solver] + [s for s in ALL_SOLVERS if s != primary_solver]
+    # v2.13+: "auto" mode - physics-based solver selection per partial wave
+    if primary_solver == "auto":
+        # Selection criteria based on physics:
+        # 1. High L (L > 25): Large centrifugal barrier → tunneling region extensive
+        #    → Johnson's log-derivative method is most stable
+        # 2. Low energy (E < 15 eV, k < 1.05 a.u.): Long-wavelength, potential-dominated
+        #    → Johnson handles evanescent waves better
+        # 3. Inside barrier at start (S0 > 0): Wavefunction grows exponentially
+        #    → Johnson avoids underflow issues
+        # 4. Otherwise: RK45 gives best phase accuracy on non-uniform grids
+        
+        L_HIGH_THRESHOLD = 25       # Use Johnson above this L
+        E_LOW_THRESHOLD_EV = 15.0   # Use Johnson below this energy
+        
+        use_johnson = False
+        
+        if l > L_HIGH_THRESHOLD:
+            use_johnson = True
+            logger.debug(f"L={l}: Auto-selected Johnson (high L > {L_HIGH_THRESHOLD})")
+        elif E_eV < E_LOW_THRESHOLD_EV:
+            use_johnson = True
+            logger.debug(f"L={l}: Auto-selected Johnson (low E={E_eV:.1f} eV < {E_LOW_THRESHOLD_EV})")
+        elif S_at_origin > 0:
+            # Deep inside barrier - Johnson is more stable
+            use_johnson = True
+            logger.debug(f"L={l}: Auto-selected Johnson (inside barrier, S0={S_at_origin:.2f})")
+        
+        if use_johnson:
+            primary_solver = "johnson"
+            solver_order = ["johnson", "rk45", "numerov"]
+        else:
+            primary_solver = "rk45"
+            solver_order = ["rk45", "johnson", "numerov"]
+    else:
+        if primary_solver not in ALL_SOLVERS:
+            logger.warning(f"Unknown solver '{solver}', defaulting to 'rk45'")
+            primary_solver = "rk45"
+        
+        # Build fallback chain: primary + remaining solvers in order
+        solver_order = [primary_solver] + [s for s in ALL_SOLVERS if s != primary_solver]
     
     # Helper functions for each solver
     def _run_numerov():
@@ -1637,23 +1694,60 @@ def solve_continuum_wave(
     Q_eval = Q_full[idx_start:]
     
     # Initial conditions for Numerov
+    # v2.13+: Use exact Bessel functions (like RK45) instead of r^(l+1) approximation
+    # The r^(l+1) approximation is only valid for kr << 1, but introduces phase errors
+    # when used at larger kr where oscillatory behavior has already started.
     r0_init = r_eval[0]
     r1_init = r_eval[1]
     h_init = r1_init - r0_init
     S0_init = ell * (ell + 1.0) / (r0_init * r0_init) + 2.0 * U_arr[idx_start] - k2
     
     if S0_init > 0:
+        # Inside centrifugal barrier: use WKB exponential growth
         kappa = np.sqrt(S0_init)
         chi0 = 1e-20
         chi1 = chi0 * np.exp(kappa * h_init)
         logger.debug(f"L={l}: Using WKB initial conditions (S0={S0_init:.2f}, κ={kappa:.4f})")
     else:
-        if ell < 20:
-            chi0 = r0_init ** (ell + 1.0)
-            chi1 = r1_init ** (ell + 1.0)
+        # Outside barrier: use exact Bessel functions (same as RK45)
+        # This ensures consistent phase between all solvers
+        if abs(z_ion) < 1e-3:
+            # Neutral: use Riccati-Bessel j-hat = r * j_l(kr)
+            rho0 = k_au * r0_init
+            rho1 = k_au * r1_init
+            
+            # Spherical Bessel functions
+            jl0 = spherical_jn(l, rho0)
+            jl1 = spherical_jn(l, rho1)
+            
+            # chi = r * j_l(kr) is the regular solution
+            chi0 = r0_init * jl0
+            chi1 = r1_init * jl1
+            
+            # Scale to avoid underflow for high L
+            norm_val = max(abs(chi0), abs(chi1))
+            if norm_val < 1e-10 and norm_val > 0:
+                scale = 1e-10 / norm_val
+                chi0 *= scale
+                chi1 *= scale
         else:
-            chi0 = 1e-10
-            chi1 = chi0 * (r1_init / r0_init) ** (ell + 1.0)
+            # Ionic: use WKB approximation like before
+            kappa_sq = ell*(ell+1.0)/(r0_init*r0_init) - 2.0*z_ion/r0_init - k2
+            if kappa_sq > 0:
+                kappa = np.sqrt(kappa_sq)
+                chi0 = 1e-20
+                chi1 = chi0 * np.exp(kappa * h_init)
+            else:
+                # Fallback to Bessel
+                rho0 = k_au * r0_init
+                rho1 = k_au * r1_init
+                chi0 = r0_init * spherical_jn(l, rho0)
+                chi1 = r1_init * spherical_jn(l, rho1)
+                norm_val = max(abs(chi0), abs(chi1))
+                if norm_val < 1e-10 and norm_val > 0:
+                    scale = 1e-10 / norm_val
+                    chi0 *= scale
+                    chi1 *= scale
     
     # Try solvers in order until one succeeds
     chi_computed = None

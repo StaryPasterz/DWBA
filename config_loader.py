@@ -105,8 +105,8 @@ class OscillatoryConfig:
     max_chi_cached: int = 20  # v2.5: LRU cache size for GPU continuum waves
     # v2.11: Phase extraction method selection
     phase_extraction: Literal["hybrid", "logderiv", "lsq"] = "hybrid"
-    # v2.12: Primary ODE solver selection (others used as fallbacks)
-    solver: Literal["numerov", "johnson", "rk45"] = "numerov"
+    # v2.13: Primary ODE solver selection ("auto" = physics-based per-L)
+    solver: Literal["auto", "numerov", "johnson", "rk45"] = "auto"
 
 @dataclass
 class HardwareConfig:
@@ -327,7 +327,7 @@ def load_config(path: Union[str, Path]) -> DWBAConfig:
             k_threshold=osc.get('k_threshold', 0.5),
             max_chi_cached=osc.get('max_chi_cached', 20),
             phase_extraction=osc.get('phase_extraction', 'hybrid'),  # v2.11+
-            solver=osc.get('solver', 'numerov')  # v2.12+
+            solver=osc.get('solver', 'auto')  # v2.13+
         )
     
     # Hardware (new section, with backward compatibility for oscillatory GPU params)

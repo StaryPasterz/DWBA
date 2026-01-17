@@ -6,6 +6,54 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v2.13] — 2026-01-14 — Critical Numerov Fix + Auto Solver Selection
+
+**Critical bug fix** resolving ~100x cross-section overestimation when using Numerov solver + new intelligent `"auto"` solver mode.
+
+### 🔴 Critical Bug Fix
+
+**Numerov solver fails on exponential (non-uniform) grids**:
+- **Root Cause**: Standard Numerov method is designed for **uniform step size**. On exponential grids where step h varies from ~10⁻⁵ to ~0.66 bohr, the geometric mean approximation introduces systematic phase errors up to **1.3 radians**
+- **Impact**: Cross-sections overestimated by ~100x (e.g., σ = 6.95×10⁻¹⁷ cm² instead of 6.55×10⁻¹⁹ cm²)
+- **Fix**: Changed default solver from `"numerov"` to `"auto"` which selects the optimal solver per partial wave
+
+> [!CAUTION]
+> **Numerov solver should only be used with uniform grids** (e.g., `np.linspace`). For standard DWBA calculations which use exponential grids, use `"auto"` (new default), `"rk45"`, or `"johnson"`.
+
+### New Features
+
+**Intelligent `"auto"` solver mode** (new default):
+
+The `"auto"` mode automatically selects the best solver for each partial wave based on physics:
+
+| Condition | Solver Selected | Reason |
+|-----------|-----------------|--------|
+| L > 25 | Johnson | Large centrifugal barrier, extensive tunneling |
+| E < 15 eV | Johnson | Long-wavelength, potential-dominated regime |
+| Inside barrier (S₀ > 0) | Johnson | Avoids underflow in evanescent region |
+| Otherwise | RK45 | Best phase accuracy on non-uniform grids |
+
+```yaml
+oscillatory:
+  solver: "auto"  # NEW: "auto" (recommended), "rk45", "johnson", "numerov"
+```
+
+### Technical Details
+
+Phase extraction test (H 1s→2s at 50 eV):
+| L | Numerov phase (rad) | RK45 phase (rad) | Error |
+|---|---------------------|------------------|-------|
+| 0 | +1.898 | +0.708 | **1.19 rad** |
+| 5 | +0.420 | +0.179 | 0.24 rad |
+| 10 | +0.986 | +0.637 | 0.35 rad |
+
+### Improved Initial Conditions
+
+Numerov initial conditions (when used) now use exact Bessel functions `r·j_l(kr)` instead of the `r^(l+1)` approximation.
+
+
+---
+
 ## [v2.12] — 2026-01-14 — Configurable ODE Solver & LOCAL Grid Fix
 
 **Critical bug fix** for LOCAL adaptive grid + new configurable ODE solver selection.
@@ -32,13 +80,24 @@ solve_continuum_wave(..., solver="numerov")
 ### 🔴 Critical Bug Fix
 
 **Turning point index overflow in LOCAL adaptive mode** (`dwba_matrix_elements.py`):
-- **Bug**: When `r_turn > r_max`, `idx_turn + 20` exceeded array bounds
+- **Bug**: When `r_turn > r_max` (high L partial waves on small grids), `searchsorted()` returned `N_grid`, causing `MIN_IDX = N_grid + 20` → out of bounds
+- **Impact**: LOCAL adaptive strategy failed with "index N+1 out of bounds for size N" errors
+- **Root Cause**: `idx_turn + 20` safety margin exceeded array bounds when turning point was beyond grid
 - **Fix**: Added clamping: `idx_turn = min(idx_turn, N_grid - 20)` and `MIN_IDX = min(..., N_grid)`
+- **Affected functions**:
+  - `radial_ME_all_L()` (CPU path, line ~475)
+  - `radial_ME_all_L_gpu()` (GPU path, line ~1182)
 
-### Improvements
+> [!NOTE]
+> This bug only affected LOCAL adaptive mode. GLOBAL and MANUAL strategies were unaffected.
 
-- **Removed redundant log**: "Multiprocessing: using X worker(s)" (duplicate of "Numerical Config | CPU Workers")
-- **Added `phase_extraction` and `solver` to `DEFAULTS`** in `DW_main.py` for interactive mode
+### Diagnostic Improvements
+
+**Enhanced debug logging** for grid/array size tracking:
+- `driver.py`: Added pre-GPU-integrals logging with all array sizes and `idx_match` values
+- `dwba_matrix_elements.py`: Entry-point logging with full input validation details
+- `continuum.py`: ContinuumWave creation logging with `chi_size`, `idx_match`, `grid_size`
+- `DW_main.py`: Pre-calculation logging with `prep` array sizes
 
 ### Files Modified
 

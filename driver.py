@@ -104,8 +104,8 @@ OSCILLATORY_CONFIG = {
     "gpu_memory_threshold": 0.7,
     # CPU worker count: "auto" = auto-detect (min(cpu_count, 8)), int > 0 = explicit count
     "n_workers": "auto",
-    # v2.12+: ODE solver for continuum waves: "numerov", "johnson", "rk45"
-    "solver": "numerov"
+    # v2.13+: ODE solver: "auto" (recommended), "rk45", "johnson", "numerov"
+    "solver": "auto"
 }
 
 # =============================================================================
@@ -394,7 +394,7 @@ def _worker_solve_wave(
     U: DistortingPotential,
     grid: RadialGrid,
     phase_method: str = "hybrid",
-    solver: str = "numerov"
+    solver: str = "auto"
 ) -> Tuple[int, Optional[ContinuumWave]]:
     """Worker for parallel wave solving."""
     try:
@@ -426,7 +426,7 @@ def precompute_continuum_waves(
     
     # Retrieve config explicitly to pass to workers (crucial for Windows/spawn)
     phase_method = OSCILLATORY_CONFIG.get("phase_extraction", "hybrid")
-    solver = OSCILLATORY_CONFIG.get("solver", "numerov")
+    solver = OSCILLATORY_CONFIG.get("solver", "auto")
     
     # We only precompute up to L_max.
     # Note: solve_continuum_wave is purely CPU.

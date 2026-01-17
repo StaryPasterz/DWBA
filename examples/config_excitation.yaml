@@ -59,7 +59,7 @@ oscillatory:
   max_chi_cached: 20             # [count] LRU cache size for continuum waves on GPU
   n_workers: "auto"              # "auto" (balanced), "max" (all cores), or int count
   phase_extraction: "hybrid"     # [v2.11+] "hybrid", "logderiv", or "lsq"
-  solver: "numerov"              # [v2.12+] "numerov" (default), "johnson", "rk45"
+  solver: "auto"                  # [v2.13+] "auto" (recommended), "rk45", "johnson", "numerov"
 
 output:
   save_dcs: true                 # Save differential cross section
