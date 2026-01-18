@@ -664,17 +664,18 @@ $$\tan(\delta_l) = \frac{Y_m \cdot \hat{j}_l - \hat{j}_l'}{\hat{n}_l' - Y_m \cdo
 
 **Solver Selection** *(v2.13+)*:
 
-The `"auto"` mode (default) selects optimal solver per partial wave:
+| Grid Type | Recommended | Notes |
+|-----------|-------------|-------|
+| **Exponential** (default) | `"rk45"` | Only correct solver for variable step size |
+| **Uniform** (`linspace`) | `"numerov"` | O(h⁴) accuracy, fastest |
 
-| Condition | Solver | Reason |
-|-----------|--------|--------|
-| L > 25 | Johnson | Extensive tunneling region |
-| E < 15 eV | Johnson | Potential-dominated regime |
-| Inside barrier | Johnson | Avoids underflow |
-| Otherwise | RK45 | Best phase accuracy |
+**Johnson Renormalized Numerov** *(v2.13 rewrite)*:
+- Based on B.R. Johnson, J. Chem. Phys. 69, 4678 (1978)
+- Propagates ratio $R_n = \psi_{n-1}/\psi_n$ via $R_{n+1} = 1/(T_n - R_n)$
+- Stable for high-L but requires uniform grid
 
 > [!CAUTION]
-> Numerov should only be used with uniform grids. Standard exponential grids cause ~100x cross-section errors.
+> Numerov and Johnson require uniform grids. On exponential grids, errors up to 1.3 rad.
 
 **Fallback Chain**:
 If primary fails → next solver in chain (auto-selected order)

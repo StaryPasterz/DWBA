@@ -45,9 +45,9 @@ excitation:
   pilot_energy_eV: 1000  # [eV] Calibration pilot energy
   # Pilot light mode (v2.5+) - "auto" = dynamic scaling based on energy, int = explicit value
   # Note (v2.7+): "auto" calculates L_max from k*r_max to ensure convergence at high energies
-  pilot_L_max_integrals: "auto"    # "auto" or int (e.g., 8)
-  pilot_L_max_projectile: "auto"   # "auto" or int (e.g., 30)
-  pilot_n_theta: 200                # [count] TCS only, DCS not needed
+  pilot_L_max_integrals: 8    # "auto" or int (e.g., 8)
+  pilot_L_max_projectile: 30   # "auto" or int (e.g., 30)
+  pilot_n_theta: 50                # [count] TCS only, DCS not needed
 
 oscillatory:
   method: "advanced"             # "legacy" | "advanced" | "full_split"
@@ -57,7 +57,7 @@ oscillatory:
   k_threshold: 0.5               # [a.u.] Momentum threshold for Filon/Levin
   max_chi_cached: 20             # [count] LRU cache size for continuum waves
   phase_extraction: "hybrid"     # [v2.11+] "hybrid", "logderiv", or "lsq"
-  solver: "auto"                  # [v2.13+] "auto" (recommended), "rk45", "johnson", "numerov"
+  solver: "rk45"                  # [v2.13+] "auto", "rk45" (recommended), "johnson", "numerov"
 
 hardware:
   gpu_block_size: "auto"         # "auto" = auto-tune, int = explicit size

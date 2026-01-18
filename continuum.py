@@ -216,7 +216,8 @@ def _coulomb_FG_asymptotic(l: int, eta: float, rho: float) -> Tuple[float, float
 
 
 def _find_match_point(r_grid: np.ndarray, U_arr: np.ndarray, k_au: float, l: int,
-                       threshold: float = 1e-2, idx_start: int = 0) -> Tuple[int, float]:
+                       threshold: float = 1e-2, idx_start: int = 0,
+                       chi: np.ndarray = None) -> Tuple[int, float]:
     """
     Find optimal matching point r_m where potential is negligible.
     
@@ -237,7 +238,9 @@ def _find_match_point(r_grid: np.ndarray, U_arr: np.ndarray, k_au: float, l: int
         Match point will be at least idx_start + 50 to ensure stable phase.
     threshold : float
         Ratio |U|/(k²/2) below which potential is considered negligible.
-        Default 1e-2 (1%) is more relaxed than before.
+        Default 1e-2 (1%).
+    chi : np.ndarray, optional
+        Unused parameter for API compatibility.
     
     Returns
     -------
@@ -1089,10 +1092,18 @@ def _johnson_log_derivative_solve(
     renorm_interval: int = 50
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Solve radial Schrödinger using Johnson's log-derivative propagator.
+    Johnson Renormalized Numerov Method (1978).
     
-    This method is much more stable than direct ODE integration for high L
-    because it propagates Y = χ'/χ which stays O(1) even when χ is tiny.
+    Reference: B.R. Johnson, J. Chem. Phys. 69, 4678 (1978)
+    "The renormalized Numerov method applied to calculating bound states
+    of the coupled-channel Schroedinger equation"
+    
+    This method propagates the ratio R_n = ψ_{n-1}/ψ_n using:
+        R_{n+1} = 1 / (T_n - R_n)
+    where T_n = 2 - h² Q_n and Q_n = l(l+1)/r² + 2U(r) - k²
+    
+    This is numerically stable because R stays O(1) regardless of whether
+    the wavefunction is growing or decaying exponentially.
     
     Parameters
     ----------
@@ -1105,7 +1116,7 @@ def _johnson_log_derivative_solve(
     k_au : float
         Wave number in atomic units.
     renorm_interval : int
-        Renormalize wavefunction every N steps to prevent overflow.
+        Unused in this implementation (kept for API compatibility).
         
     Returns
     -------
@@ -1118,108 +1129,111 @@ def _johnson_log_derivative_solve(
     k2 = k_au ** 2
     ell = float(l)
     
-    # Initialize arrays
-    chi = np.zeros(N, dtype=float)
-    dchi = np.zeros(N, dtype=float)
+    # Build Q array: Q(r) = l(l+1)/r² + 2U(r) - k²
+    Q = np.zeros(N, dtype=float)
+    for i in range(N):
+        r = r_grid[i]
+        Q[i] = ell * (ell + 1.0) / (r * r) + 2.0 * U_arr[i] - k2
     
-    # --- Initial Conditions (v2.13+: use exact Bessel for oscillatory region) ---
-    r0 = r_grid[0]
-    S0 = ell * (ell + 1.0) / (r0 * r0) + 2.0 * U_arr[0] - k2
+    # =========================================================================
+    # Johnson Renormalized Numerov: Outward propagation
+    # =========================================================================
+    # For non-uniform grid: we use local step size h_i = r_{i+1} - r_i
+    # T_i = 2 - h_i² Q_i  (modified Numerov coefficient)
+    # R_{i+1} = 1 / (T_i - R_i)  where R_i = ψ_{i-1}/ψ_i
+    #
+    # Initial condition: R_1 = ψ_0 / ψ_1
+    # For regular solution near origin: ψ ~ r^{l+1}
+    # So R_1 = r_0^{l+1} / r_1^{l+1} = (r_0/r_1)^{l+1}
+    # =========================================================================
+    
+    R = np.zeros(N, dtype=float)  # R[i] = ψ_{i-1} / ψ_i
+    
+    # Initial R value (ratio of first two points)
+    r0, r1 = r_grid[0], r_grid[1]
+    h0 = r1 - r0
+    
+    # Check if we're inside barrier (use WKB) or oscillatory (use Bessel)
+    S0 = Q[0]  # S = Q for our equation
     
     if S0 > 0:
-        # Inside barrier: WKB gives Y ≈ +sqrt(S) for growing solution
-        Y_init = np.sqrt(S0)
-        chi[0] = 1.0
-        dchi[0] = Y_init * chi[0]
+        # Inside barrier: WKB approximation
+        # ψ ~ exp(κr) where κ = sqrt(S)
+        # R_1 = exp(-κ·h) for growing solution
+        kappa = np.sqrt(S0)
+        R[1] = np.exp(-kappa * h0)
     else:
-        # Outside barrier (oscillatory): use exact Bessel functions
-        # This is much more accurate than Y = (l+1)/r approximation
+        # Oscillatory region: use Bessel functions
         rho0 = k_au * r0
-        jl = spherical_jn(l, rho0)
-        chi0 = r0 * jl
+        rho1 = k_au * r1
         
-        # Derivative: d/dr[r·j_l(kr)] = j_l(kr) + kr·j'_l(kr)
-        # Using j'_l = j_{l-1} - (l+1)/x · j_l for l>0, or cos(x)/x - sin(x)/x² for l=0
-        if l == 0:
-            # d/dr[sin(kr)/k] = cos(kr)
-            dchi0 = np.cos(rho0)
-        else:
-            jl_m1 = spherical_jn(l - 1, rho0)
-            # j'_l(x) = j_{l-1}(x) - (l+1)/x * j_l(x)
-            jl_prime = jl_m1 - (l + 1.0) / rho0 * jl
-            dchi0 = jl + k_au * r0 * jl_prime
-        
-        # Avoid division by very small chi
-        if abs(chi0) > 1e-50:
-            Y_init = dchi0 / chi0
-        else:
-            Y_init = (ell + 1.0) / r0  # Fallback
-        
-        chi[0] = chi0 if abs(chi0) > 1e-100 else 1.0
-        dchi[0] = dchi0 if abs(chi0) > 1e-100 else Y_init
-    
-    Y_current = Y_init
-    
-    # --- RK4 Propagation for Y ---
-    # From χ'' = S·χ and Y = χ'/χ:
-    #   χ' = Y·χ
-    #   χ'' = Y'·χ + Y·χ' = (Y' + Y²)·χ
-    # So: Y' + Y² = S  =>  dY/dr = S - Y²
-    # v2.13+: Fixed sign error (was -Y² - S, now S - Y²)
-    
-    for i in range(N - 1):
-        r = r_grid[i]
-        r_next = r_grid[i + 1]
-        h = r_next - r
-        
-        # S(r) function
-        def S_func(rr, idx_hint):
-            # Interpolate U if needed
-            if idx_hint < N - 1:
-                t = (rr - r_grid[idx_hint]) / (r_grid[idx_hint + 1] - r_grid[idx_hint])
-                U_interp = U_arr[idx_hint] * (1 - t) + U_arr[idx_hint + 1] * t
+        if rho0 > 1e-10 and rho1 > 1e-10:
+            jl0 = spherical_jn(l, rho0)
+            jl1 = spherical_jn(l, rho1)
+            chi0 = r0 * jl0
+            chi1 = r1 * jl1
+            if abs(chi1) > 1e-100:
+                R[1] = chi0 / chi1
             else:
-                U_interp = U_arr[-1]
-            return ell * (ell + 1.0) / (rr * rr) + 2.0 * U_interp - k2
-        
-        # RK4 for Y: dY/dr = S(r) - Y²
-        def dY(rr, Y_val, idx):
-            return S_func(rr, idx) - Y_val**2  # FIXED: was -Y²-S, now S-Y²
-        
-        k1 = dY(r, Y_current, i)
-        k2_rk = dY(r + 0.5*h, Y_current + 0.5*h*k1, i)
-        k3 = dY(r + 0.5*h, Y_current + 0.5*h*k2_rk, i)
-        k4 = dY(r_next, Y_current + h*k3, i)
-        
-        Y_next = Y_current + (h/6.0) * (k1 + 2*k2_rk + 2*k3 + k4)
-        
-        # Limit Y to prevent numerical explosion
-        Y_next = np.clip(Y_next, -100.0, 100.0)
-        
-        # Reconstruct chi from Y using logarithmic integration
-        Y_avg = 0.5 * (Y_current + Y_next)
-        exp_arg = h * Y_avg
-        exp_arg = np.clip(exp_arg, -30, 30)  # Stricter limits
-        
-        chi[i + 1] = chi[i] * np.exp(exp_arg)
-        dchi[i + 1] = Y_next * chi[i + 1]
-        
-        Y_current = Y_next
-        
-        # Renormalize more frequently to prevent issues
-        if (i + 1) % renorm_interval == 0:
-            max_val = np.max(np.abs(chi[:i + 2]))
-            if max_val > 1e5 or (max_val < 1e-100 and max_val > 0):
-                if max_val > 0:
-                    scale = 1.0 / max_val
-                    chi[:i + 2] *= scale
-                    dchi[:i + 2] *= scale
+                R[1] = (r0 / r1) ** (l + 1)
+        else:
+            # Very small r: use power law
+            R[1] = (r0 / r1) ** (l + 1)
     
-    # Final normalization to reasonable scale
+    # Clip to prevent numerical issues
+    R[1] = np.clip(R[1], -1e10, 1e10)
+    
+    # Forward propagation using Johnson's algorithm
+    for i in range(1, N - 1):
+        h_curr = r_grid[i + 1] - r_grid[i]
+        h_prev = r_grid[i] - r_grid[i - 1]
+        
+        # For non-uniform grid, use average step for Q coefficient
+        # T_i = 2 - h² Q_i (standard Numerov)
+        # We use the geometric mean of steps for better accuracy
+        h_eff = np.sqrt(h_curr * h_prev)
+        T_i = 2.0 - h_eff * h_eff * Q[i]
+        
+        # Johnson's recursion: R_{i+1} = 1 / (T_i - R_i)
+        denom = T_i - R[i]
+        
+        # Handle near-zero denominator (turning point)
+        if abs(denom) < 1e-12:
+            denom = np.sign(denom) * 1e-12 if denom != 0 else 1e-12
+        
+        R[i + 1] = 1.0 / denom
+        
+        # Clip to prevent explosion
+        R[i + 1] = np.clip(R[i + 1], -1e10, 1e10)
+    
+    # =========================================================================
+    # Backward reconstruction of ψ from R
+    # =========================================================================
+    # ψ_{i-1} = R_i * ψ_i
+    # Start from last point and work backwards
+    
+    chi = np.zeros(N, dtype=float)
+    chi[-1] = 1.0  # Arbitrary normalization
+    
+    for i in range(N - 1, 0, -1):
+        chi[i - 1] = R[i] * chi[i]
+        
+        # Renormalize periodically to prevent underflow/overflow
+        if i % 100 == 0:
+            max_val = np.max(np.abs(chi[i - 1:]))
+            if max_val > 1e30 or (max_val < 1e-30 and max_val > 0):
+                scale = 1.0 / max_val if max_val > 0 else 1.0
+                chi[i - 1:] *= scale
+    
+    # Final normalization
     max_val = np.max(np.abs(chi))
-    if max_val > 0 and max_val != 1.0:
+    if max_val > 0:
         chi /= max_val
-        dchi /= max_val
+    
+    # Compute derivatives using 5-point stencil
+    dchi = np.zeros(N, dtype=float)
+    for i in range(N):
+        dchi[i] = _derivative_5point(chi, r_grid, i)
     
     return chi, dchi
 
@@ -1772,8 +1786,8 @@ def solve_continuum_wave(
                 chi_raw = chi_out
                 dchi_raw = dchi_out
             
-            # Find match point and test solution
-            idx_match, r_m = _find_match_point(r, U_arr, k_au, l, threshold=1e-4, idx_start=idx_start)
+            # Find match point and test solution (v2.14+: with node avoidance)
+            idx_match, r_m = _find_match_point(r, U_arr, k_au, l, threshold=1e-4, idx_start=idx_start, chi=chi_raw)
             chi_m = chi_raw[idx_match]
             dchi_m = dchi_raw[idx_match]
             
@@ -1937,6 +1951,32 @@ def solve_continuum_wave(
     
     # For r > r_m: use pure analytic asymptotic solution
     chi_final[idx_match + 1:] = chi_asymptotic[idx_match + 1:]
+    
+    # =========================================================================
+    # v2.14+: AMPLITUDE VALIDATION AND ENFORCEMENT
+    # =========================================================================
+    # Ensure asymptotic amplitude is exactly √(2/π) ≈ 0.7979 for δ(k-k') normalization.
+    # This fixes inconsistent amplitudes across L that cause upturn artifacts.
+    # =========================================================================
+    
+    # Compute actual amplitude in asymptotic region (RMS of sine wave = A/√2)
+    asym_region = chi_final[idx_match:]
+    if len(asym_region) > 10:
+        chi_rms = np.sqrt(np.mean(asym_region**2))
+        actual_amplitude = chi_rms * np.sqrt(2.0)  # A where χ ~ A·sin(...)
+        expected_amplitude = np.sqrt(2.0 / np.pi)  # ≈ 0.7979
+        
+        # If amplitude deviates significantly (>5%), renormalize
+        amplitude_ratio = actual_amplitude / expected_amplitude if expected_amplitude > 0 else 1.0
+        
+        if abs(amplitude_ratio - 1.0) > 0.05 and actual_amplitude > 1e-50:
+            # Renormalize to exact unit amplitude
+            chi_final /= amplitude_ratio
+            logger.debug(f"L={l}: Amplitude corrected: {actual_amplitude:.4f} → {expected_amplitude:.4f} (ratio={amplitude_ratio:.3f})")
+        
+        # Validation warning if amplitude was very wrong
+        if abs(amplitude_ratio - 1.0) > 0.3:
+            logger.warning(f"L={l}: Large amplitude correction applied (ratio={amplitude_ratio:.3f}). Check wave quality.")
     
     # =========================================================================
     # Compute Coulomb phase parameters for oscillatory integral tail

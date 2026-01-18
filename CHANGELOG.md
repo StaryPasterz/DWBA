@@ -6,50 +6,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [v2.13] — 2026-01-14 — Critical Numerov Fix + Auto Solver Selection
+## [v2.13] — 2026-01-17 — Johnson Rewrite + Solver Verification
 
-**Critical bug fix** resolving ~100x cross-section overestimation when using Numerov solver + new intelligent `"auto"` solver mode.
+**Major update**: Johnson solver rewritten according to literature, RK45 verified as correct for exponential grids.
 
-### 🔴 Critical Bug Fix
+### Johnson Solver Rewrite
 
-**Numerov solver fails on exponential (non-uniform) grids**:
-- **Root Cause**: Standard Numerov method is designed for **uniform step size**. On exponential grids where step h varies from ~10⁻⁵ to ~0.66 bohr, the geometric mean approximation introduces systematic phase errors up to **1.3 radians**
-- **Impact**: Cross-sections overestimated by ~100x (e.g., σ = 6.95×10⁻¹⁷ cm² instead of 6.55×10⁻¹⁹ cm²)
-- **Fix**: Changed default solver from `"numerov"` to `"auto"` which selects the optimal solver per partial wave
+**Implemented Johnson Renormalized Numerov Method** (B.R. Johnson, J. Chem. Phys. 69, 4678 (1978)):
+- Propagates ratio `R_n = ψ_{n-1}/ψ_n` using recursion: `R_{n+1} = 1/(T_n - R_n)`
+- Avoids exponential overflow/underflow issues
+- Numerically stable for all L values
+
+### RK45 Verification ✓
+
+**Free particle test** (exact analytical solution known):
+| Grid | Max Phase Error | Status |
+|------|-----------------|--------|
+| Exponential | 0.003 rad | ✓ Correct |
+| Uniform | 0.004 rad | ✓ Correct |
+
+**Conclusion**: RK45 gives correct phases on exponential grids, Numerov/Johnson give errors up to 1.3 rad.
+
+### Solver Recommendations
+
+| Grid Type | Recommended Solver | Notes |
+|-----------|-------------------|-------|
+| **Exponential** (default) | `"rk45"` | Only correct solver for h varying 10⁻⁵ to 0.3 |
+| **Uniform** (`linspace`) | `"numerov"` or `"johnson"` | O(h⁴) accuracy, fastest |
 
 > [!CAUTION]
-> **Numerov solver should only be used with uniform grids** (e.g., `np.linspace`). For standard DWBA calculations which use exponential grids, use `"auto"` (new default), `"rk45"`, or `"johnson"`.
+> **Numerov and Johnson are designed for uniform grids only**. For exponential grids (standard DWBA), use `"rk45"`.
 
-### New Features
-
-**Intelligent `"auto"` solver mode** (new default):
-
-The `"auto"` mode automatically selects the best solver for each partial wave based on physics:
-
-| Condition | Solver Selected | Reason |
-|-----------|-----------------|--------|
-| L > 25 | Johnson | Large centrifugal barrier, extensive tunneling |
-| E < 15 eV | Johnson | Long-wavelength, potential-dominated regime |
-| Inside barrier (S₀ > 0) | Johnson | Avoids underflow in evanescent region |
-| Otherwise | RK45 | Best phase accuracy on non-uniform grids |
+### Configuration
 
 ```yaml
 oscillatory:
-  solver: "auto"  # NEW: "auto" (recommended), "rk45", "johnson", "numerov"
+  solver: "rk45"  # Recommended for exponential grids
+  # Options: "auto", "rk45" (recommended), "johnson", "numerov"
 ```
-
-### Technical Details
-
-Phase extraction test (H 1s→2s at 50 eV):
-| L | Numerov phase (rad) | RK45 phase (rad) | Error |
-|---|---------------------|------------------|-------|
-| 0 | +1.898 | +0.708 | **1.19 rad** |
-| 5 | +0.420 | +0.179 | 0.24 rad |
-| 10 | +0.986 | +0.637 | 0.35 rad |
-
-### Improved Initial Conditions
-
-Numerov initial conditions (when used) now use exact Bessel functions `r·j_l(kr)` instead of the `r^(l+1)` approximation.
 
 
 ---

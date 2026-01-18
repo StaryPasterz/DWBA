@@ -669,6 +669,7 @@ def compute_total_excitation_cs(
         consecutive_small_changes = 0
         convergence_threshold = 1e-5
         nonmono_count = 0  # Track non-monotonic decay for instability detection
+        sigma_history = []  # v2.15+: Track (l_i, sigma_total) for stability-based convergence
         
         t0_sum = time.perf_counter()
         for l_i in range(L_max_proj + 1):
@@ -790,39 +791,43 @@ def compute_total_excitation_cs(
                     stop_reason = f"Negligible contribution: L{l_i} adds only {relative_contrib:.1e} of total"
                     should_add = True  # Still add this one, but stop after
             
-            # CHECK 2: Upturn detection (numerical instability)
-            # More sensitive: >1.1x after L>8 triggers stop and uses top-up from last monotonic trio
-            if l_i >= 2 and stop_reason is None:
-                prev_key = f"L{l_i-1}"
-                curr_key = f"L{l_i}"
-                if prev_key in partial_waves_dict and curr_key in partial_waves_dict:
-                    prev_contrib = partial_waves_dict[prev_key]
-                    curr_contrib = partial_waves_dict[curr_key]
+            # CHECK 2: STABILITY-BASED CONVERGENCE (v2.15+)
+            # ================================================================
+            # Literature insight: Non-monotonicity of individual l_i contributions
+            # is NORMAL in DWBA due to interference in |f±g|². The correct test
+            # is stability of the TOTAL cross section, not individual terms.
+            # 
+            # Per article analysis: "partial sums of DCS/TCS need not grow 
+            # monotonically" because DCS = |f-g|² + |f+g|² has interference.
+            # 
+            # We check: |sigma_total(L) - sigma_total(L-ΔL)| / sigma_total(L) < ε
+            # where ΔL = 3 (need several partial waves for stable estimate)
+            # ================================================================
+            if l_i >= 5 and stop_reason is None and sigma_accumulated > 1e-30:
+                # Compute current total sigma from ALL accumulated amplitudes
+                if total_amplitudes:
+                    current_snap_dcs = np.zeros_like(theta_grid, dtype=float)
+                    for (Mi, Mf), amps in total_amplitudes.items():
+                        chan_dcs = dcs_dwba(theta_grid, amps.f_theta, amps.g_theta, k_i_au, k_f_au, Li, chan.N_equiv)
+                        current_snap_dcs += chan_dcs
+                    current_sigma_total = sigma_au_to_cm2(integrate_dcs_over_angles(theta_grid, current_snap_dcs))
                     
-                    if curr_contrib > prev_contrib * 1.1 and prev_contrib > 1e-30 and l_i > 8:
-                        nonmono_count += 1
-                        if nonmono_count >= 1:  # Single increase is enough
-                            logger.warning("Upturn at L=%d: %.2e > %.2e (prev). Stopping sum and using tail from last monotonic trio.", 
-                                          l_i, curr_contrib, prev_contrib)
-                            should_add = False
-                            # Mark as excluded
-                            partial_waves_dict[f"{curr_key}_excluded"] = partial_waves_dict.pop(curr_key)
-                            stop_reason = "Numerical instability (upturn)"
-                            # Prepare a conservative top-up from last 3 decreasing terms if available
-                            try:
-                                last_keys = [f"L{l_i-1}", f"L{l_i-2}", f"L{l_i-3}"]
-                                vals = [partial_waves_dict[k] for k in last_keys]
-                                if vals[0] < vals[1] and vals[1] < vals[2]:
-                                    q = vals[0] / vals[1]
-                                    q_prev = vals[1] / vals[2]
-                                    if 0.0 < q < 0.8 and abs(q - q_prev) < 0.2:
-                                        tail = vals[0] * q / (1.0 - q)
-                                        pending_topup = (tail, l_i-1, q)
-                                        logger.debug("Prepared tail from monotonic trio: tail=%.2e, q=%.3f (L>%d)", tail, q, l_i-1)
-                            except Exception:
-                                pending_topup = None
-                    else:
-                        nonmono_count = 0  # Reset on good decay
+                    # Store for convergence check (L, sigma_total)
+                    sigma_history.append((l_i, current_sigma_total))
+                    
+                    # Check stability over last 4 partial waves (ΔL=3)
+                    if len(sigma_history) >= 4:
+                        old_sigma = sigma_history[-4][1]  # sigma from 3 L's ago
+                        new_sigma = current_sigma_total
+                        
+                        if old_sigma > 1e-30:
+                            relative_change = abs(new_sigma - old_sigma) / old_sigma
+                            
+                            # Convergence criterion: <0.5% change over last 4 partial waves
+                            # This is the correct physics-based test per literature
+                            if relative_change < 0.005 and l_i > 12:
+                                stop_reason = f"Converged: Δσ/σ = {relative_change:.2e} over last 4 L (stable)"
+                                logger.info("Partial wave sum converged at L=%d: relative change = %.2e", l_i, relative_change)
             
             # === ACCUMULATE OR STOP ===
             if should_add:

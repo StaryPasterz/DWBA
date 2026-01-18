@@ -841,10 +841,23 @@ def run_scan_excitation(run_name):
             logger.debug("Pilot explicit L_max: L_proj=%d, L_int=%d", pilot_L_proj, pilot_L_int)
         
         try:
-            # Article uses large box (200 au)
+            # v2.14+: Use adaptive grid for pilot (same as production runs)
+            # Calculate optimal grid based on pilot energy and L_max
+            pilot_r_max, pilot_n_points = calculate_optimal_grid_params(
+                pilot_E, 
+                pilot_L_proj,
+                base_r_max=params['grid']['r_max'],
+                base_n_points=params['grid']['n_points'],
+                scale_factor=params['grid'].get('r_max_scale_factor', 2.5),
+                n_points_max=params['grid'].get('n_points_max', 15000),
+                min_points_per_wavelength=params['grid'].get('min_points_per_wavelength', 15)
+            )
+            logger.debug("Pilot adaptive grid: r_max=%.1f, n_points=%d (E=%.0f eV, L_proj=%d)", 
+                        pilot_r_max, pilot_n_points, pilot_E, pilot_L_proj)
+            
             res_pilot = compute_total_excitation_cs(
                 pilot_E, spec, core_params, 
-                r_max=200.0, n_points=3000, 
+                r_max=pilot_r_max, n_points=pilot_n_points, 
                 use_polarization_potential=use_pol,
                 n_theta=n_theta,
                 L_max_integrals_override=pilot_L_int,
@@ -1600,8 +1613,11 @@ def calculate_optimal_grid_params(
     
     # --- Wavelength-based n_points scaling for high energies ---
     # For exponential grid: dr(r) ≈ r * ln(r_max/r_min) / n_points
-    # At large r ≈ r_max/2, we need: dr < wavelength / min_pts_per_wavelength
-    # => n_points > r_check * ln(ratio) * min_pts / wavelength
+    # 
+    # v2.14+: Focus wavelength requirements on BOUND STATE REGION (r < 15 a.u.)
+    # Beyond this, bound states have negligible density, and oscillatory
+    # quadrature handles phase via Filon/Levin methods (which are phase-aware).
+    # Requiring 15+ pts/wavelength at r=150 is impractical (needs ~50000 points).
     
     r_min = 1e-5  # Standard grid r_min
     
@@ -1609,13 +1625,25 @@ def calculate_optimal_grid_params(
         wavelength = 2 * np.pi / k_au
         log_ratio = np.log(r_max_optimal / r_min)
         
-        # Check at r = 0.7 * r_max (where oscillations matter most for matching)
-        r_check = 0.7 * r_max_optimal
+        # v2.14+: Check at r = 15 a.u. (outer edge of bound state region)
+        # This is where accurate sampling matters for matrix elements.
+        # Beyond r~15, bound states are negligible (<1%) and oscillatory
+        # quadrature uses phase-aware Filon integration.
+        r_check = 15.0  # Focus on bound state region instead of 0.7*r_max
         dr_needed = wavelength / min_points_per_wavelength
         
         # For exponential grid: dr(r) ≈ r * log_ratio / n
         # => n >= r * log_ratio / dr_needed
         n_wavelength_required = int(r_check * log_ratio / dr_needed) + 1
+        
+        # Also check at match point region (~50 a.u.) with relaxed requirement
+        # (oscillatory quadrature handles this, but still need ~5 pts/wavelength)
+        r_match_typical = 50.0
+        min_pts_match = 5  # Relaxed for asymptotic region (Filon helps here)
+        dr_match = wavelength / min_pts_match
+        n_match_required = int(r_match_typical * log_ratio / dr_match) + 1
+        
+        n_wavelength_required = max(n_wavelength_required, n_match_required)
         
         # Use max of density-based and wavelength-based requirements
         n_points_optimal = max(base_n_points, n_wavelength_required)
@@ -1630,7 +1658,15 @@ def calculate_optimal_grid_params(
         n_points_optimal = max(n_points_optimal, n_density_req)
     
     # Apply strict memory cap
+    pre_cap = n_points_optimal
     n_points_optimal = min(n_points_optimal, n_points_max)
+    
+    # v2.14+: Warn if cap significantly limits required density
+    if pre_cap > n_points_max * 1.5 and k_au > 2.0:
+        logger.warning(
+            f"Grid cap limits phase sampling: need {pre_cap} pts for E={E_eV:.0f}eV, "
+            f"capped at {n_points_max}. Consider increasing n_points_max for high energies."
+        )
     
     # Log if we're scaling up significantly
     if n_points_optimal > base_n_points * 1.5:
