@@ -83,7 +83,7 @@ DEFAULTS = {
     "grid": {
         "strategy": "global",     # "manual" / "global" / "local" - v2.6+
         "r_max": 200.0,           # Maximum radius (a.u.)
-        "n_points": 3000,         # Number of radial grid points
+        "n_points": 1000,         # Number of radial grid points
         "r_max_scale_factor": 2.5, # Safety factor for adaptive r_max
         "n_points_max": 15000,    # Maximum grid points (memory cap)
         "min_points_per_wavelength": 15,  # Minimum points per λ for high-E (v2.7+)
@@ -118,14 +118,14 @@ DEFAULTS = {
         "k_threshold": 0.5,           # k_total threshold for Filon
         "max_chi_cached": 20,         # v2.5+: LRU cache size for GPU continuum waves
         "phase_extraction": "hybrid", # v2.11+: "hybrid", "logderiv", "lsq"
-        "solver": "auto",             # v2.13+: "auto" (recommended), "rk45", "johnson", "numerov"
+        "solver": "rk45",             # v2.13+: "auto", "rk45" (recommended), "johnson", "numerov"
     },
     
     # --- Hardware (GPU/CPU) ---
     "hardware": {
         "gpu_block_size": "auto",     # "auto" = auto-tune based on VRAM, int = explicit size
         "gpu_memory_mode": "auto",    # "auto" / "full" / "block" - GPU matrix strategy
-        "gpu_memory_threshold": 0.7,  # Max fraction of GPU memory to use (for auto mode)
+        "gpu_memory_threshold": 0.8,  # Max fraction of GPU memory to use (for auto mode)
         "n_workers": "auto",          # "auto" (balanced), "max" (all cores), or int count
     },
     
@@ -319,7 +319,7 @@ def log_active_configuration(params: dict, context: str = "calculation"):
         g = params['grid']
         strategy = g.get('strategy', 'global').upper()
         logger.info("Grid: strategy=%s, r_max=%.1f a.u., n_points=%d", 
-                   strategy, g.get('r_max', 200), g.get('n_points', 3000))
+                   strategy, g.get('r_max', 200), g.get('n_points', 1000))
     
     # Excitation-specific
     if 'excitation' in params:
@@ -810,7 +810,6 @@ def run_scan_excitation(run_name):
     res_pilot = None
     
     if do_calibrate:
-        print_progress("Running pilot at 1000 eV...")
         pilot_E = 1000.0
         
         # Pilot L_max configuration: "auto" = dynamic scaling, int = explicit value
@@ -852,8 +851,10 @@ def run_scan_excitation(run_name):
                 n_points_max=params['grid'].get('n_points_max', 15000),
                 min_points_per_wavelength=params['grid'].get('min_points_per_wavelength', 15)
             )
-            logger.debug("Pilot adaptive grid: r_max=%.1f, n_points=%d (E=%.0f eV, L_proj=%d)", 
-                        pilot_r_max, pilot_n_points, pilot_E, pilot_L_proj)
+            
+            # Log pilot calculation start with grid info
+            logger.info("Pilot Calibrate | E=%.0f eV: r_max=%.1f a.u., n_points=%d, L_proj=%d", 
+                        pilot_E, pilot_r_max, pilot_n_points, pilot_L_proj)
             
             res_pilot = compute_total_excitation_cs(
                 pilot_E, spec, core_params, 
@@ -1830,8 +1831,6 @@ def run_from_config(config_path: str, verbose: bool = False) -> None:
         if not energies:
             print_error("All energies are below threshold!")
             return
-            
-        logger.info("Active Points   | %d points above threshold", len(energies))
 
         # --- Initialize calibrator ---
         alpha = 1.0

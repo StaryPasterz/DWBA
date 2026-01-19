@@ -261,7 +261,7 @@ class GPUCache:
             cp.get_default_memory_pool().free_all_blocks()
 
 
-def _compute_optimal_block_size(n_grid: int, gpu_memory_threshold: float = 0.7) -> int:
+def _compute_optimal_block_size(n_grid: int, gpu_memory_threshold: float = 0.8) -> int:
     """
     Compute optimal block size based on available GPU memory.
     
@@ -1072,7 +1072,7 @@ def radial_ME_all_L_gpu(
     min_grid_fraction: float = 0.10,
     k_threshold: float = 0.5,
     gpu_memory_mode: str = "auto",
-    gpu_memory_threshold: float = 0.7,
+    gpu_memory_threshold: float = 0.8,
     gpu_cache: Optional[GPUCache] = None,  # Phase 3: Energy-level cache
     # Bug #2 fix: Also check U_f for asymptotic validation
     U_f_array: Optional[np.ndarray] = None

@@ -101,11 +101,11 @@ OSCILLATORY_CONFIG = {
     # GPU memory strategy: "auto" (check memory), "full" (force full matrix), "block" (force block-wise)
     "gpu_memory_mode": "auto",
     # Memory threshold for auto mode: fraction of free GPU memory to use
-    "gpu_memory_threshold": 0.7,
+    "gpu_memory_threshold": 0.8,
     # CPU worker count: "auto" = auto-detect (min(cpu_count, 8)), int > 0 = explicit count
     "n_workers": "auto",
     # v2.13+: ODE solver: "auto" (recommended), "rk45", "johnson", "numerov"
-    "solver": "auto"
+    "solver": "rk45"
 }
 
 # =============================================================================
@@ -490,7 +490,7 @@ def compute_total_excitation_cs(
     core_params: CorePotentialParams,
     r_min: float = 1e-5,
     r_max: float = 200.0,
-    n_points: int = 3000,
+    n_points: int = 1000,
     match_high_energy_eV: float = 1000.0,
     n_theta: int = 200,
     use_polarization_potential: bool = False,
@@ -613,11 +613,22 @@ def compute_total_excitation_cs(
     L_dynamic = int(k_i_au * 8.0) + 5
     
     # Use the minimum of:
-    # 1. User requested (chan.L_max_projectile)
-    # 2. Dynamic estimate (convergence requirement)
+    # 1. User requested (chan.L_max_projectile) - can be explicit ceiling for pilot
+    # 2. Dynamic estimate (convergence requirement)  
     # 3. Turning point limit (physical constraint from r_max)
-    L_max_proj = max(L_requested, L_dynamic)  # At least fulfill request/convergence
-    L_max_proj = min(L_max_proj, L_turning_point)  # But never exceed turning point
+    #
+    # Note: If user explicitly set a higher L_max, use that (for production).
+    # If user explicitly set a lower L_max (like pilot mode), respect that as ceiling.
+    if L_requested >= L_dynamic:
+        # User wants MORE than dynamic estimate - trust user (production)
+        L_max_proj = min(L_requested, L_turning_point)
+    else:
+        # User set lower explicit value (e.g., pilot speed) - respect ceiling
+        # But warn if convergence might be affected
+        L_max_proj = L_requested
+        if L_dynamic > L_requested + 10:
+            logger.debug("L_max=%d (user) may be insufficient for convergence (L_dynamic=%d). "
+                        "Increase if results unstable.", L_requested, L_dynamic)
     
     # Hard cap for extreme cases (prevents runaway computation)
     L_max_proj = min(L_max_proj, 100)
@@ -665,11 +676,8 @@ def compute_total_excitation_cs(
 
         # Sequential Loop, but with fast GPU integrals
         
-        sigma_accumulated = 0.0
-        consecutive_small_changes = 0
-        convergence_threshold = 1e-5
-        nonmono_count = 0  # Track non-monotonic decay for instability detection
-        sigma_history = []  # v2.15+: Track (l_i, sigma_total) for stability-based convergence
+        sigma_accumulated = 0.0  # For progress logging
+        dcs_history = []   # v2.15+: Track (l_i, DCS_array) for per-angle stability convergence
         
         t0_sum = time.perf_counter()
         for l_i in range(L_max_proj + 1):
@@ -778,56 +786,55 @@ def compute_total_excitation_cs(
                 sigma_li_contribution = sigma_au_to_cm2(integrate_dcs_over_angles(theta_grid, dcs_li_sum))
                 partial_waves_dict[f"L{l_i}"] = sigma_li_contribution
             
-            # === EARLY STOPPING CHECKS ===
+            # === EARLY STOPPING CHECKS (v2.15 per literature) ===
+            # Literature insight: Non-monotonicity of individual l_i is NORMAL in DWBA
+            # due to interference in |f±g|². Correct test: stability of TOTAL DCS.
             should_add = True
             stop_reason = None
-            pending_topup = None
             
-            # CHECK 1: Negligible contribution (optimization)
-            # If this partial wave contributes less than 0.01% of accumulated total, stop
-            if l_i > 5 and sigma_li_contribution > 0 and sigma_accumulated > 0:
-                relative_contrib = sigma_li_contribution / sigma_accumulated
-                if relative_contrib < 1e-6:
-                    stop_reason = f"Negligible contribution: L{l_i} adds only {relative_contrib:.1e} of total"
-                    should_add = True  # Still add this one, but stop after
+            # CHECK 1: PER-ANGLE DCS STABILITY
+            # ================================================================
+            # Check max relative change across ALL angles in theta_grid.
+            # This catches both forward and backward scattering convergence.
+            # ================================================================
+            if l_i >= 5 and total_amplitudes:
+                # Compute current DCS for full theta grid
+                current_dcs = np.zeros_like(theta_grid, dtype=float)
+                for (Mi, Mf), amps in total_amplitudes.items():
+                    chan_dcs = dcs_dwba(theta_grid, amps.f_theta, amps.g_theta, k_i_au, k_f_au, Li, chan.N_equiv)
+                    current_dcs += chan_dcs
+                
+                # Store for convergence check (store DCS array, not just TCS)
+                dcs_history.append((l_i, current_dcs.copy()))
+                
+                # Check stability over last 4 partial waves
+                if len(dcs_history) >= 4:
+                    old_dcs = dcs_history[-4][1]  # DCS from 3 L's ago
+                    
+                    # Max relative change across all angles (avoid div by zero)
+                    with np.errstate(divide='ignore', invalid='ignore'):
+                        angle_changes = np.abs(current_dcs - old_dcs) / (current_dcs + 1e-50)
+                        angle_changes[~np.isfinite(angle_changes)] = 0.0
+                    
+                    max_change = np.max(angle_changes)
+                    avg_change = np.mean(angle_changes)
+                    
+                    # Convergence: <1% max change at all angles after L>15
+                    if max_change < 0.01 and l_i > 15:
+                        stop_reason = f"Converged: max Δ(DCS)/DCS = {max_change:.2e} over all θ (stable)"
+                        logger.info("Partial wave sum converged at L=%d: max angle change = %.2e, avg = %.2e", 
+                                   l_i, max_change, avg_change)
             
-            # CHECK 2: STABILITY-BASED CONVERGENCE (v2.15+)
+            # CHECK 2: NUMERICAL SAFETY (true failure detection)
             # ================================================================
-            # Literature insight: Non-monotonicity of individual l_i contributions
-            # is NORMAL in DWBA due to interference in |f±g|². The correct test
-            # is stability of the TOTAL cross section, not individual terms.
-            # 
-            # Per article analysis: "partial sums of DCS/TCS need not grow 
-            # monotonically" because DCS = |f-g|² + |f+g|² has interference.
-            # 
-            # We check: |sigma_total(L) - sigma_total(L-ΔL)| / sigma_total(L) < ε
-            # where ΔL = 3 (need several partial waves for stable estimate)
-            # ================================================================
-            if l_i >= 5 and stop_reason is None and sigma_accumulated > 1e-30:
-                # Compute current total sigma from ALL accumulated amplitudes
-                if total_amplitudes:
-                    current_snap_dcs = np.zeros_like(theta_grid, dtype=float)
-                    for (Mi, Mf), amps in total_amplitudes.items():
-                        chan_dcs = dcs_dwba(theta_grid, amps.f_theta, amps.g_theta, k_i_au, k_f_au, Li, chan.N_equiv)
-                        current_snap_dcs += chan_dcs
-                    current_sigma_total = sigma_au_to_cm2(integrate_dcs_over_angles(theta_grid, current_snap_dcs))
-                    
-                    # Store for convergence check (L, sigma_total)
-                    sigma_history.append((l_i, current_sigma_total))
-                    
-                    # Check stability over last 4 partial waves (ΔL=3)
-                    if len(sigma_history) >= 4:
-                        old_sigma = sigma_history[-4][1]  # sigma from 3 L's ago
-                        new_sigma = current_sigma_total
-                        
-                        if old_sigma > 1e-30:
-                            relative_change = abs(new_sigma - old_sigma) / old_sigma
-                            
-                            # Convergence criterion: <0.5% change over last 4 partial waves
-                            # This is the correct physics-based test per literature
-                            if relative_change < 0.005 and l_i > 12:
-                                stop_reason = f"Converged: Δσ/σ = {relative_change:.2e} over last 4 L (stable)"
-                                logger.info("Partial wave sum converged at L=%d: relative change = %.2e", l_i, relative_change)
+            if total_amplitudes and stop_reason is None:
+                # Check for NaN/Inf in amplitudes
+                for (Mi, Mf), amps in total_amplitudes.items():
+                    if not np.all(np.isfinite(amps.f_theta)) or not np.all(np.isfinite(amps.g_theta)):
+                        stop_reason = "Numerical failure: NaN/Inf in amplitudes"
+                        logger.error("Numerical failure at L=%d: non-finite amplitudes", l_i)
+                        should_add = False
+                        break
             
             # === ACCUMULATE OR STOP ===
             if should_add:
@@ -840,10 +847,6 @@ def compute_total_excitation_cs(
             
             if stop_reason:
                 logger.info("Stopping partial wave sum at L=%d: %s", l_i, stop_reason)
-                if pending_topup:
-                    tail, l_ref, q = pending_topup
-                    partial_waves_dict["born_topup"] = tail
-                    logger.info("Applied conservative top-up tail=%.2e from L>%d (q=%.3f)", tail, l_ref, q)
                 break
                 
             # Compute Total CS snapshot
@@ -860,19 +863,6 @@ def compute_total_excitation_cs(
             # Progress log
             if l_i % 5 == 0:
                  logger.debug("l_i=%d done. Sigma=%.3e (dL/L=%.1e)", l_i, snap_sigma, rel_change)
-
-            # CHECK 3: Convergence by relative change (might be implemented as a fallback)
-            #if l_i > 10:
-            #    if rel_change < convergence_threshold:
-            #        consecutive_small_changes += 1
-            #    else:
-            #        consecutive_small_changes = 0
-            #else:
-            #    consecutive_small_changes = 0
-            
-            if consecutive_small_changes >= 4:
-                logger.info("Convergence: Auto-stop at l_i=%d (Change < %.0e for 4 steps)", l_i, convergence_threshold)
-                break
 
         # === END OF GPU BLOCK: Cleanup cache ===
         gpu_cache.clear()
@@ -1004,57 +994,113 @@ def compute_total_excitation_cs(
         # 7. Calibration
     # Moved to calibration.py and driver integration in main
     
-    # --- Born Top-Up (Excitation) ---
-    # Extrapolate higher partial waves using geometric series if applicable
+    # --- Top-Up Section ---
+    # Strategy:
+    # - Forbidden transitions (|ΔL| ≠ 1): Use Born geometric extrapolation (fast convergence)
+    # - Dipole-allowed (E1) transitions (|ΔL| = 1): Use Coulomb-Bethe formula (slow 1/L convergence)
     
-    born_topup_added = False
-    if partial_waves_dict:
-        try:
-            # Extract L indices that were computed (skip _excluded keys)
-            l_indices = sorted([int(k[1:]) for k in partial_waves_dict.keys() 
-                               if k.startswith("L") and not k.endswith("_excluded") and k[1:].isdigit()])
-            
-            # Search backwards to find a truly monotonically decaying segment
-            if len(l_indices) >= 3:
-                for i in range(len(l_indices) - 1, 1, -1):  # Start from end, go backwards
-                    L_try = l_indices[i]
-                    L_m1 = l_indices[i-1]
-                    L_m2 = l_indices[i-2]
+    delta_L = abs(Lf - Li)
+    is_dipole_allowed = (delta_L == 1)
+    
+    topup_applied = False
+    topup_type = None
+    topup_value = 0.0
+    
+    if is_dipole_allowed:
+        # --- Coulomb-Bethe Top-Up for E1 Transitions ---
+        # For dipole transitions, σ_l ∝ 1/L for large L (slow convergence)
+        # Only apply if the last few partial waves show proper ~1/L decay
+        if partial_waves_dict and len([k for k in partial_waves_dict.keys() if k.startswith("L") and k[1:].isdigit()]) >= 3:
+            try:
+                l_indices = sorted([int(k[1:]) for k in partial_waves_dict.keys() 
+                                   if k.startswith("L") and not k.endswith("_excluded") and k[1:].isdigit()])
+                
+                if len(l_indices) >= 3:
+                    L_max = l_indices[-1]
+                    L_prev = l_indices[-2]
+                    L_prev2 = l_indices[-3]
                     
-                    val_L   = partial_waves_dict.get(f"L{L_try}", 0)
-                    val_Lm1 = partial_waves_dict.get(f"L{L_m1}", 0)
-                    val_Lm2 = partial_waves_dict.get(f"L{L_m2}", 0)
+                    val_L = partial_waves_dict.get(f"L{L_max}", 0)
+                    val_Lm1 = partial_waves_dict.get(f"L{L_prev}", 0)
+                    val_Lm2 = partial_waves_dict.get(f"L{L_prev2}", 0)
                     
-                    # Check for strict monotonic decay
-                    if val_L > 0 and val_Lm1 > val_L and val_Lm2 > val_Lm1:
-                        q = val_L / val_Lm1
-                        q_prev = val_Lm1 / val_Lm2
+                    # Check for proper convergence: values should be decreasing
+                    if val_L > 0 and val_Lm1 > val_L and val_Lm2 > val_Lm1 and L_max >= 3:
+                        q1 = val_L / val_Lm1  # Current decay rate
+                        q2 = val_Lm1 / val_Lm2  # Previous decay rate
                         
-                        # Robustness check
-                        if q < 0.95 and abs(q - q_prev) < 0.3:
-                            tail_cm2 = val_L * q / (1.0 - q)
+                        # Only apply if decay is relatively stable and not too fast
+                        # (if q < 0.5, convergence is already fast enough)
+                        if 0.5 < q1 < 0.98 and abs(q1 - q2) < 0.2:
+                            # Bethe logarithmic formula for 1/L decay
+                            bethe_factor = np.log(2.0 * L_max + 1) / (L_max + 1)
+                            tail_cm2 = val_L * bethe_factor * 2.0  # Factor 2 is empirical safety margin
                             
-                            if tail_cm2 > 1e-50:
+                            if tail_cm2 > 1e-50 and tail_cm2 < sigma_total_cm2_base * 0.5:
                                 sigma_total_cm2 += tail_cm2
                                 sigma_total_au = sigma_cm2_to_au(sigma_total_cm2)
-                                partial_waves_dict["born_topup"] = tail_cm2
-                                logger.debug("Top-Up: Added %.2e cm^2 (L>%d, q=%.3f)", tail_cm2, L_try, q)
-                                born_topup_added = True
-                                break  # Found valid segment, stop searching
-                    
-        except Exception as e:
-            # Non-critical enhancement
-            logger.debug("Top-Up: Skipped: %s", e)
+                                partial_waves_dict["coulomb_bethe_topup"] = tail_cm2
+                                topup_applied = True
+                                topup_type = "Coulomb-Bethe"
+                                topup_value = tail_cm2
+                            
+            except Exception as e:
+                logger.debug("Coulomb-Bethe Top-Up: Skipped: %s", e)
+    else:
+        # --- Born Top-Up for Forbidden Transitions ---
+        # Geometric series extrapolation (fast exponential decay expected)
+        if partial_waves_dict:
+            try:
+                l_indices = sorted([int(k[1:]) for k in partial_waves_dict.keys() 
+                                   if k.startswith("L") and not k.endswith("_excluded") and k[1:].isdigit()])
+                
+                if len(l_indices) >= 3:
+                    for i in range(len(l_indices) - 1, 1, -1):
+                        L_try = l_indices[i]
+                        L_m1 = l_indices[i-1]
+                        L_m2 = l_indices[i-2]
+                        
+                        val_L   = partial_waves_dict.get(f"L{L_try}", 0)
+                        val_Lm1 = partial_waves_dict.get(f"L{L_m1}", 0)
+                        val_Lm2 = partial_waves_dict.get(f"L{L_m2}", 0)
+                        
+                        # Check for strict monotonic decay
+                        if val_L > 0 and val_Lm1 > val_L and val_Lm2 > val_Lm1:
+                            q = val_L / val_Lm1
+                            q_prev = val_Lm1 / val_Lm2
+                            
+                            # Robustness check
+                            if q < 0.95 and abs(q - q_prev) < 0.3:
+                                tail_cm2 = val_L * q / (1.0 - q)
+                                
+                                if tail_cm2 > 1e-50:
+                                    sigma_total_cm2 += tail_cm2
+                                    sigma_total_au = sigma_cm2_to_au(sigma_total_cm2)
+                                    partial_waves_dict["born_topup"] = tail_cm2
+                                    topup_applied = True
+                                    topup_type = "Born"
+                                    topup_value = tail_cm2
+                                    break
+                        
+            except Exception as e:
+                logger.debug("Born Top-Up: Skipped: %s", e)
 
-    if born_topup_added and sigma_total_cm2_base > 0.0:
+    # Apply scaling and log result
+    if topup_applied and sigma_total_cm2_base > 0.0:
         tail_frac = (sigma_total_cm2 - sigma_total_cm2_base) / sigma_total_cm2_base
-        if tail_frac < 0.1:
+        if tail_frac < 0.2:  # More permissive for Coulomb-Bethe
             scale = sigma_total_cm2 / sigma_total_cm2_base
             if np.isfinite(scale) and scale > 0.0:
                 total_dcs *= scale
                 sigma_total_au = sigma_total_au_base * scale
+                logger.info("Top-Up          | %s applied (tail=%.2e cm², +%.1f%%)", 
+                           topup_type, topup_value, tail_frac * 100)
         else:
-            logger.warning("Top-up fraction %.2f >= 0.1; skipping DCS scaling.", tail_frac)
+            logger.warning("Top-up fraction %.2f >= 0.2; skipping DCS scaling.", tail_frac)
+    else:
+        # Log transition type and why no top-up
+        trans_type = "E1 (dipole)" if is_dipole_allowed else "Forbidden"
+        logger.info("Top-Up          | Not applied (%s transition, no suitable decay)", trans_type)
 
     return DWBAResult(
         True, E_incident_eV, dE_target_eV,
@@ -1085,7 +1131,7 @@ def prepare_target(
     core_params: CorePotentialParams,
     r_min: float = 1e-5,
     r_max: float = 200.0,
-    n_points: int = 3000,
+    n_points: int = 1000,
     use_polarization: bool = False
 ) -> PreparedTarget:
     """

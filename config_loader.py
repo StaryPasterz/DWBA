@@ -68,7 +68,7 @@ class GridConfig:
     """Radial grid configuration."""
     strategy: Literal["manual", "global", "local"] = "global"  # v2.6+
     r_max: float = 200.0
-    n_points: int = 3000
+    n_points: int = 1000
     r_max_scale_factor: float = 2.5
     n_points_max: int = 15000
     min_points_per_wavelength: int = 15  # v2.7+: wavelength-based scaling
@@ -106,14 +106,14 @@ class OscillatoryConfig:
     # v2.11: Phase extraction method selection
     phase_extraction: Literal["hybrid", "logderiv", "lsq"] = "hybrid"
     # v2.13: Primary ODE solver selection ("auto" = physics-based per-L)
-    solver: Literal["auto", "numerov", "johnson", "rk45"] = "auto"
+    solver: Literal["auto", "numerov", "johnson", "rk45"] = "rk45"
 
 @dataclass
 class HardwareConfig:
     """Hardware acceleration configuration (GPU/CPU)."""
     gpu_block_size: Union[int, str] = "auto"  # "auto" or explicit int
     gpu_memory_mode: Literal["auto", "full", "block"] = "auto"
-    gpu_memory_threshold: float = 0.7
+    gpu_memory_threshold: float = 0.8
     n_workers: Union[int, str] = "auto"  # "auto", "max", or explicit int count
 
 @dataclass
@@ -287,7 +287,7 @@ def load_config(path: Union[str, Path]) -> DWBAConfig:
         config.grid = GridConfig(
             strategy=g.get('strategy', 'global'),  # v2.6+: manual/global/local
             r_max=g.get('r_max', 200.0),
-            n_points=g.get('n_points', 3000),
+            n_points=g.get('n_points', 1000),
             r_max_scale_factor=g.get('r_max_scale_factor', 2.5),
             n_points_max=g.get('n_points_max', 15000),
             min_points_per_wavelength=g.get('min_points_per_wavelength', 15)
@@ -340,7 +340,7 @@ def load_config(path: Union[str, Path]) -> DWBAConfig:
             hw_data.get('gpu_block_size', osc_data.get('gpu_block_size', 'auto'))
         ),
         gpu_memory_mode=hw_data.get('gpu_memory_mode', osc_data.get('gpu_memory_mode', 'auto')),
-        gpu_memory_threshold=hw_data.get('gpu_memory_threshold', osc_data.get('gpu_memory_threshold', 0.7)),
+        gpu_memory_threshold=hw_data.get('gpu_memory_threshold', osc_data.get('gpu_memory_threshold', 0.8)),
         n_workers=hw_data.get('n_workers', osc_data.get('n_workers', 'auto'))
     )
     
@@ -357,9 +357,6 @@ def load_config(path: Union[str, Path]) -> DWBAConfig:
     errors = validate_config(config)
     if errors:
         raise ValueError(f"Configuration validation failed:\n" + "\n".join(f"  - {e}" for e in errors))
-    
-    logger.info("Configuration loaded successfully: run_name='%s', type='%s'", 
-                config.run_name, config.calculation_type)
     
     return config
 
@@ -523,7 +520,7 @@ energy:
 
 grid:
   r_max: 200
-  n_points: 3000
+  n_points: 1000
   r_max_scale_factor: 2.5
   n_points_max: 8000
 
@@ -541,7 +538,7 @@ oscillatory:
   k_threshold: 0.5
   gpu_block_size: \"auto\"        # \"auto\" = auto-tune, int = explicit size
   gpu_memory_mode: "auto"     # "auto", "full", "block"
-  gpu_memory_threshold: 0.7
+  gpu_memory_threshold: 0.8
   n_workers: "auto"           # "auto" (balanced), "max" (all cores), or int count
 
 output:

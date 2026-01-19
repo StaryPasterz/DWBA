@@ -42,7 +42,10 @@ Comprehensive Python suite for computing electron–atom excitation and ionizati
 - **Bound State Extent Handling** *(v2.8)*: Automatic detection of bound state extent ensures match point is beyond 99% of density, critical for accurate oscillatory integral factorization.
 - **Centrifugal Phase Corrections** *(v2.8)*: First-order centrifugal terms in asymptotic phase for stable high-L partial wave calculations.
 - **LOCAL Adaptive Grid Strategy** *(v2.12)*: Per-energy optimal grid sizing now fully functional with turning point bounds safeguards.
-- **Intelligent Auto Solver** *(v2.13)*: Physics-based solver selection (`"auto"`) chooses RK45 or Johnson per partial wave based on L, energy, and barrier conditions.
+- **Wavelength-Aware Grid Scaling** *(v2.14)*: Automatic grid density increase for high energies, ensuring adequate phase sampling in bound state and match point regions.
+- **Physics-Based Convergence** *(v2.15)*: Partial wave sum convergence based on per-angle DCS stability, correctly handling interference-induced non-monotonicity.
+- **Dual Top-Up Strategy** *(v2.16)*: Physics-based tail extrapolation using Coulomb-Bethe for E1 (dipole) transitions and Born geometric series for forbidden transitions.
+- **Optimized Defaults** *(v2.16)*: RK45 solver as default (correct for exponential grids), reduced base `n_points` (adaptive scaling handles high energies).
 - **Diagnostic Tools**: Comprehensive scripts in `debug/` for analyzing partial wave convergence, radial integrals, and method comparisons.
 - **Progress Reporting**: Real-time feedback and ETA for long-running partial wave summations.
 
@@ -291,7 +294,7 @@ All numerical defaults are organized by category and displayed before calculatio
 ┌─ GRID ─────────────────────────────────┐
 │  strategy               = "global"     │
 │  r_max                  = 200          │
-│  n_points               = 3000         │
+│  n_points               = 1000         │
 │  r_max_scale_factor     = 2.5          │
 │  n_points_max           = 15000        │
 │  min_points_per_wavelength = 15        │
@@ -326,7 +329,7 @@ All numerical defaults are organized by category and displayed before calculatio
 ┌─ HARDWARE ─────────────────────────────┐
 │  gpu_block_size         = "auto"       │
 │  gpu_memory_mode        = "auto"       │
-│  gpu_memory_threshold   = 0.7          │
+│  gpu_memory_threshold   = 0.8          │
 │  n_workers              = "auto"       │
 └────────────────────────────────────────┘
 
@@ -346,7 +349,7 @@ All numerical defaults are organized by category and displayed before calculatio
 |-----------|---------|-------------|
 | `strategy` | `"global"` | Grid mode: `"manual"` = fixed params, `"global"` = adaptive for $E_{min}$, `"local"` = per-energy |
 | `r_max` | 200 a.u. | Base maximum radius. For manual mode: used as-is. For adaptive: minimum floor. |
-| `n_points` | 3000 | Base grid points. For manual: fixed. For adaptive: minimum value. |
+| `n_points` | 1000 | Base grid points. For manual: fixed. For adaptive: minimum value. |
 | `r_max_scale_factor` | 2.5 | Safety factor for turning point: $r_{max} = factor \times r_{turn}(L_{max})$ |
 | `n_points_max` | 15000 | Maximum grid points (caps adaptive scaling, limits memory). *(v2.8: increased from 8000)* |
 | `min_points_per_wavelength` | 15 | **(v2.7+)** Min pts/λ at large r. Increases $n_{points}$ for high energies. Set to 0 to disable. |
@@ -383,7 +386,7 @@ All numerical defaults are organized by category and displayed before calculatio
 | `k_threshold` | `0.5` | Momentum threshold for Filon/Levin activation |
 | `max_chi_cached` | `20` | LRU cache size for continuum waves (v2.5+) |
 | `phase_extraction` | `"hybrid"` | Phase extraction method: `hybrid` (cross-validated), `logderiv`, `lsq` *(v2.11+)* |
-| `solver` | `"auto"` | ODE solver: `auto` (physics-based), `rk45`, `johnson`, `numerov` *(v2.13+)* |
+| `solver` | `"rk45"` | ODE solver: `auto` (physics-based), `rk45` (recommended), `johnson`, `numerov` *(v2.13+)* |
 
 ---
 
@@ -396,7 +399,7 @@ All numerical defaults are organized by category and displayed before calculatio
 |-----------|---------|-------------|
 | `gpu_block_size` | `"auto"` | GPU block size. `"auto"` = tune based on VRAM, or explicit `int` |
 | `gpu_memory_mode` | `"auto"` | GPU strategy: `auto` / `full` / `block` |
-| `gpu_memory_threshold` | `0.7` | Max VRAM fraction for matrix allocation |
+| `gpu_memory_threshold` | `0.8` | Max VRAM fraction for matrix allocation |
 | `n_workers` | `"auto"` | CPU workers: `"auto"` / `"max"` / explicit `int` |
 
 **GPU Memory Modes:**

@@ -6,6 +6,116 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v2.16] — 2026-01-19 — Dual Top-Up Strategy & Default Updates
+
+### Dual Top-Up Strategy
+
+**Physics-based tail extrapolation** now applies different methods depending on transition type:
+
+| Transition Type | Method | Formula | Condition |
+|----------------|--------|---------|-----------|
+| **E1 (dipole, ΔL=1)** | Coulomb-Bethe | `σ_L × ln(2L+1)/(L+1) × 2` | Slow 1/L decay |
+| **Forbidden (ΔL≠1)** | Born geometric | `σ_L × q/(1-q)` | Fast exponential decay |
+
+**Safety conditions**:
+- Monotonic decay required (`σ_{L-1} > σ_L > σ_{L+1}`)
+- Decay rate stability (`|q - q_prev| < 0.2-0.3`)
+- Born: `q < 0.95`; Coulomb-Bethe: `0.5 < q < 0.98`
+- Top-up fraction limit: 20% of base σ (increased from 10%)
+
+**Logging**:
+```
+Top-Up          | Coulomb-Bethe applied (tail=1.30e-17 cm², +17.1%)
+Top-Up          | Not applied (Forbidden transition, no suitable decay)
+```
+
+### Default Parameter Changes
+
+| Parameter | Old Default | New Default | Rationale |
+|-----------|-------------|-------------|-----------|
+| `n_points` | 3000 | **1000** | Adaptive scaling handles high-E; base can be lower |
+| `gpu_memory_threshold` | 0.7 | **0.8** | Allow more GPU memory utilization |
+| `solver` | `"auto"` | **`"rk45"`** | RK45 is correct for exponential grids (v2.13 finding) |
+
+**Files updated**: `DW_main.py`, `driver.py`, `config_loader.py`, `dwba_matrix_elements.py`, `README.md`, `examples/*.yaml`
+
+> [!NOTE]
+> `H2s.yaml` excluded from default updates (user configuration file).
+
+---
+
+## [v2.15] — 2026-01-18 — Stability-Based Convergence
+
+**Major rework**: Partial wave convergence logic redesigned per DWBA literature.
+
+### Key Insight (Literature)
+
+Non-monotonicity of individual partial wave contributions is **NORMAL** in DWBA due to:
+- Interference in |f±g|² (DCS = |f-g|² + |f+g|²)
+- Phase factors `i^(l_i+l_f)` causing sign oscillations
+- Direct-exchange interference
+
+> [!IMPORTANT]
+> **The old "upturn detection" was fundamentally flawed.** A contribution being larger than the previous one is NOT a numerical error—it's physics.
+
+### Removed (Flawed)
+
+| Check | Old Logic | Why Removed |
+|-------|-----------|-------------|
+| Individual contribution | `sigma_li/total < 1e-6` → stop | Interference can make small l_i important |
+| Upturn detection | `curr > prev × 1.1` → stop | Non-monotonicity is NORMAL |
+| `pending_topup` | Born tail from "last monotonic trio" | Based on false assumption |
+
+### Added (Correct)
+
+**Per-Angle DCS Stability Test**:
+```python
+# Check max relative change across ALL angles
+max_change = max(|DCS_new - DCS_old| / DCS_new)
+if max_change < 0.01 and l_i > 15:
+    converged = True
+```
+
+**Numerical Safety Check**:
+```python
+if not np.isfinite(amplitudes):
+    stop_reason = "Numerical failure"
+```
+
+### Files Modified
+
+| File | Change |
+|------|--------|
+| `driver.py` | Complete rewrite of early stopping logic |
+
+---
+
+## [v2.14] — 2026-01-18 — Grid Scaling & Amplitude Normalization
+
+### Grid Scaling Improvements
+
+**Wavelength-aware grid density** now focuses on bound state region:
+- Check at r=15 a.u. (bound state outer edge) requiring 15+ pts/wavelength
+- Relaxed check at r=50 a.u. (match region) requiring 5+ pts/wavelength  
+- Warning when `n_points_max` caps required density for high energies
+
+**Example impact** at E=1000 eV:
+- Before: 3000 points, 1.3 pts/wavelength at r=100 (CRITICAL undersampling)
+- After: 5735 points, 16.6 pts/wavelength at r=15, 5.0 at r=50
+
+### Amplitude Normalization
+
+**RMS amplitude enforcement**: Asymptotic continuum wave amplitude validated and corrected to √(2/π) ≈ 0.7979 after stitching.
+
+### Files Modified
+
+| File | Change |
+|------|--------|
+| `DW_main.py` | `calculate_optimal_grid_params()` improved wavelength-based scaling |
+| `continuum.py` | RMS amplitude validation in `solve_continuum_wave()` |
+
+---
+
 ## [v2.13] — 2026-01-17 — Johnson Rewrite + Solver Verification
 
 **Major update**: Johnson solver rewritten according to literature, RK45 verified as correct for exponential grids.

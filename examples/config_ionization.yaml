@@ -29,7 +29,7 @@ energy:
 grid:
   strategy: "global"     # "manual" = fixed params, "global" = adaptive for E_min, "local" = per-energy
   r_max: 200             # [a.u.] Maximum radial extent (for manual; base value for adaptive)
-  n_points: 3000         # [count] Base grid points (for manual; minimum for adaptive modes)
+  n_points: 1000         # [count] Base grid points (for manual; minimum for adaptive modes)
   r_max_scale_factor: 2.5  # [dimensionless] Safety factor for turning point criterion
   n_points_max: 15000    # [count] Maximum allowed grid points (caps adaptive scaling)
   min_points_per_wavelength: 15  # [count] Minimum pts/λ for high-E (v2.7+). Set to 0 to disable.
@@ -49,9 +49,10 @@ oscillatory:
   gpu_block_size: "auto"         # "auto" = auto-tune, int = explicit size
   gpu_memory_mode: "auto"        # "auto" | "full" | "block"
   max_chi_cached: 20             # [count] LRU cache size for continuum waves on GPU
-  gpu_memory_threshold: 0.7      # [dimensionless] Max VRAM fraction
+  gpu_memory_threshold: 0.8      # [dimensionless] Max VRAM fraction
   n_workers: "auto"              # "auto" (balanced), "max" (all cores), or int
   phase_extraction: "hybrid"     # [v2.11+] "hybrid", "logderiv", or "lsq"
+  solver: "rk45"                 # [v2.13+] "auto", "rk45" (recommended), "johnson", "numerov"
 
 output:
   save_dcs: true                 # Save differential cross section
