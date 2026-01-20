@@ -145,7 +145,7 @@ DEFAULTS = {
 }
 
 
-def display_defaults(category: str = None):
+def display_defaults(category: str = None) -> None:
     """Display default parameters, optionally filtered by category."""
     print()
     if category and category in DEFAULTS:
@@ -285,7 +285,7 @@ def prompt_use_defaults(categories: list = None) -> dict:
     
     return params
 
-def display_params_custom(cat_name, val_dict):
+def display_params_custom(cat_name, val_dict) -> None:
     """Helper to display a specific set of parameters."""
     print(f"  ┌─ {cat_name.upper()} ─────────────────────────────")
     for key, val in val_dict.items():
@@ -296,7 +296,7 @@ def display_params_custom(cat_name, val_dict):
     print(f"  └{'─' * 40}")
 
 
-def log_active_configuration(params: dict, context: str = "calculation"):
+def log_active_configuration(params: dict, context: str = "calculation") -> None:
     """
     Log the complete active configuration being used for calculation.
     
@@ -349,20 +349,20 @@ def log_active_configuration(params: dict, context: str = "calculation"):
 # UI Formatting Helpers
 # =============================================================================
 
-def print_header(title: str, width: int = 50):
+def print_header(title: str, width: int = 50) -> None:
     """Print a prominent section header."""
     print()
     print("╔" + "═" * (width - 2) + "╗")
     print("║" + title.center(width - 2) + "║")
     print("╚" + "═" * (width - 2) + "╝")
 
-def print_subheader(title: str, width: int = 50):
+def print_subheader(title: str, width: int = 50) -> None:
     """Print a subsection header."""
     print()
     padding = width - len(title) - 4
     print("── " + title + " " + "─" * max(padding, 3))
 
-def print_menu(options: list, prompt: str = "Select", default: str = None):
+def print_menu(options: list, prompt: str = "Select", default: str = None) -> str:
     """Print a numbered menu and get selection."""
     for i, opt in enumerate(options, 1):
         print(f"  {i}. {opt}")
@@ -403,7 +403,7 @@ def print_result(energy: float, sigma: float, extra: str = ""):
 
 # --- Input Helpers ---
 
-def get_input_float(prompt, default=None):
+def get_input_float(prompt, default=None) -> float:
     if default is not None:
         val = input(f"{prompt} [{default}]: ")
         if not val.strip(): return default
@@ -415,7 +415,7 @@ def get_input_float(prompt, default=None):
         print("Invalid number.")
         return get_input_float(prompt, default)
 
-def get_input_int(prompt, default=None):
+def get_input_int(prompt, default=None) -> int:
     if default is not None:
         val = input(f"{prompt} [{default}]: ")
         if not val.strip(): return default
@@ -427,7 +427,7 @@ def get_input_int(prompt, default=None):
         print("Invalid integer.")
         return get_input_int(prompt, default)
 
-def select_target():
+def select_target() -> atom_library.AtomEntry:
     print_subheader("Target Selection")
     atoms = atom_library.get_atom_list()
     
@@ -492,7 +492,7 @@ def generate_flexible_energy_grid(start_eV: float, end_eV: float, density_factor
     return np.unique(np.round(energies, 3))
 
 
-def get_energy_list_interactive():
+def get_energy_list_interactive() -> np.ndarray | tuple:
     print_subheader("Energy Grid")
     print("  1. Single Energy")
     print("  2. Linear Grid (Start, End, Step)")
@@ -540,7 +540,7 @@ def get_energy_list_interactive():
 
 # --- Data Management ---
 
-def load_results(filename):
+def load_results(filename) -> dict:
     """
     Load existing results from a JSON file.
     
@@ -576,7 +576,7 @@ def load_results(filename):
     
     return {}
 
-def save_results(filename, new_data_dict):
+def save_results(filename, new_data_dict) -> None:
     """
     Update and save results to JSON in the results/ directory.
     
@@ -669,7 +669,7 @@ def prompt_use_config_file(calc_type: str = "excitation") -> str | None:
     
     return None
 
-def check_file_exists_warning(filename):
+def check_file_exists_warning(filename) -> bool:
     """
     Warn the user if the output file already exists.
     Returns True if user wants to continue (append), False to abort.
@@ -684,7 +684,7 @@ def check_file_exists_warning(filename):
 
 # --- Calculation Routines ---
 
-def run_scan_excitation(run_name):
+def run_scan_excitation(run_name) -> None:
     """
     Interactive workflow for Excitation Cross Section calculation.
     """
@@ -1068,7 +1068,7 @@ def run_scan_excitation(run_name):
     print_success(f"Complete: {len(results)} points saved")
 
 
-def run_scan_ionization(run_name):
+def run_scan_ionization(run_name) -> None:
     """
     Interactive workflow for Ionization Cross Section calculation.
     """
@@ -1297,7 +1297,7 @@ def run_scan_ionization(run_name):
 
 # --- Visualization ---
 
-def run_visualization():
+def run_visualization() -> None:
     print("\n=== PLOT GENERATION ===")
     
     # List JSON files from results/ and root (backward compatibility)
@@ -1354,7 +1354,7 @@ def run_visualization():
     finally:
         sys.argv = old_argv
 
-def run_dcs_visualization():
+def run_dcs_visualization() -> None:
     print("\n=== ANGULAR DCS PLOT GENERATION ===")
     
     # List JSON files from results/ and root (backward compatibility)
@@ -1429,7 +1429,7 @@ def run_dcs_visualization():
 
 # --- Main Loop ---
 
-def main():
+def main() -> None:
     print_header("DWBA CALCULATION SUITE")
     
     run_name = input("\n  Simulation Name [default]: ").strip()

@@ -367,7 +367,7 @@ def _extract_phase_logderiv_coulomb(Y_m: float, k_au: float, r_m: float, l: int,
     return delta_l
 
 
-def _schrodinger_rhs_factory(l: int, U_spline: CubicSpline, k_au: float):
+def _schrodinger_rhs_factory(l: int, U_spline: CubicSpline, k_au: float) -> Callable:
     """
     Build RHS function for solve_ivp representing the system:
         y0 = χ(r)

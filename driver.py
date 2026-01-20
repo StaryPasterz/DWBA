@@ -122,7 +122,7 @@ def reset_scan_logging():
     _SCAN_LOGGED = False
     logger.debug("Scan logging flags reset")
 
-def set_oscillatory_config(config_dict: dict):
+def set_oscillatory_config(config_dict: dict) -> None:
     """Set the oscillatory integral configuration globally. Only logs actual changes."""
     def normalize(v):
         # Treat 0 and "auto" as semantically identical for block size and workers
@@ -143,7 +143,7 @@ def set_oscillatory_config(config_dict: dict):
         change_str = ", ".join(f"{k}: {old}→{new}" for k, (old, new) in changes.items())
         logger.info("Config updated: %s", change_str)
 
-def set_oscillatory_method(method: OscillatoryMethod):
+def set_oscillatory_method(method: OscillatoryMethod) -> None:
     """Set only the oscillatory integral method globally (legacy support)."""
     if OSCILLATORY_CONFIG.get("method") != method:
         OSCILLATORY_CONFIG["method"] = method
@@ -198,7 +198,7 @@ def log_calculation_params(
     r_max: Optional[float] = None,
     n_points: Optional[int] = None,
     force_log: bool = False
-):
+) -> None:
     """
     Log a consistent summary of calculation parameters.
     

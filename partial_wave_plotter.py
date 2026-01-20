@@ -31,7 +31,7 @@ logger = get_logger(__name__)
 # UI HELPERS
 # =============================================================================
 
-def print_header(title: str, width: int = 50):
+def print_header(title: str, width: int = 50) -> None:
     """Print a prominent section header."""
     print()
     print("═" * width)
@@ -64,7 +64,7 @@ def print_menu(title: str, options: list, allow_cancel: bool = True) -> int:
 # DATA LOADING
 # =============================================================================
 
-def load_data(filename):
+def load_data(filename: str) -> dict:
     """Load data from JSON, checking results/ directory."""
     filepath = Path(filename)
     
@@ -82,7 +82,7 @@ def load_data(filename):
         return json.load(f)
 
 
-def parse_partial_waves(run_data):
+def parse_partial_waves(run_data: list) -> tuple:
     """
     Extracts partial wave data from run results.
     Returns:
@@ -151,7 +151,7 @@ def get_convergence_L(pws: dict, threshold: float = 0.9) -> int:
 # PLOTTING FUNCTIONS
 # =============================================================================
 
-def plot_distribution_at_energy(energies, pw_data, target_E, run_name: str = ""):
+def plot_distribution_at_energy(energies: np.ndarray, pw_data: dict, target_E: float, run_name: str = "") -> None:
     """Plots Bar Chart of Sigma_L vs L for the energy closest to target_E."""
     # Find closest energy
     idx = (np.abs(energies - target_E)).argmin()
@@ -223,7 +223,7 @@ def plot_distribution_at_energy(energies, pw_data, target_E, run_name: str = "")
     plt.close()
 
 
-def plot_convergence_all_energies(energies, pw_data, run_name: str = ""):
+def plot_convergence_all_energies(energies: np.ndarray, pw_data: dict, run_name: str = "") -> list:
     """Plots Cumulative Sum vs L for selected energies to show convergence rate."""
     n = len(energies)
     if n > 5:
@@ -284,7 +284,7 @@ def plot_convergence_all_energies(energies, pw_data, run_name: str = ""):
     return L_90_values
 
 
-def plot_energy_dependence_of_L(energies, pw_data, max_L_to_plot: int = 5, run_name: str = ""):
+def plot_energy_dependence_of_L(energies: np.ndarray, pw_data: dict, max_L_to_plot: int = 5, run_name: str = "") -> None:
     """Plots Sigma_L(E) for partial waves L=0 to max_L_to_plot."""
     l_traces = {l: [] for l in range(max_L_to_plot + 1)}
     e_axis = []
@@ -321,7 +321,7 @@ def plot_energy_dependence_of_L(energies, pw_data, max_L_to_plot: int = 5, run_n
     plt.close()
 
 
-def plot_L90_vs_energy(L_90_values, run_name: str = ""):
+def plot_L90_vs_energy(L_90_values: list, run_name: str = "") -> None:
     """Plot L_90% as a function of energy."""
     if not L_90_values:
         return
@@ -344,7 +344,7 @@ def plot_L90_vs_energy(L_90_values, run_name: str = ""):
     plt.close()
 
 
-def print_summary(energies, pw_data, max_L, run_name: str):
+def print_summary(energies: np.ndarray, pw_data: dict, max_L: int, run_name: str) -> None:
     """Print summary statistics."""
     print("\n" + "─" * 50)
     print(f"  SUMMARY: {run_name}")
@@ -399,7 +399,7 @@ def select_run_key(data: dict) -> str:
     return keys[max(0, idx)]
 
 
-def interactive_analysis(filename: str, run_key: str, energies, pw_data, max_L):
+def interactive_analysis(filename: str, run_key: str, energies: np.ndarray, pw_data: dict, max_L: int) -> None:
     """Interactive menu for analysis options."""
     
     while True:
@@ -460,7 +460,7 @@ def interactive_analysis(filename: str, run_key: str, energies, pw_data, max_L):
             print_summary(energies, pw_data, max_L, run_key)
 
 
-def main():
+def main() -> None:
     print_header("PARTIAL WAVE ANALYSIS TOOL")
     
     # Get filename
