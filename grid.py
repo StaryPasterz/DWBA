@@ -31,8 +31,10 @@ logger = get_logger(__name__)
 
 
 # ---- Physical constants ----
-# Import from centralized constants module
-from constants import HARTREE_TO_EV, EV_TO_HARTREE
+
+# 1 hartree in eV
+HARTREE_TO_EV = 27.211386245988  # CODATA-like; high precision
+EV_TO_HARTREE = 1.0 / HARTREE_TO_EV
 
 
 @dataclass(frozen=True)
@@ -167,7 +169,7 @@ def k_from_E_eV(E_eV: float | np.ndarray) -> float | np.ndarray:
 K_HIGH_ENERGY_THRESHOLD = 5.0  # a.u. (≈ 340 eV)
 
 def validate_high_energy(E_eV: float, L_max: int = 0, r_max: float = 200.0, 
-                         n_points: int = 3000) -> list[str]:
+                         n_points: int = 3000) -> list:
     """
     Validate calculation parameters for high-energy regime.
     

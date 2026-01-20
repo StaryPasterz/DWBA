@@ -33,7 +33,7 @@ A0_SQ_CM2 = 2.8002852e-17
 PI_A0_SQ_CM2 = np.pi * A0_SQ_CM2
 
 
-def load_data(filename: str) -> dict:
+def load_data(filename):
     """Load data from JSON file, checking results/ directory first."""
     filepath = Path(filename)
     
@@ -51,7 +51,7 @@ def load_data(filename: str) -> dict:
         return json.load(f)
 
 
-def get_style_config(style_name: str) -> tuple:
+def get_style_config(style_name):
     # Returns (conv_E, conv_S, xlabel, ylabel, suffix)
     
     if style_name == 'atomic':
@@ -80,7 +80,7 @@ def get_style_config(style_name: str) -> tuple:
         return ev_conv, sig_conv, "Incident Energy [eV]", r"Cross Section [$cm^2$]", "_std"
 
 
-def main() -> None:
+def main():
     style = 'std'
     input_file = None
     

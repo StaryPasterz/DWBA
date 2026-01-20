@@ -74,7 +74,7 @@ class CorePotentialParams:
     a5: float
     a6: float
     
-    def validate_physical(self) -> list[str]:
+    def validate_physical(self) -> list:
         """
         Check for potentially unphysical SAE parameters.
         

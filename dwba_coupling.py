@@ -38,7 +38,7 @@ _RACAH_CACHE_SIZE = 50000         # racah_W
 _LOG_FACTORIAL_CACHE_SIZE = 5000  # _log_factorial (integers only)
 
 
-def scale_wigner_cache(L_max: int) -> None:
+def scale_wigner_cache(L_max: int):
     """
     Scale Wigner symbol caches based on maximum angular momentum L_max.
     
@@ -84,7 +84,7 @@ def scale_wigner_cache(L_max: int) -> None:
     logger.debug("Wigner cache scaled for L_max=%d: size=%d", L_max, size)
 
 
-def clear_wigner_caches() -> None:
+def clear_wigner_caches():
     """Clear all Wigner symbol caches. Useful for memory management."""
     _log_factorial.cache_clear()
     wigner_3j_num.cache_clear()
@@ -145,7 +145,7 @@ def _log_factorial(n: int) -> float:
     if n <= 1: return 0.0
     return float(np.sum(np.log(np.arange(2, n + 1, dtype=float))))
 
-def _delta_tri(a: float, b: float, c: float) -> float:
+def _delta_tri(a, b, c):
     # Helper for Wigner/Racah, no need to cache separately if main funcs are cached
     return _log_factorial(a + b - c) + _log_factorial(a - b + c) + \
            _log_factorial(-a + b + c) - _log_factorial(a + b + c + 1)

@@ -59,7 +59,7 @@ _handlers_configured = False
 _file_handler: Optional[logging.FileHandler] = None
 
 
-def _configure_root_handler() -> None:
+def _configure_root_handler():
     """
     Configure the root logger handler once for consistent output.
     Called automatically on first get_logger() call.
@@ -131,7 +131,7 @@ def get_logger(name: str) -> logging.Logger:
     return _loggers[name]
 
 
-def set_log_level(level: int) -> None:
+def set_log_level(level: int):
     """
     Set the global log level for all DWBA loggers.
     
@@ -211,7 +211,7 @@ def enable_file_logging(
     return filename
 
 
-def disable_file_logging() -> None:
+def disable_file_logging():
     """
     Disable file logging if it was previously enabled.
     """
@@ -224,7 +224,7 @@ def disable_file_logging() -> None:
         _file_handler = None
 
 
-def silence_logger(name: str) -> None:
+def silence_logger(name: str):
     """
     Silence a specific logger (set to WARNING level only).
     
@@ -240,7 +240,7 @@ def silence_logger(name: str) -> None:
 
 
 # Convenience function for quick debug mode
-def enable_debug_mode() -> None:
+def enable_debug_mode():
     """
     Enable full debug output to console.
     
@@ -250,7 +250,7 @@ def enable_debug_mode() -> None:
 
 
 # Silence some noisy libraries by default
-def _configure_third_party() -> None:
+def _configure_third_party():
     """Configure logging for third-party libraries."""
     # Silence matplotlib font manager messages
     silence_logger("matplotlib.font_manager")

@@ -810,81 +810,30 @@ def run_scan_excitation(run_name):
     res_pilot = None
     
     if do_calibrate:
-        pilot_E = 1000.0
+        # Use shared helper function for pilot calibration
+        alpha, tong_model, res_pilot = run_pilot_calibration(
+            spec=spec,
+            core_params=core_params,
+            params=params,
+            use_pol=use_pol,
+            threshold_eV=dE_thr,
+            epsilon_exc_au=epsilon_exc_au,
+            transition_class=t_class,
+            n_theta=n_theta
+        )
         
-        # Pilot L_max configuration: "auto" = dynamic scaling, int = explicit value
-        pilot_L_proj_cfg = params['excitation'].get('pilot_L_max_projectile', 'auto')
-        pilot_L_int_cfg = params['excitation'].get('pilot_L_max_integrals', 'auto')
-        
-        if pilot_L_proj_cfg == 'auto' or pilot_L_int_cfg == 'auto':
-            # Dynamic L_max calculation based on energy
-            k_pilot = np.sqrt(2 * pilot_E / 27.2114)  # k in a.u.
-            r_max_grid = params['grid']['r_max']
-            pilot_L_proj_dynamic = int(k_pilot * r_max_grid * 0.6)
-            
-            if pilot_L_proj_cfg == 'auto':
-                pilot_L_proj = max(L_max_proj, min(pilot_L_proj_dynamic, 150))
-            else:
-                pilot_L_proj = int(pilot_L_proj_cfg)
-            
-            if pilot_L_int_cfg == 'auto':
-                pilot_L_int = max(L_max_integrals, min(25, pilot_L_proj // 4))
-            else:
-                pilot_L_int = int(pilot_L_int_cfg)
-            
-            logger.debug("Pilot dynamic L_max: L_proj=%d, L_int=%d (k=%.2f)", pilot_L_proj, pilot_L_int, k_pilot)
-        else:
-            # User specified explicit values
-            pilot_L_proj = int(pilot_L_proj_cfg)
-            pilot_L_int = int(pilot_L_int_cfg)
-            logger.debug("Pilot explicit L_max: L_proj=%d, L_int=%d", pilot_L_proj, pilot_L_int)
-        
-        try:
-            # v2.14+: Use adaptive grid for pilot (same as production runs)
-            # Calculate optimal grid based on pilot energy and L_max
-            pilot_r_max, pilot_n_points = calculate_optimal_grid_params(
-                pilot_E, 
-                pilot_L_proj,
-                base_r_max=params['grid']['r_max'],
-                base_n_points=params['grid']['n_points'],
-                scale_factor=params['grid'].get('r_max_scale_factor', 2.5),
-                n_points_max=params['grid'].get('n_points_max', 15000),
-                min_points_per_wavelength=params['grid'].get('min_points_per_wavelength', 15)
-            )
-            
-            # Log pilot calculation start with grid info
-            logger.info("Pilot Calibrate | E=%.0f eV: r_max=%.1f a.u., n_points=%d, L_proj=%d", 
-                        pilot_E, pilot_r_max, pilot_n_points, pilot_L_proj)
-            
-            res_pilot = compute_total_excitation_cs(
-                pilot_E, spec, core_params, 
-                r_max=pilot_r_max, n_points=pilot_n_points, 
-                use_polarization_potential=use_pol,
-                n_theta=n_theta,
-                L_max_integrals_override=pilot_L_int,
-                L_max_projectile_override=pilot_L_proj,
-            )
-        except Exception as e:
-            logger.debug("Pilot calculation failed: %s", e)
-            print(" failed")
-            res_pilot = None
-
+        # Update threshold from pilot result if available
         if res_pilot:
             dE_thr = res_pilot.E_excitation_eV
             E_init_eV = -atom_entry.ip_ev
             E_final_eV = E_init_eV + dE_thr
             epsilon_exc_au = ev_to_au(E_final_eV)
-
-        tong_model = TongModel(dE_thr, epsilon_exc_au, transition_class=t_class)
-        
-        if res_pilot and res_pilot.sigma_total_cm2 > 0:
-            sigma_calc = res_pilot.sigma_total_cm2
-            alpha = tong_model.calibrate_alpha(pilot_E, sigma_calc)
-            print(" done")
+            # Recreate TongModel with correct threshold
+            tong_model = TongModel(dE_thr, epsilon_exc_au, transition_class=t_class)
+            if res_pilot.sigma_total_cm2 > 0:
+                alpha = tong_model.calibrate_alpha(1000.0, res_pilot.sigma_total_cm2)
             print_info(f"Threshold: {dE_thr:.2f} eV, α = {alpha:.3f}")
-            logger.debug("Pilot σ=%.2e, Tong ref=%.2e, α=%.4f", sigma_calc, tong_model.calculate_sigma_cm2(pilot_E), alpha)
         else:
-            print(" skipped")
             print_info("Using default α = 1.0")
     else:
         print_info("Calibration DISABLED (output.calibrate=false)")
@@ -1679,6 +1628,129 @@ def calculate_optimal_grid_params(
     return r_max_optimal, n_points_optimal
 
 
+def run_pilot_calibration(
+    spec: ExcitationChannelSpec,
+    core_params: CorePotentialParams,
+    params: dict,
+    use_pol: bool,
+    threshold_eV: float,
+    epsilon_exc_au: float,
+    transition_class: str,
+    n_theta: int = 50
+) -> tuple[float, 'TongModel', 'DWBAResult | None']:
+    """
+    Run pilot calibration calculation with adaptive grid.
+    
+    This function consolidates the pilot calculation logic used for Tong model
+    calibration. It computes an optimal grid for the high-energy pilot point
+    (typically 1000 eV) and returns the calibration factor α.
+    
+    Parameters
+    ----------
+    spec : ExcitationChannelSpec
+        Channel specification (will be modified for pilot L_max values).
+    core_params : CorePotentialParams
+        Core potential parameters for the target atom.
+    params : dict
+        Full parameters dict containing 'grid' and 'excitation' sections.
+    use_pol : bool
+        Whether to use polarization potential.
+    threshold_eV : float
+        Excitation threshold energy in eV (for TongModel).
+    epsilon_exc_au : float
+        Final state energy in a.u. (for TongModel).
+    transition_class : str
+        "dipole" or "non_dipole" (for TongModel).
+    n_theta : int
+        Number of theta points for DCS (default 50 for speed).
+        
+    Returns
+    -------
+    tuple[float, TongModel, DWBAResult | None]
+        (alpha, tong_model, pilot_result)
+        alpha = 1.0 if calibration fails.
+    """
+    from dataclasses import replace
+    from driver import compute_total_excitation_cs
+    
+    pilot_E = params['excitation'].get('pilot_energy_eV', 1000.0)
+    
+    # Pilot L_max configuration: "auto" = dynamic scaling, int = explicit value
+    pilot_L_proj_cfg = params['excitation'].get('pilot_L_max_projectile', 'auto')
+    pilot_L_int_cfg = params['excitation'].get('pilot_L_max_integrals', 'auto')
+    
+    # Calculate dynamic L_max if needed
+    if pilot_L_proj_cfg == 'auto' or pilot_L_int_cfg == 'auto':
+        k_pilot = np.sqrt(2 * pilot_E / 27.2114)  # k in a.u.
+        r_max_grid = params['grid']['r_max']
+        pilot_L_proj_dynamic = int(k_pilot * r_max_grid * 0.6)
+        
+        if pilot_L_proj_cfg == 'auto':
+            pilot_L_proj = max(spec.L_max_projectile, min(pilot_L_proj_dynamic, 150))
+        else:
+            pilot_L_proj = int(pilot_L_proj_cfg)
+        
+        if pilot_L_int_cfg == 'auto':
+            pilot_L_int = max(spec.L_max_integrals, min(25, pilot_L_proj // 4))
+        else:
+            pilot_L_int = int(pilot_L_int_cfg)
+        
+        logger.debug("Pilot dynamic L_max: L_proj=%d, L_int=%d (k=%.2f)", 
+                    pilot_L_proj, pilot_L_int, k_pilot)
+    else:
+        # User specified explicit values
+        pilot_L_proj = int(pilot_L_proj_cfg)
+        pilot_L_int = int(pilot_L_int_cfg)
+        logger.debug("Pilot explicit L_max: L_proj=%d, L_int=%d", pilot_L_proj, pilot_L_int)
+    
+    # Initialize TongModel
+    tong_model = TongModel(threshold_eV, epsilon_exc_au, transition_class=transition_class)
+    alpha = 1.0
+    res_pilot = None
+    
+    try:
+        # Calculate adaptive grid for pilot energy
+        pilot_r_max, pilot_n_points = calculate_optimal_grid_params(
+            pilot_E, 
+            pilot_L_proj,
+            base_r_max=params['grid']['r_max'],
+            base_n_points=params['grid']['n_points'],
+            scale_factor=params['grid'].get('r_max_scale_factor', 2.5),
+            n_points_max=params['grid'].get('n_points_max', 15000),
+            min_points_per_wavelength=params['grid'].get('min_points_per_wavelength', 15)
+        )
+        
+        # Log pilot calculation start with grid info
+        logger.info("Pilot Calibrate | E=%.0f eV: r_max=%.1f a.u., n_points=%d, L_proj=%d", 
+                    pilot_E, pilot_r_max, pilot_n_points, pilot_L_proj)
+        
+        # Create modified spec for pilot L_max values
+        pilot_spec = replace(
+            spec,
+            L_max_integrals=pilot_L_int,
+            L_max_projectile=pilot_L_proj
+        )
+        
+        res_pilot = compute_total_excitation_cs(
+            pilot_E, pilot_spec, core_params, 
+            r_max=pilot_r_max, n_points=pilot_n_points, 
+            use_polarization_potential=use_pol,
+            n_theta=n_theta,
+        )
+        
+        if res_pilot and res_pilot.sigma_total_cm2 > 0:
+            alpha = tong_model.calibrate_alpha(pilot_E, res_pilot.sigma_total_cm2)
+            logger.info("Calibration     | α = %.3f (threshold=%.2f eV)", alpha, threshold_eV)
+        else:
+            logger.warning("Pilot returned zero cross section. Using α=1.0")
+            
+    except Exception as e:
+        logger.warning("Pilot failed: %s. Using α=1.0", e)
+    
+    return alpha, tong_model, res_pilot
+
+
+
 def run_from_config(config_path: str, verbose: bool = False) -> None:
     """
     Run DWBA calculation from a configuration file (batch mode).
@@ -1837,50 +1909,17 @@ def run_from_config(config_path: str, verbose: bool = False) -> None:
         tong_model = TongModel(threshold_eV, E_f_au, transition_class=t_class)
         
         if config.output.calibrate:
-            # Run Pilot Calculation for Alpha Matching (v2.5+: pilot light mode)
-            pilot_E = params['excitation']['pilot_energy_eV']
-            pilot_n_th = params['excitation'].get('pilot_n_theta', 50)
-            
-            # Pilot L_max configuration: "auto" = dynamic scaling, int = explicit value
-            pilot_L_proj_cfg = params['excitation'].get('pilot_L_max_projectile', 'auto')
-            pilot_L_int_cfg = params['excitation'].get('pilot_L_max_integrals', 'auto')
-            
-            if pilot_L_proj_cfg == 'auto' or pilot_L_int_cfg == 'auto':
-                # Dynamic L_max calculation based on energy
-                k_pilot = np.sqrt(2 * pilot_E / 27.2114)  # k in a.u.
-                r_max_grid = params['grid']['r_max']
-                pilot_L_proj_dynamic = int(k_pilot * r_max_grid * 0.6)
-                
-                if pilot_L_proj_cfg == 'auto':
-                    pilot_L_proj = max(spec.L_max_projectile, min(pilot_L_proj_dynamic, 150))
-                else:
-                    pilot_L_proj = int(pilot_L_proj_cfg)
-                
-                if pilot_L_int_cfg == 'auto':
-                    pilot_L_int = max(spec.L_max_integrals, min(25, pilot_L_proj // 4))
-                else:
-                    pilot_L_int = int(pilot_L_int_cfg)
-                
-                logger.info("Pilot Calc      | E=%d eV (L_int=%d, L_proj=%d [auto], n_θ=%d)...", 
-                           pilot_E, pilot_L_int, pilot_L_proj, pilot_n_th)
-            else:
-                # User specified explicit values
-                pilot_L_proj = int(pilot_L_proj_cfg)
-                pilot_L_int = int(pilot_L_int_cfg)
-                logger.info("Pilot Calc      | E=%d eV (L_int=%d, L_proj=%d [explicit], n_θ=%d)...", 
-                           pilot_E, pilot_L_int, pilot_L_proj, pilot_n_th)
-            
-            try:
-                pilot_res = compute_excitation_cs_precalc(
-                    pilot_E, prep, 
-                    n_theta=pilot_n_th,
-                    L_max_integrals_override=pilot_L_int,
-                    L_max_projectile_override=pilot_L_proj
-                )
-                alpha = tong_model.calibrate_alpha(pilot_E, pilot_res.sigma_total_cm2)
-                logger.info("Calibration     | α = %.3f", alpha)
-            except Exception as e:
-                logger.warning("Pilot failed: %s. Using α=1.0", e)
+            # Use shared helper function for pilot calibration
+            alpha, tong_model, pilot_res = run_pilot_calibration(
+                spec=spec,
+                core_params=core_params,
+                params=params,
+                use_pol=use_pol,
+                threshold_eV=threshold_eV,
+                epsilon_exc_au=E_f_au,
+                transition_class=t_class,
+                n_theta=params['excitation'].get('pilot_n_theta', 50)
+            )
 
         # --- Build metadata (same as interactive) ---
         n_theta = params['excitation']['n_theta']

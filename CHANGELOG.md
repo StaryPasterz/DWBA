@@ -6,37 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [v2.17] — 2026-01-20 — Code Quality Refactor
+## [v2.17] — 2026-01-20 — Pilot Calibration Refactor
 
-### Pilot Calibration Consolidation
+### Code Quality Improvements
 
 **Extracted `run_pilot_calibration()` helper function** (~120 lines) to consolidate duplicated pilot calculation logic from both interactive and batch modes.
 
+**Changes**:
 - **Fixed bug**: Interactive mode was using non-existent `L_max_integrals_override` parameter
 - **Unified logging**: Both modes now log `"Pilot Calibrate | E=%.0f eV: r_max=%.1f a.u., n_points=%d, L_proj=%d"`
+- **Consistent behavior**: Both modes use adaptive grid calculation for pilot energy
+- **Reduced duplication**: ~100 lines of duplicated code replaced with single function call
 
-### New Modules
-
-**`constants.py`**: Centralized physical and numerical constants (20+ named values):
-- `HARTREE_TO_EV`, `EV_TO_HARTREE` — Replaces magic number `27.211386`
-- `L_MAX_HARD_CAP`, `L_MAX_INTEGRALS_CAP` — Replaces hardcoded `150`, `25`
-- `TURNING_POINT_SCALE` — Replaces `0.6` for L_max estimation
-- Grid defaults: `DEFAULT_R_MAX`, `DEFAULT_N_POINTS`, `N_POINTS_CAP`
-
-**`config_types.py`**: Typed configuration dataclasses:
-- `GridConfig` — Radial grid parameters with `from_params()` factory
-- `PilotConfig` — With `calculate_dynamic_L_max()` method
-- `HardwareConfig` — With `get_worker_count()` method
-- `OscillatoryConfig` — Integration method settings
-- `CalculationContext` — Composite replacing global `OSCILLATORY_CONFIG` and `_SCAN_LOGGED`
-
-### Code Quality
-
-- **Exception Handling**: Fixed 7 bare `except:` clauses
-- **Type Hints**: Added to `load_results()`, `save_results()`
-- **Constant Integration**: `grid.py`, `calibration.py`, `DW_main.py` now import from `constants.py`
-
-**Files updated**: `DW_main.py`, `driver.py`, `continuum.py`, `grid.py`, `calibration.py`, `constants.py` (new), `config_types.py` (new)
+**Files updated**: `DW_main.py`
 
 ---
 

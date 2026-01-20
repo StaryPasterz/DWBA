@@ -131,7 +131,7 @@ def get_plot_path(plot_name: str) -> Path:
     return get_output_path(plot_name)
 
 
-def find_result_files(pattern: str = "results_*.json") -> List[Path]:
+def find_result_files(pattern: str = "results_*.json") -> list:
     """
     Find result files matching a pattern in the results directory.
     

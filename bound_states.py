@@ -245,7 +245,7 @@ def _effective_potential_l(V_core_array: np.ndarray, r: np.ndarray, l: int) -> n
 def _assemble_hamiltonian_sparse(
     grid: RadialGrid,
     V_eff: np.ndarray
-) -> 'scipy.sparse.csr_matrix':
+):
     """
     Build the sparse Hamiltonian matrix H for the interior grid points.
 

@@ -23,7 +23,6 @@ import numpy as np
 from typing import Optional, Tuple
 from dataclasses import dataclass
 from logging_config import get_logger
-from constants import HARTREE_TO_EV
 
 # Initialize module logger
 logger = get_logger(__name__)
@@ -70,7 +69,7 @@ class TongModel:
             transition_type: legacy hint ("1s-2s" / "1s-np") kept for backwards compatibility.
             transition_class: "dipole" (|Δl|=1) or "non_dipole" (|Δl|≠1). If provided, overrides transition_type.
         """
-        self.dE_target_au = dE_target_eV / HARTREE_TO_EV
+        self.dE_target_au = dE_target_eV / 27.211386
         self.epsilon_exc_au = epsilon_exc_au
         
         # Parameter selection:
@@ -119,7 +118,7 @@ class TongModel:
         Calculate the Total Cross Section (TCS) in cm^2 at a given incident energy.
         Applies the current 'alpha' scaling factor.
         """
-        E_inc_au = E_inc_eV / HARTREE_TO_EV
+        E_inc_au = E_inc_eV / 27.211386
         
         # Threshold check
         if E_inc_au <= self.dE_target_au:

@@ -116,13 +116,13 @@ OSCILLATORY_CONFIG = {
 # =============================================================================
 _SCAN_LOGGED = False  # True after first energy point logs hardware info
 
-def reset_scan_logging() -> None:
+def reset_scan_logging():
     """Reset scan-level logging flags. Call at start of new energy scan."""
     global _SCAN_LOGGED
     _SCAN_LOGGED = False
     logger.debug("Scan logging flags reset")
 
-def set_oscillatory_config(config_dict: dict) -> None:
+def set_oscillatory_config(config_dict: dict):
     """Set the oscillatory integral configuration globally. Only logs actual changes."""
     def normalize(v):
         # Treat 0 and "auto" as semantically identical for block size and workers
@@ -143,7 +143,7 @@ def set_oscillatory_config(config_dict: dict) -> None:
         change_str = ", ".join(f"{k}: {old}→{new}" for k, (old, new) in changes.items())
         logger.info("Config updated: %s", change_str)
 
-def set_oscillatory_method(method: OscillatoryMethod) -> None:
+def set_oscillatory_method(method: OscillatoryMethod):
     """Set only the oscillatory integral method globally (legacy support)."""
     if OSCILLATORY_CONFIG.get("method") != method:
         OSCILLATORY_CONFIG["method"] = method
@@ -322,8 +322,7 @@ def _worker_partial_wave(
     # Solve chi_i
     try:
         chi_i = solve_continuum_wave(grid, U_i, l_i, E_incident_eV, z_ion) 
-    except Exception as e:
-        logger.debug("Failed to solve chi_i for l=%d: %s", l_i, e)
+    except:
         chi_i = None
 
     if chi_i is None:
@@ -340,9 +339,8 @@ def _worker_partial_wave(
             
         try:
             chi_f = solve_continuum_wave(grid, U_f, l_f, E_final_eV, z_ion)
-        except Exception as e:
-            logger.debug("Failed to solve chi_f for l=%d: %s", l_f, e)
-            chi_f = None
+        except:
+             chi_f = None
         if chi_f is None: continue
 
         # Integrals
@@ -406,8 +404,7 @@ def _worker_solve_wave(
             solver=solver
         )
         return l, chi
-    except Exception as e:
-        # Silently return None for failed waves (expected for some L)
+    except:
         return l, None
 
 def precompute_continuum_waves(
@@ -726,8 +723,7 @@ def compute_total_excitation_cs(
                 else:
                     try:
                         chi_f = solve_continuum_wave(grid, U_f, l_f, E_final_eV, z_ion)
-                    except Exception as e:
-                        logger.debug("Failed to solve chi_f for l=%d: %s", l_f, e)
+                    except:
                         chi_f = None
                         
                 if chi_f is None: continue
