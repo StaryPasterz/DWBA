@@ -847,7 +847,7 @@ _GPU_CC_N = 0
 _GPU_CC_X_REF = None
 _GPU_CC_W_REF = None
 
-def _init_gpu_cc_weights(n_nodes: int = 5):
+def _init_gpu_cc_weights(n_nodes: int = 5) -> None:
     """Initialize GPU CC reference weights (called on first use or if N changes)."""
     global _GPU_CC_N, _GPU_CC_X_REF, _GPU_CC_W_REF
     if _GPU_CC_N == n_nodes and _GPU_CC_X_REF is not None:
@@ -881,7 +881,7 @@ def _init_gpu_cc_weights(n_nodes: int = 5):
     _GPU_CC_N = CC_N
 
 
-def _generate_gpu_filon_params(r_gpu, k_total, phase_increment=1.5708, n_nodes=5):
+def _generate_gpu_filon_params(r_gpu: 'cp.ndarray', k_total: float, phase_increment: float = 1.5708, n_nodes: int = 5) -> dict:
     """
     Precompute grid-dependent parameters for GPU Filon quadrature.
     """
@@ -947,7 +947,7 @@ def _generate_gpu_filon_params(r_gpu, k_total, phase_increment=1.5708, n_nodes=5
         'n_nodes': n_nodes
     }
 
-def _gpu_filon_direct(rho1_uw, int_r2, r_gpu, w_gpu, k_total, phase_increment=1.5708, n_nodes=5, precomputed=None, return_gpu=False):
+def _gpu_filon_direct(rho1_uw: 'cp.ndarray', int_r2: 'cp.ndarray', r_gpu: 'cp.ndarray', w_gpu: 'cp.ndarray', k_total: float, phase_increment: float = 1.5708, n_nodes: int = 5, precomputed: dict = None, return_gpu: bool = False) -> Union[float, 'cp.ndarray']:
     """
     GPU Filon quadrature for direct integral outer loop.
     
@@ -986,7 +986,7 @@ def _gpu_filon_direct(rho1_uw, int_r2, r_gpu, w_gpu, k_total, phase_increment=1.
 
 
 
-def _gpu_filon_exchange(kernel_L, rho1_uw, rho2_uw, r_gpu, w_gpu, k_total, phase_increment=1.5708, n_nodes=5, precomputed=None, return_gpu=False):
+def _gpu_filon_exchange(kernel_L: Union['cp.ndarray', dict], rho1_uw: 'cp.ndarray', rho2_uw: 'cp.ndarray', r_gpu: 'cp.ndarray', w_gpu: 'cp.ndarray', k_total: float, phase_increment: float = 1.5708, n_nodes: int = 5, precomputed: dict = None, return_gpu: bool = False) -> Union[float, 'cp.ndarray']:
     """
     GPU Filon quadrature for exchange integral (CC on both inner and outer).
     

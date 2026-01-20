@@ -18,7 +18,7 @@ class AtomEntry:
 DB_FILE = os.path.join(os.path.dirname(__file__), "atoms.json")
 ATOM_DATABASE = {}
 
-def load_database():
+def load_database() -> None:
     """Refreshes the database from atoms.json."""
     global ATOM_DATABASE
     ATOM_DATABASE.clear()
@@ -55,7 +55,7 @@ def load_database():
 # Initial load
 load_database()
 
-def get_atom_list():
+def get_atom_list() -> list[str]:
     """Returns a list of available atom names."""
     # Reload every time? No, maybe just rely on initial load unless forced.
     # But for interactive fit tool, reload is good.

@@ -6,7 +6,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [v2.16] — 2026-01-19 — Dual Top-Up Strategy & Default Updates
+## [v2.17] — 2026-01-20 — Code Quality Refactor
+
+### Pilot Calibration Consolidation
+
+**Extracted `run_pilot_calibration()` helper function** (~120 lines) to consolidate duplicated pilot calculation logic from both interactive and batch modes.
+
+- **Fixed bug**: Interactive mode was using non-existent `L_max_integrals_override` parameter
+- **Unified logging**: Both modes now log `"Pilot Calibrate | E=%.0f eV: r_max=%.1f a.u., n_points=%d, L_proj=%d"`
+
+### New Modules
+
+**`constants.py`**: Centralized physical and numerical constants (20+ named values):
+- `HARTREE_TO_EV`, `EV_TO_HARTREE` — Replaces magic number `27.211386`
+- `L_MAX_HARD_CAP`, `L_MAX_INTEGRALS_CAP` — Replaces hardcoded `150`, `25`
+- `TURNING_POINT_SCALE` — Replaces `0.6` for L_max estimation
+- Grid defaults: `DEFAULT_R_MAX`, `DEFAULT_N_POINTS`, `N_POINTS_CAP`
+
+**`config_types.py`**: Typed configuration dataclasses:
+- `GridConfig` — Radial grid parameters with `from_params()` factory
+- `PilotConfig` — With `calculate_dynamic_L_max()` method
+- `HardwareConfig` — With `get_worker_count()` method
+- `OscillatoryConfig` — Integration method settings
+- `CalculationContext` — Composite replacing global `OSCILLATORY_CONFIG` and `_SCAN_LOGGED`
+
+### Code Quality
+
+- **Exception Handling**: Fixed 7 bare `except:` clauses
+- **Type Hints**: Added to `load_results()`, `save_results()`
+- **Constant Integration**: `grid.py`, `calibration.py`, `DW_main.py` now import from `constants.py`
+
+**Files updated**: `DW_main.py`, `driver.py`, `continuum.py`, `grid.py`, `calibration.py`, `constants.py` (new), `config_types.py` (new)
+
+---
+
+## [v2.16] — 2026-01-19 — Dual Top-Up Strategy & Default Updates — Edit_88 (`7818b5e`)
 
 ### Dual Top-Up Strategy
 
@@ -44,7 +78,7 @@ Top-Up          | Not applied (Forbidden transition, no suitable decay)
 
 ---
 
-## [v2.15] — 2026-01-18 — Stability-Based Convergence
+## [v2.15] — 2026-01-18 — Stability-Based Convergence — Edit_87 (`2f942cb`)
 
 **Major rework**: Partial wave convergence logic redesigned per DWBA literature.
 
@@ -90,7 +124,7 @@ if not np.isfinite(amplitudes):
 
 ---
 
-## [v2.14] — 2026-01-18 — Grid Scaling & Amplitude Normalization
+## [v2.14] — 2026-01-18 — Grid Scaling & Amplitude Normalization — Edit_87 (`2f942cb`)
 
 ### Grid Scaling Improvements
 
@@ -116,7 +150,7 @@ if not np.isfinite(amplitudes):
 
 ---
 
-## [v2.13] — 2026-01-17 — Johnson Rewrite + Solver Verification
+## [v2.13] — 2026-01-17 — Johnson Rewrite + Solver Verification — Edit_86 (`ae8fc8b`)
 
 **Major update**: Johnson solver rewritten according to literature, RK45 verified as correct for exponential grids.
 
@@ -158,7 +192,7 @@ oscillatory:
 
 ---
 
-## [v2.12] — 2026-01-14 — Configurable ODE Solver & LOCAL Grid Fix
+## [v2.12] — 2026-01-14 — Configurable ODE Solver & LOCAL Grid Fix — Edit_85 (`7a8d27a`)
 
 **Critical bug fix** for LOCAL adaptive grid + new configurable ODE solver selection.
 
@@ -216,7 +250,7 @@ solve_continuum_wave(..., solver="numerov")
 
 ---
 
-## [v2.11] — 2026-01-13 — Phase Extraction Fix & Hybrid Method
+## [v2.11] — 2026-01-13 — Phase Extraction Fix & Hybrid Method — Edit_82 (`35d208f`)
 
 **Critical bug fix** in phase shift extraction and new hybrid approach for improved robustness.
 
@@ -737,7 +771,7 @@ All output files now saved to dedicated directories:
 
 ---
 
-### Edit_70 — GPU/Multiprocessing Optimization
+### Edit_70 — GPU/Multiprocessing Optimization — (`2362af2`)
 
 Major improvements to GPU and CPU multiprocessing configuration and consistency.
 
@@ -800,7 +834,7 @@ Fixed `NameError` in GPU cleanup code — added existence checks for GPU arrays 
 
 ---
 
-### Batch/Interactive Unification — Refinement
+### Edit_71 — Batch/Interactive Unification — Refinement — (`9bca217`)
 
 **Files**: `DW_main.py`
 
@@ -812,7 +846,7 @@ Fixed `NameError` in GPU cleanup code — added existence checks for GPU arrays 
 - **Ionization**: Uses `prep.orb_i` for threshold, identical JSON format with `energy_eV`, `IP_eV`, `sdcs`, `tdcs`, `partial_waves`, `meta`
 - Keyboard interrupt saves partial results in both modes
 
-### GPU Memory Auto-tuning
+### Edit_66 — GPU Memory Auto-tuning — (`129343d`)
 
 **Files**: `dwba_matrix_elements.py`, `driver.py`
 
@@ -821,7 +855,7 @@ Fixed `NameError` in GPU cleanup code — added existence checks for GPU arrays 
 - Memory pool cleanup (`cp.get_default_memory_pool().free_all_blocks()`) before large kernel allocations
 - `_compute_optimal_block_size()`: Estimates max block that fits in `threshold × free_mem`
 
-### GPU Path Logic Fix — Performance Optimization
+### Edit_65 — GPU Path Logic Fix — Performance Optimization — (`2a02a3a`)
 
 **Files**: `dwba_matrix_elements.py`
 
@@ -838,7 +872,7 @@ Fixed `NameError` in GPU cleanup code — added existence checks for GPU arrays 
 | `k>k_thr`, VRAM OK | Block-wise (slow) | Full matrix + Filon (fast) |
 | `k>k_thr`, VRAM low | Block-wise | Block-wise (same) |
 
-### Hybrid Filon Integration — Major Performance Boost
+### Edit_67 — Hybrid Filon Integration — Major Performance Boost — (`8f3eec5`)
 
 **Files**: `dwba_matrix_elements.py`, `config_loader.py`, `DW_main.py`, `*.yaml`
 
@@ -856,7 +890,7 @@ Fixed `NameError` in GPU cleanup code — added existence checks for GPU arrays 
 **Logging**:
 - Mode logged once per run: `GPU mode: Filon/full-matrix`
 
-### UI Improvements
+### Edit_68 — UI Improvements — (`a2157de`)
 
 **Files**: `DW_main.py`, `dwba_matrix_elements.py`, `README.md`
 
@@ -865,7 +899,7 @@ Fixed `NameError` in GPU cleanup code — added existence checks for GPU arrays 
 - **Default excitation**: H transition changed from 1s→2p to 1s→2s
 - **README expanded**: Comprehensive parameter reference tables for Grid, Excitation, Ionization, Oscillatory, and GPU parameters
 
-### GPU Performance Optimization — L-Loop Improvements
+### Edit_66 — GPU Performance Optimization — L-Loop Improvements — (`129343d`)
 
 **Files**: `dwba_matrix_elements.py`
 
@@ -877,7 +911,7 @@ Fixed `NameError` in GPU cleanup code — added existence checks for GPU arrays 
 - Fixed auto-mode memory check for Filon: now uses `idx_limit × N_grid` instead of `idx_limit²`
 - Prevents incorrect fallback to block-wise when extended matrix would fit
 
-### Config: Support for `gpu_block_size: "auto"` String
+### Edit_67 — Config: Support for `gpu_block_size: "auto"` String — (`8f3eec5`)
 
 **Files**: `config_loader.py`, `DW_main.py`, `*.yaml`
 

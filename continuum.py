@@ -474,7 +474,7 @@ def _initial_conditions_regular(r0: float, l: int) -> np.ndarray:
             chi0 *= scale_factor
             dchi0 *= scale_factor
             
-    except:
+    except Exception:
         # Fallback if logs fail (shouldn't happen for r0>0)
         chi0 = 1e-20
         dchi0 = chi0 * (ell + 1.0) / r0
