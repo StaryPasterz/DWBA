@@ -877,6 +877,9 @@ def run_scan_excitation(run_name) -> None:
     n_points_max = params['grid'].get('n_points_max', 15000)
     min_pts_per_wl = params['grid'].get('min_points_per_wavelength', 15)
     
+    # Ionic charge for Coulomb asymptotic validity requirement
+    z_ion = core_params.Zc - 1.0  # For single-electron: He+ has Zc=2, z_ion=1
+    
     E_min_scan = float(np.min(energies))
     
     print_subheader("Grid Configuration")
@@ -891,7 +894,7 @@ def run_scan_excitation(run_name) -> None:
     elif strategy == 'local':
         # LOCAL: Will recalculate per energy, but start with E_min for initial prep
         r_max_calc, n_points_calc = calculate_optimal_grid_params(
-            E_min_scan, L_max_proj, base_r_max, base_n_points, scale_factor, n_points_max, min_pts_per_wl
+            E_min_scan, L_max_proj, base_r_max, base_n_points, scale_factor, n_points_max, min_pts_per_wl, z_ion
         )
         print_info(f"Strategy: LOCAL (per-energy adaptive)")
         print_info(f"  Initial grid (E_min={E_min_scan:.1f} eV): r_max = {r_max_calc:.1f}, n_points = {n_points_calc}")
@@ -901,7 +904,7 @@ def run_scan_excitation(run_name) -> None:
         # GLOBAL: Calculate optimal grid for lowest energy, use for all
         k_min = k_from_E_eV(E_min_scan - dE_thr) if E_min_scan > dE_thr else k_from_E_eV(0.5)
         r_max_calc, n_points_calc = calculate_optimal_grid_params(
-            E_min_scan, L_max_proj, base_r_max, base_n_points, scale_factor, n_points_max, min_pts_per_wl
+            E_min_scan, L_max_proj, base_r_max, base_n_points, scale_factor, n_points_max, min_pts_per_wl, z_ion
         )
         print_info(f"Strategy: GLOBAL (single adaptive calculation)")
         print_info(f"  E_min = {E_min_scan:.1f} eV, k_min = {k_min:.2f} a.u.")
@@ -967,7 +970,7 @@ def run_scan_excitation(run_name) -> None:
                 current_prep = prep
                 if strategy == 'local':
                     r_local, n_local = calculate_optimal_grid_params(
-                        E, L_max_proj, base_r_max, base_n_points, scale_factor, n_points_max, min_pts_per_wl
+                        E, L_max_proj, base_r_max, base_n_points, scale_factor, n_points_max, min_pts_per_wl, z_ion
                     )
                     
                     # For first iteration, ALWAYS recalculate to ensure correct size
@@ -1386,7 +1389,8 @@ def run_dcs_visualization() -> None:
         # Get all energies from first key
         first_key = list(data.keys())[0]
         all_energies = [p["energy_eV"] for p in data[first_key] if p.get("theta_deg")]
-    except:
+    except (json.JSONDecodeError, KeyError, IndexError) as e:
+        logger.debug("Could not parse energy list from results: %s", e)
         all_energies = []
     
     if all_energies:
@@ -1403,7 +1407,8 @@ def run_dcs_visualization() -> None:
                 selected_energies = [float(x.strip()) for x in user_input.split(',')]
                 # Pass selected energies to plotter via environment variable
                 os.environ['DCS_ENERGIES'] = ','.join([str(e) for e in selected_energies])
-            except:
+            except ValueError as e:
+                logger.debug("Invalid energy input: %s", e)
                 print("Invalid input. Using all energies.")
                 if 'DCS_ENERGIES' in os.environ:
                     del os.environ['DCS_ENERGIES']
@@ -1527,7 +1532,8 @@ def calculate_optimal_grid_params(
     base_n_points: int,
     scale_factor: float = 2.5,
     n_points_max: int = 15000,
-    min_points_per_wavelength: int = 15
+    min_points_per_wavelength: int = 15,
+    z_ion: float = 0.0
 ) -> tuple[float, int]:
     """
     Calculate optimal radial grid size based on energy and projectile L_max.
@@ -1535,9 +1541,10 @@ def calculate_optimal_grid_params(
     Strategy:
     1. Determine minimum r_max needed to contain the classical turning point
        for L_max_proj with a given safety margin.
-    2. Enforce the user's base_r_max as a minimum floor.
-    3. Scale n_points proportionally to maintain grid density.
-    4. (v2.7+) For high energies, ensure sufficient points per wavelength
+    2. For ionic targets (z_ion > 0), also ensure Coulomb asymptotic validity.
+    3. Enforce the user's base_r_max as a minimum floor.
+    4. Scale n_points proportionally to maintain grid density.
+    5. (v2.7+) For high energies, ensure sufficient points per wavelength
        to accurately sample oscillations.
     
     Parameters
@@ -1545,6 +1552,9 @@ def calculate_optimal_grid_params(
     min_points_per_wavelength : int
         Minimum grid points per wavelength at large r. Default 15.
         Set to 0 to disable wavelength-based scaling.
+    z_ion : float
+        Ionic charge of target (0 for neutral, 1 for He+, etc.).
+        Affects r_max requirement for Coulomb asymptotic validity.
     
     Returns
     -------
@@ -1553,9 +1563,8 @@ def calculate_optimal_grid_params(
     # Get wave number
     k_au = k_from_E_eV(E_eV)
     
-    # Compute physically required r_max from turning point logic
-    # r_max >= safety * (L+0.5)/k
-    r_needed = compute_required_r_max(k_au, L_max_proj, scale_factor)
+    # Compute physically required r_max from turning point AND Coulomb logic
+    r_needed = compute_required_r_max(k_au, L_max_proj, scale_factor, z_ion)
     
     # We want at least the base config (e.g. 200 a.u.)
     # but extend if physics demands it (low energy / high L)
@@ -1681,16 +1690,21 @@ def run_pilot_calibration(
     
     # Calculate dynamic L_max if needed
     if pilot_L_proj_cfg == 'auto' or pilot_L_int_cfg == 'auto':
-        k_pilot = np.sqrt(2 * pilot_E / 27.2114)  # k in a.u.
+        # Convert pilot energy to wave number: k = sqrt(2*E/E_h) where E_h = 27.2114 eV (1 Hartree)
+        k_pilot = np.sqrt(2 * pilot_E / 27.2114)  # k in a.u. (bohr^-1)
         r_max_grid = params['grid']['r_max']
+        # Estimate L_max from classical turning point: L ~ k*r * scale_factor
+        # 0.6 = conservative scale factor to ensure turning point is well within grid
         pilot_L_proj_dynamic = int(k_pilot * r_max_grid * 0.6)
         
         if pilot_L_proj_cfg == 'auto':
+            # Cap at 150 to prevent excessive computation time (L^2 scaling)
             pilot_L_proj = max(spec.L_max_projectile, min(pilot_L_proj_dynamic, 150))
         else:
             pilot_L_proj = int(pilot_L_proj_cfg)
         
         if pilot_L_int_cfg == 'auto':
+            # L_max for multipole expansion: typically L_proj/4, capped at 25 for efficiency
             pilot_L_int = max(spec.L_max_integrals, min(25, pilot_L_proj // 4))
         else:
             pilot_L_int = int(pilot_L_int_cfg)

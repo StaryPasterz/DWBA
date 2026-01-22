@@ -6,6 +6,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v2.18] — 2026-01-22 — Critical Phase Extraction & Asymptotic Fixes
+
+### Critical Fixes
+
+**Match Point Uses Effective Potential** (`continuum.py`)
+- `_find_match_point()` now uses **V_eff = |2U| + l(l+1)/r²** (not just U)
+- True asymptotic criterion: both short-range AND centrifugal must be negligible
+- Also requires r > 2.5×r_turn for safety margin
+- **Impact**: Match points now correctly placed in true asymptotic region
+
+**Coulomb Asymptotic Validity Check** (`continuum.py`)
+- Added check: ρ_m > 3×max(l, |η|) for asymptotic validity
+- Warning logged when condition violated (common for He⁺ at low energies)
+- Also includes O(1/ρ) corrections per NIST DLMF §33.11
+
+**Phase Diagnostic Alt Point Fix** (`continuum.py`)
+- Changed from `idx_match - 5` to `idx_match + 10`
+- Both points now guaranteed in asymptotic region
+- **Impact**: Eliminates false "Phase unstable" warnings
+
+**Oscillatory Phase Sampling for Ions** (`oscillatory_integrals.py`)
+- `check_phase_sampling()` now includes optional `eta_total` parameter
+- For ionic targets: dφ/dr ≈ k + η/r (Coulomb contribution)
+- **Impact**: Better detection of undersampling for He⁺
+
+**Coulomb-Aware r_max Auto-Scaling** (`grid.py`, `DW_main.py`)
+- `compute_required_r_max()` now includes `z_ion` parameter
+- Enforces ρ_max > 3×max(L, |η|) for Coulomb asymptotic validity
+- E.g., at E=20eV, L=35: neutral→r_max=73, He+→r_max=87 (+18%)
+- **Impact**: Grid auto-scales to satisfy Coulomb requirements
+
+### Files Updated
+- `continuum.py`: `_find_match_point()`, `_extract_phase_logderiv_coulomb()`, diagnostics
+- `oscillatory_integrals.py`: `check_phase_sampling()`
+- `grid.py`: `compute_required_r_max()`
+- `DW_main.py`: `calculate_optimal_grid_params()`, callers updated
+
+---
+
 ## [v2.17] — 2026-01-20 — Pilot Calibration Refactor
 
 ### Code Quality Improvements

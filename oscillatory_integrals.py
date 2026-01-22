@@ -918,7 +918,8 @@ def compute_outer_integral_oscillatory(
 def check_phase_sampling(
     r: np.ndarray,
     k_total: float,
-    threshold: float = np.pi / 4
+    threshold: float = np.pi / 4,
+    eta_total: float = 0.0
 ) -> Tuple[float, bool, int]:
     """
     Check if grid adequately samples oscillations.
@@ -931,6 +932,9 @@ def check_phase_sampling(
         Total wave number (k_i + k_f for product of waves).
     threshold : float
         Maximum allowed phase change per step (default π/4).
+    eta_total : float
+        Total Sommerfeld parameter (η_i + η_f) for ionic targets.
+        If nonzero, includes Coulomb phase component η·ln(r) in estimate.
         
     Returns
     -------
@@ -945,7 +949,16 @@ def check_phase_sampling(
         return 0.0, True, -1
     
     dr = np.diff(r)
-    phase_per_step = k_total * dr
+    
+    # Phase per step: dφ = k·dr + η·d(ln r) = k·dr + η·dr/r
+    # For product of two waves: use k_total and η_total
+    if abs(eta_total) > 1e-10:
+        # Include Coulomb phase contribution: η·ln(2kr) -> dφ_Coulomb/dr ≈ η/r
+        r_mid = 0.5 * (r[:-1] + r[1:])  # Midpoint of each interval
+        phase_per_step = k_total * dr + abs(eta_total) * dr / r_mid
+    else:
+        phase_per_step = k_total * dr
+    
     max_phase = float(np.max(phase_per_step))
     
     # Find first problematic index

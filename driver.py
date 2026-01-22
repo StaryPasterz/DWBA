@@ -322,7 +322,8 @@ def _worker_partial_wave(
     # Solve chi_i
     try:
         chi_i = solve_continuum_wave(grid, U_i, l_i, E_incident_eV, z_ion) 
-    except:
+    except Exception as e:
+        logger.debug("chi_i solve failed for l_i=%d: %s", l_i, e)
         chi_i = None
 
     if chi_i is None:
@@ -339,8 +340,9 @@ def _worker_partial_wave(
             
         try:
             chi_f = solve_continuum_wave(grid, U_f, l_f, E_final_eV, z_ion)
-        except:
-             chi_f = None
+        except Exception as e:
+            logger.debug("chi_f solve failed for l_f=%d: %s", l_f, e)
+            chi_f = None
         if chi_f is None: continue
 
         # Integrals
@@ -404,7 +406,8 @@ def _worker_solve_wave(
             solver=solver
         )
         return l, chi
-    except:
+    except Exception as e:
+        logger.debug("Worker wave solve failed for l=%d: %s", l, e)
         return l, None
 
 def precompute_continuum_waves(
@@ -723,7 +726,8 @@ def compute_total_excitation_cs(
                 else:
                     try:
                         chi_f = solve_continuum_wave(grid, U_f, l_f, E_final_eV, z_ion)
-                    except:
+                    except Exception as e:
+                        logger.debug("GPU path chi_f solve failed for l_f=%d: %s", l_f, e)
                         chi_f = None
                         
                 if chi_f is None: continue

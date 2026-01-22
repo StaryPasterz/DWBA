@@ -188,10 +188,17 @@ def _coulomb_FG_asymptotic(l: int, eta: float, rho: float) -> Tuple[float, float
     """
     Asymptotic Coulomb functions F_l, G_l and their derivatives.
     
-    For ρ >> l, η:
+    Includes O(1/ρ) corrections from NIST DLMF §33.11 for improved accuracy
+    at moderate ρ (when ρ ~ l or ρ ~ |η|).
+    
+    Leading order (ρ >> l, η):
         F_l(η,ρ) ≈ sin(θ)
         G_l(η,ρ) ≈ cos(θ)
     where θ = ρ + η·ln(2ρ) - lπ/2 + σ_l
+    
+    Corrections applied:
+        1. Centrifugal phase: θ_corr = θ - l(l+1)/(2ρ)
+        2. Amplitude factor: A = 1 + λ/(4ρ²) where λ = l(l+1) - 2η²
     
     Returns (F, F', G, G')
     """
@@ -201,16 +208,41 @@ def _coulomb_FG_asymptotic(l: int, eta: float, rho: float) -> Tuple[float, float
     # Coulomb phase shift σ_l = arg Γ(l+1+iη)
     sigma_l = np.imag(loggamma(l + 1 + 1j * eta))
     
-    # Asymptotic argument
-    theta = rho + eta * np.log(2.0 * rho) - (l * np.pi / 2.0) + sigma_l
+    # Base asymptotic argument
+    theta_base = rho + eta * np.log(2.0 * rho) - (l * np.pi / 2.0) + sigma_l
     
-    # Derivative of theta: dθ/dρ = 1 + η/ρ
-    theta_prime = 1.0 + eta / rho
+    # =========================================================================
+    # O(1/ρ) CORRECTIONS (NIST DLMF §33.11)
+    # =========================================================================
+    # Phase correction: accounts for centrifugal barrier effect at moderate ρ
+    # Derived from WKB: the effective potential l(l+1)/r² modifies the phase
+    # The correction -l(l+1)/(2kρ) = -l(l+1)/(2ρ) (in units where k=1/ρ_bar)
+    # =========================================================================
     
-    F = np.sin(theta)
-    G = np.cos(theta)
-    F_prime = theta_prime * np.cos(theta)
-    G_prime = -theta_prime * np.sin(theta)
+    ll1 = l * (l + 1)
+    phase_correction = ll1 / (2.0 * rho) if rho > 1.0 else 0.0
+    theta = theta_base - phase_correction
+    
+    # Amplitude correction: from Sommerfeld expansion
+    # λ = l(l+1) - 2η² captures both centrifugal and Coulomb effects
+    # A = 1 + λ/(4ρ²) is the first-order correction
+    lambda_param = ll1 - 2.0 * eta * eta
+    if rho > 5.0:  # Only apply when asymptotic regime is valid
+        amp = 1.0 + lambda_param / (4.0 * rho * rho)
+    else:
+        amp = 1.0  # Don't apply correction too close to origin
+    
+    # Derivative of theta: dθ/dρ = 1 + η/ρ + l(l+1)/(2ρ²)
+    theta_prime = 1.0 + eta / rho + ll1 / (2.0 * rho * rho)
+    
+    F = amp * np.sin(theta)
+    G = amp * np.cos(theta)
+    
+    # Derivatives include amplitude correction
+    # d(A·sin(θ))/dρ = A'·sin(θ) + A·θ'·cos(θ)
+    # For leading order, A' ~ O(1/ρ³) which we neglect
+    F_prime = amp * theta_prime * np.cos(theta)
+    G_prime = -amp * theta_prime * np.sin(theta)
     
     return F, F_prime, G, G_prime
 
@@ -264,23 +296,43 @@ def _find_match_point(r_grid: np.ndarray, U_arr: np.ndarray, k_au: float, l: int
     search_start = max(search_start, idx_turn + 10)
     
     # Search FORWARD from search_start
+    # Two-stage criterion:
+    # 1. r must be sufficiently beyond turning point (centrifugal safety)
+    # 2. Short-range potential U(r) must be small relative to k²
+    # We DON'T add centrifugal to threshold (too restrictive for high L)
+    
+    # Safety factor for turning point: require r > 2.5 × r_turn
+    # Note: 2.5× (not 2×) ensures diagnostic alt point at idx_match-5 is also safe
+    r_turn_safe = 2.5 * r_turn
+    
     for idx in range(search_start, search_end):
         r = r_grid[idx]
         U = U_arr[idx]
         
-        # Criterion: potential small compared to kinetic energy
-        # |2U| < threshold * k² means |U|/(k²/2) < threshold
-        if abs(2.0 * U) < threshold * k2:
+        # Stage 1: Must be well past turning point (centrifugal region)
+        if r < r_turn_safe:
+            continue
+        
+        # Stage 2: EFFECTIVE potential must be negligible (not just U!)
+        # V_eff = |2U| + centrifugal barrier l(l+1)/r²
+        # This is the TRUE asymptotic criterion - both short-range AND 
+        # centrifugal must be small compared to kinetic energy k²
+        V_cent = l * (l + 1) / (r * r)
+        V_eff = abs(2.0 * U) + V_cent
+        
+        if V_eff < threshold * k2:
             return idx, r
     
-    # Fallback: use 70% of grid (guaranteed past turning point for most cases)
-    # but NEVER before idx_start + MIN_MARGIN
-    fallback_idx = max(search_start, int(0.7 * N))
+    # Fallback: use the larger of (70% of grid, 2.5×r_turn) 
+    # This ensures centrifugal safety even if U(r) criterion cannot be met
+    # Use +20 margin (not +5) so diagnostic alt point idx_match-5 is also safe
+    idx_turn_safe = np.searchsorted(r_grid, r_turn_safe) if r_turn_safe > 0 else 0
+    fallback_idx = max(search_start, int(0.7 * N), idx_turn_safe + 20)
     fallback_idx = min(fallback_idx, N - 10)  # Not too close to edge
     
     logger.debug(
         f"No ideal match point found for L={l}, k={k_au:.3f}; "
-        f"using fallback idx={fallback_idx} (r={r_grid[fallback_idx]:.2f})"
+        f"using fallback idx={fallback_idx} (r={r_grid[fallback_idx]:.2f}, r_turn_safe={r_turn_safe:.2f})"
     )
     return fallback_idx, r_grid[fallback_idx]
 
@@ -347,6 +399,16 @@ def _extract_phase_logderiv_coulomb(Y_m: float, k_au: float, r_m: float, l: int,
     """
     eta = -z_ion / k_au
     rho_m = k_au * r_m
+    
+    # VALIDITY CHECK: Asymptotic Coulomb functions require ρ >> max(l, |η|)
+    # If violated, the phase extraction may be inaccurate for ionic targets
+    rho_min_required = 3.0 * max(l, abs(eta))
+    if rho_m < rho_min_required:
+        logger.warning(
+            f"L={l}: Coulomb asymptotic may be inaccurate "
+            f"(ρ={rho_m:.1f} < 3×max(l,|η|)={rho_min_required:.1f}). "
+            f"Consider increasing r_max."
+        )
     
     # Get Coulomb functions at match point
     F, F_prime, G, G_prime = _coulomb_FG_asymptotic(l, eta, rho_m)
@@ -474,8 +536,9 @@ def _initial_conditions_regular(r0: float, l: int) -> np.ndarray:
             chi0 *= scale_factor
             dchi0 *= scale_factor
             
-    except:
-        # Fallback if logs fail (shouldn't happen for r0>0)
+    except (OverflowError, FloatingPointError) as e:
+        # Fallback if logarithm underflows (shouldn't happen for r0>0)
+        logger.debug("Initial conditions fallback triggered for l=%d: %s", l, e)
         chi0 = 1e-20
         dchi0 = chi0 * (ell + 1.0) / r0
 
@@ -1873,9 +1936,12 @@ def solve_continuum_wave(
     # Check phase stability by comparing log-derivative at TWO nearby points.
     # This tests whether the numerical wavefunction is consistent.
     # Note: We compare logderiv vs logderiv, not delta_l (which may be from LSQ).
+    # IMPORTANT: Use alt point AFTER match point (not before) to ensure both
+    # are in the asymptotic region (r > 2.5×r_turn).
     phase_stable = True
-    if idx_match > 10 and abs(chi_m) > 1e-100:
-        idx_alt = idx_match - 5
+    N_grid = len(r)
+    if idx_match > 10 and idx_match < N_grid - 15 and abs(chi_m) > 1e-100:
+        idx_alt = idx_match + 10  # Use point AFTER match (both in asymptotic region)
         chi_alt = chi_raw[idx_alt]
         dchi_alt = dchi_raw[idx_alt]
         if abs(chi_alt) > 1e-100:

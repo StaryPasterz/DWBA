@@ -302,17 +302,16 @@ def compute_safe_L_max(k_au: float, r_max: float, safety_factor: float = 2.5) ->
     return L_max
 
 
-def compute_required_r_max(k_au: float, L_max_target: int, safety_factor: float = 2.5) -> float:
+def compute_required_r_max(k_au: float, L_max_target: int, safety_factor: float = 2.5,
+                            z_ion: float = 0.0) -> float:
     """
     Compute the minimum r_max needed to accurately represent partial waves
     up to L_max_target.
     
-    Based on the classical turning point criterion: the grid must extend
-    well beyond r_t(L_max) for accurate asymptotic fitting.
-    
-    Formula:
-        r_t(L) = (L + 0.5) / k
-        r_max = safety_factor × r_t(L_max) = safety_factor × (L_max + 0.5) / k
+    Based on TWO criteria:
+    1. Classical turning point: r_max >= safety × (L_max + 0.5) / k
+    2. Coulomb asymptotic validity (for ionic targets): ρ_max > 3 × max(L, |η|)
+       where η = -z_ion/k, so r_max > 3 × max(L, |z_ion|/k) / k
     
     Parameters
     ----------
@@ -322,28 +321,36 @@ def compute_required_r_max(k_au: float, L_max_target: int, safety_factor: float 
         Desired maximum angular momentum.
     safety_factor : float
         Multiplier for the turning point (default 2.5).
+    z_ion : float
+        Ionic charge of target (0 for neutral, 1 for He+, etc.).
+        If nonzero, includes Coulomb asymptotic validity requirement.
         
     Returns
     -------
     r_max : float
         Minimum required grid extent (bohr). Clamped to [50, 2000].
-        
-    Examples
-    --------
-    >>> k = 1.0  # ~13.6 eV
-    >>> compute_required_r_max(k, 10, 2.5)  # ~26.25 -> clamped to 50
-    50.0
-    >>> compute_required_r_max(0.5, 20, 2.5)  # ~102.5
-    102.5
     """
     if k_au < 1e-10:
         return 2000.0  # Maximum for very low energy
     
-    r_max = safety_factor * (L_max_target + 0.5) / k_au
+    # Criterion 1: Classical turning point
+    r_turn = safety_factor * (L_max_target + 0.5) / k_au
+    
+    # Criterion 2: Coulomb asymptotic validity (for ionic targets)
+    # Need ρ_max = k×r_max > 3×max(L, |η|) where η = -z_ion/k
+    # => r_max > 3×max(L, |z_ion|/k) / k
+    if abs(z_ion) > 1e-6:
+        eta = abs(z_ion) / k_au
+        rho_min_required = 3.0 * max(L_max_target, eta)
+        r_coulomb = rho_min_required / k_au
+    else:
+        r_coulomb = 0.0
+    
+    # Take maximum of both criteria
+    r_max = max(r_turn, r_coulomb)
     
     # Clamp to reasonable bounds
-    # Min 10 a.u. ensures bound states (e.g., H 2s extends to ~10-15 a.u.) are contained
-    r_max = max(10.0, min(2000.0, r_max))
+    r_max = max(50.0, min(2000.0, r_max))
     
     return r_max
 

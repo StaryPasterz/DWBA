@@ -1,13 +1,13 @@
 # DWBA Calculation Configuration
 # Hydrogen 1s → 2s excitation test configuration
 
-run_name: "H2p_b"
+run_name: "He+_2p"
 
 calculation:
   type: "excitation"
 
 target:
-  atom: "H"              # Atom from atoms.json: H, He, Li, Ne, Ar, etc.
+  atom: "He+"              # Atom from atoms.json: H, He, Li, Ne, Ar, etc.
   # Z: 1.0               # Only needed for custom atoms
 
 states:
