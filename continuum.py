@@ -203,7 +203,7 @@ def _coulomb_FG_asymptotic(l: int, eta: float, rho: float) -> Tuple[float, float
     Returns (F, F', G, G')
     """
     if rho < 1e-10:
-        return 0.0, 0.0, 1e30, 1e30
+        return 0.0, 0.0, 1e30, 1e30 
     
     # Coulomb phase shift σ_l = arg Γ(l+1+iη)
     sigma_l = np.imag(loggamma(l + 1 + 1j * eta))
@@ -249,7 +249,7 @@ def _coulomb_FG_asymptotic(l: int, eta: float, rho: float) -> Tuple[float, float
 
 def _find_match_point(r_grid: np.ndarray, U_arr: np.ndarray, k_au: float, l: int,
                        threshold: float = 1e-2, idx_start: int = 0,
-                       chi: np.ndarray = None) -> Tuple[int, float]:
+                       chi: np.ndarray = None, z_ion: float = 0.0) -> Tuple[int, float]:
     """
     Find optimal matching point r_m where potential is negligible.
     
@@ -260,8 +260,9 @@ def _find_match_point(r_grid: np.ndarray, U_arr: np.ndarray, k_au: float, l: int
     the potential is negligible compared to kinetic energy.
     
     Criteria:
-        |2U(r_m)| < threshold × k²
-        r_m > r_turn (classical turning point)
+        1. |2U(r_m)| < threshold × k²
+        2. r_m > 2.5 × r_turn (classical turning point with safety margin)
+        3. For ionic targets: ρ_m = k×r_m > 3×max(L, |η|) (Coulomb asymptotic validity)
     
     Parameters
     ----------
@@ -273,6 +274,9 @@ def _find_match_point(r_grid: np.ndarray, U_arr: np.ndarray, k_au: float, l: int
         Default 1e-2 (1%).
     chi : np.ndarray, optional
         Unused parameter for API compatibility.
+    z_ion : float
+        Ionic charge of target (0 for neutral, 1 for He+, etc.).
+        If nonzero, includes Coulomb asymptotic validity requirement.
     
     Returns
     -------
@@ -296,14 +300,22 @@ def _find_match_point(r_grid: np.ndarray, U_arr: np.ndarray, k_au: float, l: int
     search_start = max(search_start, idx_turn + 10)
     
     # Search FORWARD from search_start
-    # Two-stage criterion:
+    # THREE-stage criterion:
     # 1. r must be sufficiently beyond turning point (centrifugal safety)
-    # 2. Short-range potential U(r) must be small relative to k²
-    # We DON'T add centrifugal to threshold (too restrictive for high L)
+    # 2. Effective potential must be small relative to k²
+    # 3. For ionic targets: Coulomb asymptotic must be valid (ρ > 3×max(L,|η|))
     
     # Safety factor for turning point: require r > 2.5 × r_turn
     # Note: 2.5× (not 2×) ensures diagnostic alt point at idx_match-5 is also safe
     r_turn_safe = 2.5 * r_turn
+    
+    # Coulomb asymptotic criterion (only for ionic targets)
+    if abs(z_ion) > 1e-6 and k_au > 1e-6:
+        eta = abs(z_ion) / k_au
+        rho_min_required = 3.0 * max(l, eta)
+        r_coulomb_min = rho_min_required / k_au
+    else:
+        r_coulomb_min = 0.0
     
     for idx in range(search_start, search_end):
         r = r_grid[idx]
@@ -313,7 +325,11 @@ def _find_match_point(r_grid: np.ndarray, U_arr: np.ndarray, k_au: float, l: int
         if r < r_turn_safe:
             continue
         
-        # Stage 2: EFFECTIVE potential must be negligible (not just U!)
+        # Stage 2: For ionic targets, must satisfy Coulomb asymptotic validity
+        if r < r_coulomb_min:
+            continue
+        
+        # Stage 3: EFFECTIVE potential must be negligible (not just U!)
         # V_eff = |2U| + centrifugal barrier l(l+1)/r²
         # This is the TRUE asymptotic criterion - both short-range AND 
         # centrifugal must be small compared to kinetic energy k²
@@ -323,16 +339,17 @@ def _find_match_point(r_grid: np.ndarray, U_arr: np.ndarray, k_au: float, l: int
         if V_eff < threshold * k2:
             return idx, r
     
-    # Fallback: use the larger of (70% of grid, 2.5×r_turn) 
-    # This ensures centrifugal safety even if U(r) criterion cannot be met
+    # Fallback: use the largest of (70% of grid, 2.5×r_turn, r_coulomb_min)
+    # This ensures both centrifugal AND Coulomb asymptotic safety
     # Use +20 margin (not +5) so diagnostic alt point idx_match-5 is also safe
     idx_turn_safe = np.searchsorted(r_grid, r_turn_safe) if r_turn_safe > 0 else 0
-    fallback_idx = max(search_start, int(0.7 * N), idx_turn_safe + 20)
+    idx_coulomb_safe = np.searchsorted(r_grid, r_coulomb_min) if r_coulomb_min > 0 else 0
+    fallback_idx = max(search_start, int(0.7 * N), idx_turn_safe + 20, idx_coulomb_safe + 5)
     fallback_idx = min(fallback_idx, N - 10)  # Not too close to edge
     
     logger.debug(
         f"No ideal match point found for L={l}, k={k_au:.3f}; "
-        f"using fallback idx={fallback_idx} (r={r_grid[fallback_idx]:.2f}, r_turn_safe={r_turn_safe:.2f})"
+        f"using fallback idx={fallback_idx} (r={r_grid[fallback_idx]:.2f}, r_turn_safe={r_turn_safe:.2f}, r_coulomb_min={r_coulomb_min:.2f})"
     )
     return fallback_idx, r_grid[fallback_idx]
 
@@ -1576,7 +1593,7 @@ def solve_continuum_wave(
     # ==========================================================================
     
     # Try to find match point - if it's at very small r, potential is negligible everywhere
-    idx_match_check, r_m_check = _find_match_point(r, U_arr, k_au, l, threshold=1e-4)
+    idx_match_check, r_m_check = _find_match_point(r, U_arr, k_au, l, threshold=1e-4, z_ion=z_ion)
     
     # If r_m is found in the first 10% of grid, potential is negligible → use analytic
     fraction_to_match = idx_match_check / len(r)
@@ -1850,7 +1867,7 @@ def solve_continuum_wave(
                 dchi_raw = dchi_out
             
             # Find match point and test solution (v2.14+: with node avoidance)
-            idx_match, r_m = _find_match_point(r, U_arr, k_au, l, threshold=1e-4, idx_start=idx_start, chi=chi_raw)
+            idx_match, r_m = _find_match_point(r, U_arr, k_au, l, threshold=1e-4, idx_start=idx_start, chi=chi_raw, z_ion=z_ion)
             chi_m = chi_raw[idx_match]
             dchi_m = dchi_raw[idx_match]
             
@@ -1941,7 +1958,10 @@ def solve_continuum_wave(
     phase_stable = True
     N_grid = len(r)
     if idx_match > 10 and idx_match < N_grid - 15 and abs(chi_m) > 1e-100:
-        idx_alt = idx_match + 10  # Use point AFTER match (both in asymptotic region)
+        # Use fixed Δr = 5 a.u. instead of fixed Δidx for consistent behavior on log grid
+        delta_r = 5.0  # Fixed 5 a.u. separation
+        idx_alt = np.searchsorted(r, r_m + delta_r)
+        idx_alt = min(idx_alt, N_grid - 1)
         chi_alt = chi_raw[idx_alt]
         dchi_alt = dchi_raw[idx_alt]
         if abs(chi_alt) > 1e-100:
@@ -1967,7 +1987,7 @@ def solve_continuum_wave(
             phase_variation = abs(delta_diff)
             phase_stable = phase_variation <= 0.1  # 0.1 rad tolerance (v2.11+)
             if not phase_stable:
-                logger.warning(f"Phase unstable for L={l}: δ_ld varies by {phase_variation:.4f} rad")
+                logger.debug(f"Phase unstable for L={l}: δ_ld varies by {phase_variation:.4f} rad")
     
     # Log diagnostics
     logger.debug(f"L={l:3d} [{method_used}] r_m={r_m:.1f} Y_m={Y_m:.4f} δ={delta_l:+.4f} A={A_amp:.2e}")

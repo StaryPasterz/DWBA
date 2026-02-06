@@ -674,8 +674,10 @@ def check_file_exists_warning(filename) -> bool:
     Warn the user if the output file already exists.
     Returns True if user wants to continue (append), False to abort.
     """
-    if os.path.exists(filename):
-        print(f"\n[WARNING] File '{filename}' already exists!")
+    # Check in results/ directory where files are actually saved
+    results_path = os.path.join("results", filename)
+    if os.path.exists(results_path):
+        print(f"\n[WARNING] File '{results_path}' already exists!")
         print("New results will be appended/merged into this file.")
         confirm = input("Continue? (y/N): ").strip().lower()
         if confirm != 'y':
@@ -881,6 +883,15 @@ def run_scan_excitation(run_name) -> None:
     z_ion = core_params.Zc - 1.0  # For single-electron: He+ has Zc=2, z_ion=1
     
     E_min_scan = float(np.min(energies))
+    E_max_scan = float(np.max(energies))
+    
+    # L_max_effective: estimate maximum L that will be used at runtime
+    # driver.py computes: L_dynamic = k×8+5, then chi_f uses L_max+15
+    # Use E_max for worst-case estimation
+    k_max = k_from_E_eV(E_max_scan)
+    L_dynamic_estimate = int(k_max * 8.0) + 5  # From driver.py line 616
+    L_max_effective = L_dynamic_estimate + 15   # +15 for chi_f buffer (line 671)
+    L_max_effective = max(L_max_effective, L_max_proj + 15)  # At least L_max_proj + buffer
     
     print_subheader("Grid Configuration")
     
@@ -894,7 +905,7 @@ def run_scan_excitation(run_name) -> None:
     elif strategy == 'local':
         # LOCAL: Will recalculate per energy, but start with E_min for initial prep
         r_max_calc, n_points_calc = calculate_optimal_grid_params(
-            E_min_scan, L_max_proj, base_r_max, base_n_points, scale_factor, n_points_max, min_pts_per_wl, z_ion
+            E_min_scan, L_max_effective, base_r_max, base_n_points, scale_factor, n_points_max, min_pts_per_wl, z_ion
         )
         print_info(f"Strategy: LOCAL (per-energy adaptive)")
         print_info(f"  Initial grid (E_min={E_min_scan:.1f} eV): r_max = {r_max_calc:.1f}, n_points = {n_points_calc}")
@@ -904,7 +915,7 @@ def run_scan_excitation(run_name) -> None:
         # GLOBAL: Calculate optimal grid for lowest energy, use for all
         k_min = k_from_E_eV(E_min_scan - dE_thr) if E_min_scan > dE_thr else k_from_E_eV(0.5)
         r_max_calc, n_points_calc = calculate_optimal_grid_params(
-            E_min_scan, L_max_proj, base_r_max, base_n_points, scale_factor, n_points_max, min_pts_per_wl, z_ion
+            E_min_scan, L_max_effective, base_r_max, base_n_points, scale_factor, n_points_max, min_pts_per_wl, z_ion
         )
         print_info(f"Strategy: GLOBAL (single adaptive calculation)")
         print_info(f"  E_min = {E_min_scan:.1f} eV, k_min = {k_min:.2f} a.u.")
@@ -969,8 +980,13 @@ def run_scan_excitation(run_name) -> None:
                 # LOCAL strategy: recalculate grid for each energy
                 current_prep = prep
                 if strategy == 'local':
+                    # L_max_effective for this energy (same formula as initial)
+                    k_local = k_from_E_eV(E)
+                    L_eff_local = int(k_local * 8.0) + 5 + 15
+                    L_eff_local = max(L_eff_local, L_max_proj + 15)
+                    
                     r_local, n_local = calculate_optimal_grid_params(
-                        E, L_max_proj, base_r_max, base_n_points, scale_factor, n_points_max, min_pts_per_wl, z_ion
+                        E, L_eff_local, base_r_max, base_n_points, scale_factor, n_points_max, min_pts_per_wl, z_ion
                     )
                     
                     # For first iteration, ALWAYS recalculate to ensure correct size
@@ -1202,6 +1218,7 @@ def run_scan_ionization(run_name) -> None:
     
     # --- Adaptive r_max and n_points using unified function (v2.7+) ---
     E_min_scan = float(np.min(energies))
+    E_max_scan = float(np.max(energies))
     
     # Get grid parameters from params (supports user config)
     base_r_max = params['grid'].get('r_max', 200.0)
@@ -1210,10 +1227,15 @@ def run_scan_ionization(run_name) -> None:
     n_points_max = params['grid'].get('n_points_max', 10000)
     min_pts_per_wl = params['grid'].get('min_points_per_wavelength', 15)
     
+    # L_max_effective: estimate maximum L that will be used at runtime (same as excitation)
+    k_max = k_from_E_eV(E_max_scan)
+    L_eff = max(int(k_max * 8.0) + 20, L_max_proj + 15)
+    z_ion = core_params.Zc - 1.0
+
     # Use unified grid calculation with wavelength scaling
     r_max_optimal, n_points_optimal = calculate_optimal_grid_params(
-        E_min_scan, L_max_proj, base_r_max, base_n_points, 
-        scale_factor, n_points_max, min_pts_per_wl
+        E_min_scan, L_eff, base_r_max, base_n_points, 
+        scale_factor, n_points_max, min_pts_per_wl, z_ion
     )
     
     print_info(f"Adaptive Grid: E_min={E_min_scan:.1f} eV -> r_max={r_max_optimal:.0f}, n_points={n_points_optimal}")
@@ -1566,9 +1588,13 @@ def calculate_optimal_grid_params(
     # Compute physically required r_max from turning point AND Coulomb logic
     r_needed = compute_required_r_max(k_au, L_max_proj, scale_factor, z_ion)
     
+    # Handle 'auto' string for base_r_max
+    # If 'auto', we just use r_needed (floor=0). Otherwise use provided value as floor.
+    base_r_val = 0.0 if str(base_r_max).lower() == 'auto' else float(base_r_max)
+    
     # We want at least the base config (e.g. 200 a.u.)
     # but extend if physics demands it (low energy / high L)
-    r_max_optimal = max(base_r_max, r_needed)
+    r_max_optimal = max(base_r_val, r_needed)
     
     # --- Wavelength-based n_points scaling for high energies ---
     # For exponential grid: dr(r) ≈ r * ln(r_max/r_min) / n_points
@@ -1610,9 +1636,9 @@ def calculate_optimal_grid_params(
         n_points_optimal = base_n_points
     
     # Check if we are extending r_max beyond base
-    if r_max_optimal > base_r_max:
+    if base_r_val > 0 and r_max_optimal > base_r_val:
         # Scale points to keep density constant
-        density = base_n_points / base_r_max
+        density = base_n_points / base_r_val
         n_density_req = int(density * r_max_optimal)
         n_points_optimal = max(n_points_optimal, n_density_req)
     
@@ -1688,14 +1714,19 @@ def run_pilot_calibration(
     pilot_L_proj_cfg = params['excitation'].get('pilot_L_max_projectile', 'auto')
     pilot_L_int_cfg = params['excitation'].get('pilot_L_max_integrals', 'auto')
     
+    # Convert pilot energy to wave number: k = sqrt(2*E/E_h) where E_h = 27.2114 eV (1 Hartree)
+    # This is needed for both dynamic L_max and grid scaling calculations
+    k_pilot = np.sqrt(2 * pilot_E / 27.2114)  # k in a.u. (bohr^-1)
+    
     # Calculate dynamic L_max if needed
     if pilot_L_proj_cfg == 'auto' or pilot_L_int_cfg == 'auto':
-        # Convert pilot energy to wave number: k = sqrt(2*E/E_h) where E_h = 27.2114 eV (1 Hartree)
-        k_pilot = np.sqrt(2 * pilot_E / 27.2114)  # k in a.u. (bohr^-1)
         r_max_grid = params['grid']['r_max']
+        # Handle 'auto' string - use default 200 a.u. for L_max estimation
+        if str(r_max_grid).lower() == 'auto':
+            r_max_grid = 200.0  # Default for pilot L_max calculation
         # Estimate L_max from classical turning point: L ~ k*r * scale_factor
         # 0.6 = conservative scale factor to ensure turning point is well within grid
-        pilot_L_proj_dynamic = int(k_pilot * r_max_grid * 0.6)
+        pilot_L_proj_dynamic = int(k_pilot * float(r_max_grid) * 0.6)
         
         if pilot_L_proj_cfg == 'auto':
             # Cap at 150 to prevent excessive computation time (L^2 scaling)
@@ -1721,17 +1752,22 @@ def run_pilot_calibration(
     tong_model = TongModel(threshold_eV, epsilon_exc_au, transition_class=transition_class)
     alpha = 1.0
     res_pilot = None
-    
     try:
+        # Calculate z_ion and L_max_effective for proper Coulomb r_max scaling
+        z_ion = core_params.Zc - 1.0
+        L_max_eff_pilot = int(k_pilot * 8.0) + 5 + 15  # Same formula as main scan
+        L_max_eff_pilot = max(L_max_eff_pilot, pilot_L_proj + 15)
+        
         # Calculate adaptive grid for pilot energy
         pilot_r_max, pilot_n_points = calculate_optimal_grid_params(
             pilot_E, 
-            pilot_L_proj,
+            L_max_eff_pilot,
             base_r_max=params['grid']['r_max'],
             base_n_points=params['grid']['n_points'],
             scale_factor=params['grid'].get('r_max_scale_factor', 2.5),
             n_points_max=params['grid'].get('n_points_max', 15000),
-            min_points_per_wavelength=params['grid'].get('min_points_per_wavelength', 15)
+            min_points_per_wavelength=params['grid'].get('min_points_per_wavelength', 15),
+            z_ion=z_ion
         )
         
         # Log pilot calculation start with grid info
@@ -1867,24 +1903,28 @@ def run_from_config(config_path: str, verbose: bool = False) -> None:
         min_pts_per_wl = params['grid'].get('min_points_per_wavelength', 15)
         
         # Determine parameters for initial target prep
+        E_ref = min(energy_grid)
+        E_max = max(energy_grid)
+        k_max = k_from_E_eV(E_max)
+        L_eff = max(int(k_max * 8.0) + 20, params['excitation']['L_max_projectile'] + 15)
+        z_ion = core_params.Zc - 1.0
+
         if strategy == 'manual':
             r_max_calc, n_points_calc = base_r_max, base_n_points
             logger.info("Grid Strategy   | MANUAL (r_max=%.1f a.u., n_points=%d)", 
                        r_max_calc, n_points_calc)
         elif strategy == 'local':
-            E_ref = min(energy_grid)
             r_max_calc, n_points_calc = calculate_optimal_grid_params(
-                E_ref, params['excitation']['L_max_projectile'],
-                base_r_max, base_n_points, scale_factor, n_points_max, min_pts_per_wl
+                E_ref, L_eff,
+                base_r_max, base_n_points, scale_factor, n_points_max, min_pts_per_wl, z_ion
             )
             logger.info("Grid Strategy   | LOCAL (per-energy adaptive)")
             logger.info("Grid Initial    | E_min=%.1f eV: r_max=%.1f a.u., n_points=%d", 
                        E_ref, r_max_calc, n_points_calc)
         else:  # 'global' (default)
-            E_ref = min(energy_grid)
             r_max_calc, n_points_calc = calculate_optimal_grid_params(
-                E_ref, params['excitation']['L_max_projectile'],
-                base_r_max, base_n_points, scale_factor, n_points_max, min_pts_per_wl
+                E_ref, L_eff,
+                base_r_max, base_n_points, scale_factor, n_points_max, min_pts_per_wl, z_ion
             )
             logger.info("Grid Strategy   | GLOBAL (E_min=%.1f eV: r_max=%.1f a.u., n_points=%d)", 
                        E_ref, r_max_calc, n_points_calc)
@@ -1984,9 +2024,13 @@ def run_from_config(config_path: str, verbose: bool = False) -> None:
                     # LOCAL ADAPTIVE: Re-calculate target if needed
                     current_prep = prep
                     if strategy == 'local':
+                        # Use same L_eff logic as interactive mode
+                        k_local = k_from_E_eV(E)
+                        L_eff_local = max(int(k_local * 8.0) + 20, params['excitation']['L_max_projectile'] + 15)
+                        
                         r_local, n_local = calculate_optimal_grid_params(
-                            E, params['excitation']['L_max_projectile'],
-                            base_r_max, base_n_points, scale_factor, n_points_max, min_pts_per_wl
+                            E, L_eff_local,
+                            base_r_max, base_n_points, scale_factor, n_points_max, min_pts_per_wl, z_ion
                         )
                         
                         # For first iteration, ALWAYS recalculate to ensure correct size

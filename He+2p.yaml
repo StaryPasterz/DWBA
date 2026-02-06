@@ -1,13 +1,13 @@
 # DWBA Calculation Configuration
-# Hydrogen 1s → 2s excitation test configuration
+# Helium ion 1s → 2p excitation test configuration
 
-run_name: "H2s"
+run_name: "He+2p"
 
 calculation:
   type: "excitation"
 
 target:
-  atom: "H"              # Atom from atoms.json: H, He, Li, Ne, Ar, etc.
+  atom: "He+"              # Atom from atoms.json: H, He, Li, Ne, Ar, etc.
   # Z: 1.0               # Only needed for custom atoms
 
 states:
@@ -16,7 +16,7 @@ states:
     l: 0                 # 1s state
   final:
     n: 2
-    l: 0                 # 2s state
+    l: 1                 # 2p state
 
 physics:
   model: "static"        # "static" (article DWBA) or "polarization" (heuristic)

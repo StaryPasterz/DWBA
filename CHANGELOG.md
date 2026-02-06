@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [v2.19] — 2026-01-24 — Grid Scaling Propagation Fixes
+
+### Critical Fixes
+
+**L_max_effective Propagation** (`DW_main.py`)
+- Propagated `L_max_effective` to ALL calls of `calculate_optimal_grid_params` (previously some used base `L_max_proj`).
+- This ensures `r_max` and `n_points` are calculated using the dynamic `k_max*8+20` value used by the solver, preventing undersampling and phase instability at high energies.
+- Affected modules: Ionization (interactive), Batch Excitation (global/local/loop).
+
+**Fixed `calculate_optimal_grid_params` for 'auto' radius** (`DW_main.py`)
+- Refactored function to handle `base_r_max='auto'` without `TypeError`.
+- Safely handles density scaling by skipping it when base radius is unknown.
+
+### Code Quality
+
+**Pilot Calibration Syntax Fix** (`DW_main.py`)
+- Fixed missing `try:` statement and indentation at line ~1739 in `run_pilot_calibration()`.
+- Prevents potential runtime crashes during calibration phase.
+
 ---
 
 ## [v2.18] — 2026-01-22 — Critical Phase Extraction & Asymptotic Fixes
