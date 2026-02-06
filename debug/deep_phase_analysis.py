@@ -230,7 +230,7 @@ def run_comprehensive_analysis():
     print("=" * 80)
     
     print("\nThe 'Phase unstable' warnings come from comparing log-derivative")
-    print("at two different match points (idx_match and idx_match-5).")
+    print("at two nearby asymptotic points (main match point and r_m + 5 a.u.).")
     print("This diagnostic runs AFTER phase extraction, regardless of method used.\n")
     
     for L in [0, 5, 15, 30]:
@@ -240,9 +240,11 @@ def run_comprehensive_analysis():
         chi_raw, dchi_raw, _ = _numerov_propagate_with_renorm(r, Q)
         
         idx_match = int(len(r) * 0.85)
-        idx_alt = idx_match - 5
+        r_main = r[idx_match]
+        idx_alt = np.searchsorted(r, r_main + 5.0)
+        idx_alt = min(idx_alt, len(r) - 1)
         
-        for idx, label in [(idx_match, "main"), (idx_alt, "alt (-5)")]:
+        for idx, label in [(idx_match, "main"), (idx_alt, "alt (+5 bohr)")]:
             chi_at = chi_raw[idx]
             dchi_at = dchi_raw[idx]
             r_at = r[idx]

@@ -348,7 +348,7 @@ All numerical defaults are organized by category and displayed before calculatio
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `strategy` | `"global"` | Grid mode: `"manual"` = fixed params, `"global"` = adaptive for $E_{min}$, `"local"` = per-energy |
-| `r_max` | 200 a.u. | Base maximum radius. For manual mode: used as-is. For adaptive: minimum floor. |
+| `r_max` | 200 a.u. | Base maximum radius (`float`) or `"auto"` (adaptive only). For manual mode: must be numeric. |
 | `n_points` | 1000 | Base grid points. For manual: fixed. For adaptive: minimum value. |
 | `r_max_scale_factor` | 2.5 | Safety factor for turning point: $r_{max} = factor \times r_{turn}(L_{max})$ |
 | `n_points_max` | 15000 | Maximum grid points (caps adaptive scaling, limits memory). *(v2.8: increased from 8000)* |
@@ -594,23 +594,30 @@ The code automatically enforces this via `compute_safe_L_max()`:
 
 The code automatically computes optimal grid parameters via `calculate_optimal_grid_params()`:
 
-**Step 1: Turning Point Requirement**
-$$r_{max} \ge C \cdot \frac{L_{max} + 0.5}{k} \quad (C = 2.5)$$
+**Step 1: Turning Point + Coulomb Requirement**
+$$r_{max} \ge C \cdot \frac{L_{eff} + 0.5}{k} \quad (C = 2.5)$$
+
+For ionic targets, also enforce Coulomb asymptotic validity:
+$$r_{max} \ge \frac{3\max(L_{eff}, |\eta|)}{k}, \quad \eta = \frac{|z_{ion}|}{k}$$
 
 **Step 2: Wavelength Sampling (v2.7+)**
 
 For high-energy scans, ensure sufficient points per wavelength:
 $$\lambda = \frac{2\pi}{k}, \quad dr_{max} = \frac{\lambda}{N_{pts/\lambda}}$$
 
-At $r_{check} = 0.7 \cdot r_{max}$, the exponential grid step is:
+At $r_{check} = 15$ a.u. (bound-state region), the exponential grid step is:
 $$dr(r) \approx r \cdot \frac{\ln(r_{max}/r_{min})}{n_{points}}$$
 
 Required points: $n_{pts} \ge r_{check} \cdot \ln(ratio) / dr_{max}$
+
+A relaxed secondary check is applied near $r \approx 50$ a.u. for match-point stability.
 
 **Step 3: Density Scaling**
 
 If $r_{max}$ increases beyond base, scale points proportionally:
 $$n_{points} = \max\left(n_{base}, \; \frac{n_{base}}{r_{base}} \cdot r_{max}\right)$$
+
+For `r_max: "auto"`, density scaling uses a fixed reference $r_{base}=200$ a.u.
 
 **Final**: Apply memory cap `n_points_max` (default 15000).
 
@@ -881,7 +888,7 @@ The oscillatory integral module includes automatic safeguards:
 | Slow runs | Reduce `n_points`, enable GPU |
 | Solver failures (L>50) | Normal for very high L; code uses analytical bypass |
 | "All solvers failed" | Fixed in v2.1 - match point now guaranteed valid |
-| Phase unstable warnings | Normal for L near cutoff; results still usable |
+| Phase unstable warnings | Usually near L cutoff or undersampled grid; diagnostics compare post-match asymptotic points (`r_m` vs `r_m + 5 a.u.`) |
 | "r_m not in asymptotic region" | Fixed in v2.1 - relaxed threshold to 1% |
 | Non-finite integral warnings | Check input wavefunctions; reduce L_max |
 | LOCAL "index out of bounds" | Fixed in v2.12 - turning point bounds now clamped |

@@ -79,6 +79,12 @@ _CC_W_REF = (2.0 / (_CC_N - 1)) * (1 - 2 * _weight_sums)  # Weights on [-1, 1]
 # Cache CC reference nodes/weights by node count
 _CC_CACHE = {_CC_N: (_CC_X_REF, _CC_W_REF)}
 
+# Cache for radial-grid spacing classification (linear vs log-like).
+# Keyed by memory pointer + basic shape/signature to avoid repeated O(N)
+# checks in tight interpolation loops.
+_LOG_GRID_FLAG_CACHE: dict[tuple[int, int, float, float], bool] = {}
+_LOG_GRID_FLAG_CACHE_MAX = 128
+
 
 def _get_cc_ref(n_nodes: int) -> Tuple[np.ndarray, np.ndarray]:
     """
@@ -137,6 +143,74 @@ def _kahan_sum_real(values: np.ndarray) -> float:
     """
     import math
     return math.fsum(values)
+
+
+def _is_log_spaced_grid(r: np.ndarray, rel_tol: float = 5e-3) -> bool:
+    """
+    Check whether a 1D positive grid is approximately uniform in log(r).
+    """
+    if r.ndim != 1 or len(r) < 3:
+        return False
+    if r[0] <= 0.0 or np.any(np.diff(r) <= 0.0):
+        return False
+    log_r = np.log(r)
+    dlog = np.diff(log_r)
+    mean_dlog = float(np.mean(dlog))
+    if not np.isfinite(mean_dlog) or mean_dlog <= 0.0:
+        return False
+    max_dev = float(np.max(np.abs(dlog - mean_dlog)))
+    return max_dev <= rel_tol * mean_dlog
+
+
+def _is_log_spaced_grid_cached(r: np.ndarray, rel_tol: float = 5e-3) -> bool:
+    """
+    Cached wrapper around _is_log_spaced_grid for repeated interpolation calls.
+    """
+    r_arr = np.asarray(r, dtype=float)
+    if r_arr.ndim != 1 or len(r_arr) < 3:
+        return False
+
+    key = (
+        int(r_arr.__array_interface__["data"][0]),
+        int(r_arr.size),
+        float(r_arr[0]),
+        float(r_arr[-1]),
+    )
+    cached = _LOG_GRID_FLAG_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    is_log = _is_log_spaced_grid(r_arr, rel_tol=rel_tol)
+    if len(_LOG_GRID_FLAG_CACHE) >= _LOG_GRID_FLAG_CACHE_MAX:
+        _LOG_GRID_FLAG_CACHE.clear()
+    _LOG_GRID_FLAG_CACHE[key] = is_log
+    return is_log
+
+
+def _interp_on_radial_grid(x_new: np.ndarray, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    """
+    1D interpolation aware of logarithmic radial grids.
+
+    For log-spaced positive grids, interpolation is performed in log(r) space
+    to reduce phase-envelope distortion compared with linear-r interpolation.
+    """
+    x_arr = np.asarray(x, dtype=float)
+    x_new_arr = np.asarray(x_new, dtype=float)
+    y_arr = np.asarray(y)
+
+    x_new_clip = np.clip(x_new_arr, x_arr[0], x_arr[-1])
+
+    if np.iscomplexobj(y_arr):
+        re = _interp_on_radial_grid(x_new_clip, x_arr, y_arr.real)
+        im = _interp_on_radial_grid(x_new_clip, x_arr, y_arr.imag)
+        return re + 1j * im
+
+    if _is_log_spaced_grid_cached(x_arr):
+        x_safe = np.maximum(x_arr, 1e-300)
+        x_new_safe = np.maximum(x_new_clip, x_safe[0])
+        return np.interp(np.log(x_new_safe), np.log(x_safe), y_arr)
+
+    return np.interp(x_new_clip, x_arr, y_arr)
 
 
 # =============================================================================
@@ -950,14 +1024,15 @@ def check_phase_sampling(
     
     dr = np.diff(r)
     
-    # Phase per step: dφ = k·dr + η·d(ln r) = k·dr + η·dr/r
-    # For product of two waves: use k_total and η_total
+    # Phase per step for Coulomb waves:
+    #   φ'(r) ≈ k_total + eta_total / r
+    # so Δφ ≈ |φ'(r_mid)| Δr
     if abs(eta_total) > 1e-10:
-        # Include Coulomb phase contribution: η·ln(2kr) -> dφ_Coulomb/dr ≈ η/r
-        r_mid = 0.5 * (r[:-1] + r[1:])  # Midpoint of each interval
-        phase_per_step = k_total * dr + abs(eta_total) * dr / r_mid
+        r_mid = np.maximum(0.5 * (r[:-1] + r[1:]), 1e-10)  # Midpoint of each interval
+        local_phase_derivative = k_total + eta_total / r_mid
+        phase_per_step = np.abs(local_phase_derivative * dr)
     else:
-        phase_per_step = k_total * dr
+        phase_per_step = np.abs(k_total * dr)
     
     max_phase = float(np.max(phase_per_step))
     
@@ -975,20 +1050,21 @@ def log_phase_diagnostic(
     k_i: float,
     k_f: float,
     l_i: int,
-    l_f: int
+    l_f: int,
+    eta_total: float = 0.0
 ) -> None:
     """
     Log diagnostic information about phase sampling.
     """
     k_total = k_i + k_f
-    max_phase, is_ok, prob_idx = check_phase_sampling(r, k_total)
+    max_phase, is_ok, prob_idx = check_phase_sampling(r, k_total, eta_total=eta_total)
     
     if not is_ok:
         r_problem = r[prob_idx] if prob_idx >= 0 else r[-1]
         logger.warning(
-            "Phase undersampling: l_i=%d, l_f=%d, k=%.2f+%.2f, "
+            "Phase undersampling: l_i=%d, l_f=%d, k=%.2f+%.2f, eta_total=%.2f, "
             "max_dφ=%.2f rad at r=%.0f bohr",
-            l_i, l_f, k_i, k_f, max_phase, r_problem
+            l_i, l_f, k_i, k_f, eta_total, max_phase, r_problem
         )
 
 
@@ -1179,6 +1255,7 @@ def integrate_with_phase_nodes(
     r_end: float,
     k_total: float,
     phase_increment: float = np.pi / 2,
+    eta_total: float = 0.0,
     use_clenshaw_curtis: bool = True,
     cc_nodes_per_interval: int = 5
 ) -> float:
@@ -1198,6 +1275,8 @@ def integrate_with_phase_nodes(
         Total wave number for phase calculation.
     phase_increment : float
         Phase change per sub-interval (default π/2).
+    eta_total : float
+        Sum of Sommerfeld parameters (η_i + η_f) for Coulomb phase correction.
     use_clenshaw_curtis : bool
         Use CC nodes within each interval (else trapezoid).
     cc_nodes_per_interval : int
@@ -1209,7 +1288,9 @@ def integrate_with_phase_nodes(
         Result of integration.
     """
     # Generate phase nodes
-    r_nodes = generate_phase_nodes(r_start, r_end, k_total, phase_increment)
+    r_nodes = generate_phase_nodes(
+        r_start, r_end, k_total, phase_increment, eta_total=eta_total
+    )
     
     if len(r_nodes) < 2:
         return 0.0
@@ -1664,10 +1745,10 @@ def _phase_adaptive_integrate(
             n_sub = int(np.ceil(dphi / max_phase_step))
             r_sub = np.linspace(r[i], r[i+1], n_sub + 1)
             
-            # Linear interpolation for all arrays
-            f_sub = np.interp(r_sub, r, f_vals)
-            chi_i_sub = np.interp(r_sub, r, chi_i)
-            chi_f_sub = np.interp(r_sub, r, chi_f)
+            # Grid-aware interpolation for all arrays (log-r on exponential grids).
+            f_sub = _interp_on_radial_grid(r_sub, r, f_vals)
+            chi_i_sub = _interp_on_radial_grid(r_sub, r, chi_i)
+            chi_f_sub = _interp_on_radial_grid(r_sub, r, chi_f)
             
             integrand_sub = f_sub * chi_i_sub * chi_f_sub
             result += np.trapz(integrand_sub, r_sub)
@@ -1694,7 +1775,8 @@ def oscillatory_radial_integral_1d(
     l_i: int = 0,
     l_f: int = 0,
     use_analytical_tail: bool = True,
-    use_filon: bool = True
+    use_filon: bool = True,
+    eta_total: float = 0.0
 ) -> float:
     """
     Compute oscillatory radial integral with proper handling of high-frequency content.
@@ -1727,6 +1809,8 @@ def oscillatory_radial_integral_1d(
         Whether to add analytical tail contribution.
     use_filon : bool
         Whether to use Filon quadrature (else phase-adaptive).
+    eta_total : float
+        Sum of Sommerfeld parameters (η_i + η_f) for Coulomb phase correction.
         
     Returns
     -------
@@ -1750,7 +1834,7 @@ def oscillatory_radial_integral_1d(
     
     # Check phase sampling
     k_total = k_i + k_f
-    max_phase, is_ok, _ = check_phase_sampling(r_num, k_total)
+    max_phase, is_ok, _ = check_phase_sampling(r_num, k_total, eta_total=eta_total)
     
     if is_ok or not use_filon:
         # Standard weighted integration is OK
@@ -1902,7 +1986,9 @@ def oscillatory_kernel_integral_2d(
     elif method == "adaptive":
         # Phase-aware integration for outer integral
         k_total = k_i + k_f
-        max_phase, is_ok, prob_idx = check_phase_sampling(r1_lim, k_total)
+        max_phase, is_ok, prob_idx = check_phase_sampling(
+            r1_lim, k_total, eta_total=eta_total
+        )
         
         if is_ok:
             # Standard is OK - fully vectorized with weights
@@ -1935,7 +2021,11 @@ def oscillatory_kernel_integral_2d(
         # ==========================================================================
         
         dr = np.diff(r1_lim)
-        phase_per_step = k_total * dr
+        if abs(eta_total) > 1e-10:
+            r_mid = np.maximum(0.5 * (r1_lim[:-1] + r1_lim[1:]), 1e-10)
+            phase_per_step = np.abs((k_total + eta_total / r_mid) * dr)
+        else:
+            phase_per_step = np.abs(k_total * dr)
         max_phase_threshold = np.pi / 4
         
         # Count undersampled regions for logging
@@ -1987,7 +2077,9 @@ def oscillatory_kernel_integral_2d(
         else:
             # Generate phase nodes
             r_start, r_end = r1_lim[0], r1_lim[-1]
-            phase_nodes = generate_phase_nodes(r_start, r_end, k_total, PHASE_INCREMENT)
+            phase_nodes = generate_phase_nodes(
+                r_start, r_end, k_total, PHASE_INCREMENT, eta_total=eta_total
+            )
             n_intervals = len(phase_nodes) - 1
             
             if n_intervals < 1:
@@ -2023,8 +2115,8 @@ def oscillatory_kernel_integral_2d(
                     all_r_flat = all_r.ravel()
                     
                     # Interpolate rho1 and int_r2
-                    rho1_interp = np.interp(all_r_flat, r1_lim, rho1_lim)
-                    int_r2_interp = np.interp(all_r_flat, r1_lim, int_r2)
+                    rho1_interp = _interp_on_radial_grid(all_r_flat, r1_lim, rho1_lim)
+                    int_r2_interp = _interp_on_radial_grid(all_r_flat, r1_lim, int_r2)
                     
                     # Compute integrand
                     integrand = rho1_interp * int_r2_interp
@@ -2068,7 +2160,9 @@ def oscillatory_kernel_integral_2d(
         else:
             # Generate phase nodes
             r_start, r_end = r1_lim[0], r1_lim[-1]
-            phase_nodes = generate_phase_nodes(r_start, r_end, k_total, PHASE_INCREMENT)
+            phase_nodes = generate_phase_nodes(
+                r_start, r_end, k_total, PHASE_INCREMENT, eta_total=eta_total
+            )
             n_intervals = len(phase_nodes) - 1
             
             if n_intervals < 1:
@@ -2101,7 +2195,7 @@ def oscillatory_kernel_integral_2d(
                     # For each r1, compute ∫ K(r1, r2) × rho2(r2) dr2 using CC
                     # 
                     # Interpolate kernel and rho2 at CC nodes
-                    rho2_interp = np.interp(all_r_flat, r2_lim, rho2_lim)
+                    rho2_interp = _interp_on_radial_grid(all_r_flat, r2_lim, rho2_lim)
                     rho2_cc = rho2_interp.reshape(n_valid, n_nodes)
                     
                     # For kernel, we need K(r1, r2_cc) for each r1
@@ -2145,8 +2239,8 @@ def oscillatory_kernel_integral_2d(
                     # OUTER INTEGRAL with CC
                     # =========================================================
                     # Interpolate rho1 and int_r2_cc at CC nodes
-                    rho1_interp = np.interp(all_r_flat, r1_lim, rho1_lim)
-                    int_r2_outer = np.interp(all_r_flat, r1_lim, int_r2_cc)
+                    rho1_interp = _interp_on_radial_grid(all_r_flat, r1_lim, rho1_lim)
+                    int_r2_outer = _interp_on_radial_grid(all_r_flat, r1_lim, int_r2_cc)
                     
                     # Compute outer integrand
                     outer_integrand = rho1_interp * int_r2_outer

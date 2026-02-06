@@ -18,11 +18,11 @@ threshold = 1e-2
 N = len(r)
 
 r_turn = np.sqrt(l * (l + 1)) / k
-r_turn_safe = 2.0 * r_turn
+r_turn_safe = 2.5 * r_turn
 
 print(f"L={l}, k={k}")
 print(f"r_turn = {r_turn:.4f}")
-print(f"2 * r_turn = {r_turn_safe:.4f}")
+print(f"2.5 * r_turn = {r_turn_safe:.4f}")
 
 # Replicate the function logic
 MIN_MARGIN = 50
@@ -44,18 +44,21 @@ for idx in range(search_start, search_end):
     if ri < r_turn_safe:
         continue
     
-    # Stage 2: potential criterion
-    if abs(2.0 * Ui) < threshold * k2:
-        print(f"Found ideal point at idx={idx}, r={ri:.4f}, |2U|={abs(2*Ui):.6f}")
+    # Stage 2: effective potential criterion
+    V_cent = l * (l + 1) / (ri * ri)
+    V_eff = abs(2.0 * Ui) + V_cent
+    if V_eff < threshold * k2:
+        print(f"Found ideal point at idx={idx}, r={ri:.4f}, V_eff={V_eff:.6f}")
         found = True
         break
 
 if not found:
     print("No ideal point found - fallback used")
-    fallback_idx = max(search_start, int(0.7 * N))
+    idx_turn_safe = np.searchsorted(r, r_turn_safe) if r_turn_safe > 0 else 0
+    fallback_idx = max(search_start, int(0.7 * N), idx_turn_safe + 20)
     print(f"Fallback idx = {fallback_idx}, r = {r[fallback_idx]:.4f}")
 
 # Now call actual function
 idx, r_m = _find_match_point(r, U_arr, k, l, threshold=threshold)
 print(f"\nActual function result: idx={idx}, r_m={r_m:.4f}")
-print(f"Is r_m > 2*r_turn? {r_m > r_turn_safe}")
+print(f"Is r_m > 2.5*r_turn? {r_m > r_turn_safe}")

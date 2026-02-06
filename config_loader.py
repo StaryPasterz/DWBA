@@ -67,7 +67,7 @@ class EnergyConfig:
 class GridConfig:
     """Radial grid configuration."""
     strategy: Literal["manual", "global", "local"] = "global"  # v2.6+
-    r_max: float = 200.0
+    r_max: Union[float, str] = 200.0
     n_points: int = 1000
     r_max_scale_factor: float = 2.5
     n_points_max: int = 15000
@@ -403,8 +403,21 @@ def validate_config(config: DWBAConfig) -> List[str]:
     # Grid
     if config.grid.n_points < 100:
         errors.append(f"Grid n_points must be >= 100, got {config.grid.n_points}")
-    if config.grid.r_max < 10:
-        errors.append(f"Grid r_max must be >= 10, got {config.grid.r_max}")
+    r_max_cfg = config.grid.r_max
+    if isinstance(r_max_cfg, str):
+        r_max_str = r_max_cfg.strip().lower()
+        if r_max_str != "auto":
+            errors.append(f"Grid r_max must be numeric or 'auto', got '{config.grid.r_max}'")
+        elif config.grid.strategy == "manual":
+            errors.append("Grid r_max='auto' is only supported with strategy='global' or 'local'")
+    else:
+        try:
+            r_max_val = float(r_max_cfg)
+        except (TypeError, ValueError):
+            errors.append(f"Grid r_max must be numeric or 'auto', got {config.grid.r_max}")
+        else:
+            if r_max_val < 10:
+                errors.append(f"Grid r_max must be >= 10, got {config.grid.r_max}")
     
     # Oscillatory
     if config.oscillatory.method not in ("legacy", "advanced", "full_split"):
@@ -519,10 +532,12 @@ energy:
   # values: [10, 20, 50, 100, 200, 500, 1000]  # For list type only
 
 grid:
-  r_max: 200
+  strategy: "global"   # "manual", "global", "local"
+  r_max: 200           # float or "auto" (adaptive only; manual requires float)
   n_points: 1000
   r_max_scale_factor: 2.5
-  n_points_max: 8000
+  n_points_max: 15000
+  min_points_per_wavelength: 15
 
 {calc_type}:
   L_max_integrals: 15

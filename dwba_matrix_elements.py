@@ -628,12 +628,6 @@ def radial_ME_all_L(
     # This helps diagnose issues with high partial waves.
     # ==========================================================================
     
-    if use_oscillatory_quadrature:
-        k_total = k_i + k_f
-        max_phase, is_ok, prob_idx = check_phase_sampling(r[:idx_limit], k_total)
-        if not is_ok and idx_limit > 10:
-            log_phase_diagnostic(r[:idx_limit], k_i, k_f, l_i, l_f)
-    
     # Get phase shifts for analytical tail (if available)
     delta_i = cont_i.phase_shift if hasattr(cont_i, 'phase_shift') else 0.0
     delta_f = cont_f.phase_shift if hasattr(cont_f, 'phase_shift') else 0.0
@@ -641,8 +635,19 @@ def radial_ME_all_L(
     # Get Coulomb parameters for ionic targets
     eta_i = cont_i.eta if hasattr(cont_i, 'eta') else 0.0
     eta_f = cont_f.eta if hasattr(cont_f, 'eta') else 0.0
+    eta_total = eta_i + eta_f
     sigma_i = cont_i.sigma_l if hasattr(cont_i, 'sigma_l') else 0.0
     sigma_f = cont_f.sigma_l if hasattr(cont_f, 'sigma_l') else 0.0
+    
+    k_total = k_i + k_f
+    if use_oscillatory_quadrature:
+        max_phase, is_ok, prob_idx = check_phase_sampling(
+            r[:idx_limit], k_total, eta_total=eta_total
+        )
+        if not is_ok and idx_limit > 10:
+            log_phase_diagnostic(
+                r[:idx_limit], k_i, k_f, l_i, l_f, eta_total=eta_total
+            )
     
     r_match = r[idx_limit - 1] if idx_limit > 0 else r[-1]
     
@@ -666,7 +671,8 @@ def radial_ME_all_L(
                 I_dir = oscillatory_kernel_integral_2d(
                     rho1_dir_uw, rho2_dir_uw, kernel_L, r, k_i, k_f, idx_limit,
                     method="filon", w_grid=w,
-                    n_nodes=CC_nodes, phase_increment=phase_increment
+                    n_nodes=CC_nodes, phase_increment=phase_increment,
+                    eta_total=eta_total
                 )
             
             elif oscillatory_method == "full_split":
@@ -691,7 +697,8 @@ def radial_ME_all_L(
                     kernel_L, r, k_i, k_f, idx_limit,
                     idx_limit_r2=N_grid,
                     method="filon", w_grid=w,
-                    n_nodes=CC_nodes, phase_increment=phase_increment
+                    n_nodes=CC_nodes, phase_increment=phase_increment,
+                    eta_total=eta_total
                 )
                 
                 # --- I_out: Pure oscillatory [r_m, r_max] via Levin/Filon ---
@@ -737,7 +744,7 @@ def radial_ME_all_L(
                 # --- I_in: Use legacy CC quadrature for inner region ---
                 I_in = oscillatory_kernel_integral_2d(
                     rho1_dir_uw, rho2_dir_uw, kernel_L, r, k_i, k_f, idx_limit, method="filon", w_grid=w,
-                    n_nodes=CC_nodes, phase_increment=phase_increment
+                    n_nodes=CC_nodes, phase_increment=phase_increment, eta_total=eta_total
                 )
                 
                 # --- I_out: Outer tail integral on [r_m, r_max] ---
@@ -816,7 +823,8 @@ def radial_ME_all_L(
             I_ex = oscillatory_kernel_integral_2d(
                 rho1_ex_uw, rho2_ex_uw, kernel_L, r, k_i, k_f, idx_limit,
                 method="filon_exchange", w_grid=w,
-                n_nodes=CC_nodes, phase_increment=phase_increment
+                n_nodes=CC_nodes, phase_increment=phase_increment,
+                eta_total=eta_total
             )
         else:
             int_r2_ex = np.dot(kernel_L, rho2_ex_w)

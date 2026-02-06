@@ -885,13 +885,8 @@ def run_scan_excitation(run_name) -> None:
     E_min_scan = float(np.min(energies))
     E_max_scan = float(np.max(energies))
     
-    # L_max_effective: estimate maximum L that will be used at runtime
-    # driver.py computes: L_dynamic = k×8+5, then chi_f uses L_max+15
-    # Use E_max for worst-case estimation
-    k_max = k_from_E_eV(E_max_scan)
-    L_dynamic_estimate = int(k_max * 8.0) + 5  # From driver.py line 616
-    L_max_effective = L_dynamic_estimate + 15   # +15 for chi_f buffer (line 671)
-    L_max_effective = max(L_max_effective, L_max_proj + 15)  # At least L_max_proj + buffer
+    # Use worst-case scan energy to size grid for effective runtime L usage.
+    L_max_effective = estimate_effective_projectile_lmax(E_max_scan, L_max_proj)
     
     print_subheader("Grid Configuration")
     
@@ -980,10 +975,8 @@ def run_scan_excitation(run_name) -> None:
                 # LOCAL strategy: recalculate grid for each energy
                 current_prep = prep
                 if strategy == 'local':
-                    # L_max_effective for this energy (same formula as initial)
-                    k_local = k_from_E_eV(E)
-                    L_eff_local = int(k_local * 8.0) + 5 + 15
-                    L_eff_local = max(L_eff_local, L_max_proj + 15)
+                    # Effective L for this energy (kept consistent with runtime logic)
+                    L_eff_local = estimate_effective_projectile_lmax(E, L_max_proj)
                     
                     r_local, n_local = calculate_optimal_grid_params(
                         E, L_eff_local, base_r_max, base_n_points, scale_factor, n_points_max, min_pts_per_wl, z_ion
@@ -1227,9 +1220,8 @@ def run_scan_ionization(run_name) -> None:
     n_points_max = params['grid'].get('n_points_max', 10000)
     min_pts_per_wl = params['grid'].get('min_points_per_wavelength', 15)
     
-    # L_max_effective: estimate maximum L that will be used at runtime (same as excitation)
-    k_max = k_from_E_eV(E_max_scan)
-    L_eff = max(int(k_max * 8.0) + 20, L_max_proj + 15)
+    # L_max_effective: estimate maximum L that will be used at runtime.
+    L_eff = estimate_effective_projectile_lmax(E_max_scan, L_max_proj)
     z_ion = core_params.Zc - 1.0
 
     # Use unified grid calculation with wavelength scaling
@@ -1547,10 +1539,43 @@ def main() -> None:
 # Helper Utilities
 # =============================================================================
 
+def estimate_effective_projectile_lmax(
+    E_eV: float,
+    L_max_projectile_base: int,
+    dynamic_scale: float = 8.0,
+    dynamic_offset: int = 5,
+    chi_f_buffer: int = 15,
+) -> int:
+    """
+    Estimate effective projectile L_max used by continuum caching/propagation.
+
+    Runtime uses a dynamic estimate L_dynamic ~= k*8+5 and final-channel
+    wave caching with an additional buffer (+15). This helper centralizes that
+    logic so grid sizing and runtime numerics stay consistent.
+    """
+    k_au = k_from_E_eV(E_eV)
+    L_dynamic = int(k_au * dynamic_scale) + dynamic_offset
+    return max(L_dynamic + chi_f_buffer, int(L_max_projectile_base) + chi_f_buffer)
+
+
+def resolve_grid_r_max_for_prep(base_r_max: float | str, fallback_auto: float = 200.0) -> float:
+    """
+    Resolve r_max to a numeric value for target preparation.
+
+    When config uses r_max='auto', target preparation still needs a concrete
+    value to build the grid. We use a stable fallback (200 a.u.) for this step.
+    """
+    if isinstance(base_r_max, str):
+        if base_r_max.strip().lower() == "auto":
+            return float(fallback_auto)
+        raise ValueError(f"Unsupported r_max string '{base_r_max}'. Use numeric value or 'auto'.")
+    return float(base_r_max)
+
+
 def calculate_optimal_grid_params(
     E_eV: float, 
     L_max_proj: int,
-    base_r_max: float,
+    base_r_max: float | str,
     base_n_points: int,
     scale_factor: float = 2.5,
     n_points_max: int = 15000,
@@ -1571,6 +1596,10 @@ def calculate_optimal_grid_params(
     
     Parameters
     ----------
+    base_r_max : float | str
+        User-configured base radius. Accepts numeric value or "auto".
+        For "auto", the floor is determined by physics (`r_needed`) and
+        density scaling uses a reference radius of 200 a.u.
     min_points_per_wavelength : int
         Minimum grid points per wavelength at large r. Default 15.
         Set to 0 to disable wavelength-based scaling.
@@ -1588,9 +1617,11 @@ def calculate_optimal_grid_params(
     # Compute physically required r_max from turning point AND Coulomb logic
     r_needed = compute_required_r_max(k_au, L_max_proj, scale_factor, z_ion)
     
-    # Handle 'auto' string for base_r_max
-    # If 'auto', we just use r_needed (floor=0). Otherwise use provided value as floor.
-    base_r_val = 0.0 if str(base_r_max).lower() == 'auto' else float(base_r_max)
+    # Handle 'auto' string for base_r_max.
+    # If 'auto', we use r_needed as the floor and scale density against a
+    # reference radius (200 a.u.) to avoid under-resolving very large grids.
+    is_auto_rmax = str(base_r_max).strip().lower() == 'auto'
+    base_r_val = 0.0 if is_auto_rmax else float(base_r_max)
     
     # We want at least the base config (e.g. 200 a.u.)
     # but extend if physics demands it (low energy / high L)
@@ -1635,10 +1666,13 @@ def calculate_optimal_grid_params(
     else:
         n_points_optimal = base_n_points
     
-    # Check if we are extending r_max beyond base
-    if base_r_val > 0 and r_max_optimal > base_r_val:
+    # Check if we are extending r_max beyond base/reference.
+    # For 'auto', use 200 a.u. as a practical density reference so n_points
+    # still scales with large r_max values instead of staying fixed.
+    density_ref_r = 200.0 if is_auto_rmax else base_r_val
+    if density_ref_r > 0 and r_max_optimal > density_ref_r:
         # Scale points to keep density constant
-        density = base_n_points / base_r_val
+        density = base_n_points / density_ref_r
         n_density_req = int(density * r_max_optimal)
         n_points_optimal = max(n_points_optimal, n_density_req)
     
@@ -1755,8 +1789,7 @@ def run_pilot_calibration(
     try:
         # Calculate z_ion and L_max_effective for proper Coulomb r_max scaling
         z_ion = core_params.Zc - 1.0
-        L_max_eff_pilot = int(k_pilot * 8.0) + 5 + 15  # Same formula as main scan
-        L_max_eff_pilot = max(L_max_eff_pilot, pilot_L_proj + 15)
+        L_max_eff_pilot = estimate_effective_projectile_lmax(pilot_E, pilot_L_proj)
         
         # Calculate adaptive grid for pilot energy
         pilot_r_max, pilot_n_points = calculate_optimal_grid_params(
@@ -1905,8 +1938,7 @@ def run_from_config(config_path: str, verbose: bool = False) -> None:
         # Determine parameters for initial target prep
         E_ref = min(energy_grid)
         E_max = max(energy_grid)
-        k_max = k_from_E_eV(E_max)
-        L_eff = max(int(k_max * 8.0) + 20, params['excitation']['L_max_projectile'] + 15)
+        L_eff = estimate_effective_projectile_lmax(E_max, params['excitation']['L_max_projectile'])
         z_ion = core_params.Zc - 1.0
 
         if strategy == 'manual':
@@ -2025,8 +2057,9 @@ def run_from_config(config_path: str, verbose: bool = False) -> None:
                     current_prep = prep
                     if strategy == 'local':
                         # Use same L_eff logic as interactive mode
-                        k_local = k_from_E_eV(E)
-                        L_eff_local = max(int(k_local * 8.0) + 20, params['excitation']['L_max_projectile'] + 15)
+                        L_eff_local = estimate_effective_projectile_lmax(
+                            E, params['excitation']['L_max_projectile']
+                        )
                         
                         r_local, n_local = calculate_optimal_grid_params(
                             E, L_eff_local,
@@ -2137,15 +2170,21 @@ def run_from_config(config_path: str, verbose: bool = False) -> None:
             L_max_projectile=params['ionization']['L_max_projectile']
         )
         
-        # Get ionization threshold (reuse grid from prepare_target pattern)
-        from bound_states import solve_bound_states
-        from grid import make_r_grid
-        from potential_core import V_core_on_grid
+        # Get ionization threshold and reusable target preparation
         from driver import prepare_target
         
         # Pre-calculate target properties
         print("  Pre-calculating static target properties...", end=" ", flush=True)
         use_pol = (config.physics_model == "polarization")
+        
+        # Grid strategy (aligned with interactive ionization/excitation flows)
+        strategy = params['grid'].get('strategy', 'global').lower()
+        base_r_max = params['grid'].get('r_max', 200.0)
+        base_n_points = int(params['grid'].get('n_points', 4000))
+        scale_factor = params['grid'].get('r_max_scale_factor', 2.5)
+        n_points_max = params['grid'].get('n_points_max', 10000)
+        min_pts_per_wl = params['grid'].get('min_points_per_wavelength', 15)
+        z_ion = core_params.Zc - 1.0
         
         # Create a dummy excitation spec for prepare_target
         tmp_chan = ExcitationChannelSpec(
@@ -2155,17 +2194,17 @@ def run_from_config(config_path: str, verbose: bool = False) -> None:
             L_target_i=li, L_target_f=li+1 if li < 3 else li
         )
         
-        prep = prepare_target(
+        # First prep for threshold extraction only (supports r_max='auto').
+        prep_threshold = prepare_target(
             chan=tmp_chan,
             core_params=core_params,
             use_polarization=use_pol,
-            r_max=params['grid']['r_max'],
-            n_points=params['grid']['n_points']
+            r_max=resolve_grid_r_max_for_prep(base_r_max),
+            n_points=base_n_points
         )
-        print("done")
         
         # Get threshold from prep
-        E_bind_au = prep.orb_i.energy_au
+        E_bind_au = prep_threshold.orb_i.energy_au
         threshold_eV = abs(E_bind_au) / ev_to_au(1.0)
         
         print(f"  Ionization potential: {threshold_eV:.2f} eV")
@@ -2177,6 +2216,55 @@ def run_from_config(config_path: str, verbose: bool = False) -> None:
             return
         
         print(f"  Grid: {len(energies)} points above threshold")
+        
+        E_min_scan = float(np.min(energies))
+        E_max_scan = float(np.max(energies))
+        L_eff_scan = estimate_effective_projectile_lmax(
+            E_max_scan, params['ionization']['L_max_projectile']
+        )
+        
+        if strategy == "manual":
+            if isinstance(base_r_max, str):
+                print_error("grid.r_max='auto' is not valid with strategy='manual'.")
+                return
+            r_max_calc = float(base_r_max)
+            n_points_calc = base_n_points
+            logger.info(
+                "Grid Strategy   | MANUAL (r_max=%.1f a.u., n_points=%d)",
+                r_max_calc, n_points_calc
+            )
+        else:
+            r_max_calc, n_points_calc = calculate_optimal_grid_params(
+                E_min_scan,
+                L_eff_scan,
+                base_r_max,
+                base_n_points,
+                scale_factor,
+                n_points_max,
+                min_pts_per_wl,
+                z_ion,
+            )
+            if strategy == "local":
+                logger.info("Grid Strategy   | LOCAL (per-energy adaptive)")
+                logger.info(
+                    "Grid Initial    | E_min=%.1f eV: r_max=%.1f a.u., n_points=%d",
+                    E_min_scan, r_max_calc, n_points_calc
+                )
+            else:
+                logger.info(
+                    "Grid Strategy   | GLOBAL (E_min=%.1f eV: r_max=%.1f a.u., n_points=%d)",
+                    E_min_scan, r_max_calc, n_points_calc
+                )
+        
+        # Main prep for calculations (manual/global fixed baseline).
+        prep = prepare_target(
+            chan=tmp_chan,
+            core_params=core_params,
+            use_polarization=use_pol,
+            r_max=r_max_calc,
+            n_points=n_points_calc
+        )
+        print("done")
         
         # Build result key (same format as interactive)
         key = f"Ionization_Z{core_params.Zc:.0f}_{config.target.atom}_n{ni}l{li}"
@@ -2190,17 +2278,71 @@ def run_from_config(config_path: str, verbose: bool = False) -> None:
         
         results = []
         try:
-            for E in energies:
+            for i_e, E in enumerate(energies):
                 try:
+                    current_prep = prep
+                    r_eval = r_max_calc
+                    n_eval = n_points_calc
+                    
+                    if strategy == "local":
+                        L_eff_local = estimate_effective_projectile_lmax(
+                            E, params['ionization']['L_max_projectile']
+                        )
+                        r_local, n_local = calculate_optimal_grid_params(
+                            E,
+                            L_eff_local,
+                            base_r_max,
+                            base_n_points,
+                            scale_factor,
+                            n_points_max,
+                            min_pts_per_wl,
+                            z_ion,
+                        )
+                        if i_e == 0:
+                            current_prep = prepare_target(
+                                chan=tmp_chan,
+                                core_params=core_params,
+                                use_polarization=use_pol,
+                                r_max=r_local,
+                                n_points=n_local
+                            )
+                            logger.info(
+                                "Local Adaptive  | E=%.1f eV: r_max=%.1f a.u., n_points=%d (initial)",
+                                E, r_local, n_local
+                            )
+                            prep = current_prep
+                        else:
+                            current_r_max = prep.grid.r[-1]
+                            current_n_pts = len(prep.grid.r)
+                            params_changed = (
+                                abs(r_local - current_r_max) > 0.1 or
+                                abs(n_local - current_n_pts) > 1
+                            )
+                            if params_changed:
+                                current_prep = prepare_target(
+                                    chan=tmp_chan,
+                                    core_params=core_params,
+                                    use_polarization=use_pol,
+                                    r_max=r_local,
+                                    n_points=n_local
+                                )
+                                logger.info(
+                                    "Local Adaptive  | E=%.1f eV: r_max=%.1f a.u., n_points=%d",
+                                    E, r_local, n_local
+                                )
+                                prep = current_prep
+                        r_eval = r_local
+                        n_eval = n_local
+                    
                     ion_res = compute_ionization_cs(
                         E, ion_spec, core_params,
-                        r_max=params['grid']['r_max'],
-                        n_points=params['grid']['n_points'],
+                        r_max=r_eval,
+                        n_points=n_eval,
                         use_polarization=use_pol,
                         n_energy_steps=params['ionization']['n_energy_steps'],
-                        _precalc_grid=prep.grid,
-                        _precalc_V_core=prep.V_core,
-                        _precalc_orb_i=prep.orb_i
+                        _precalc_grid=current_prep.grid,
+                        _precalc_V_core=current_prep.V_core,
+                        _precalc_orb_i=current_prep.orb_i
                     )
                     
                     print_result(E, ion_res.sigma_total_cm2)

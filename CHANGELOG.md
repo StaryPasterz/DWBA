@@ -4,6 +4,57 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [v2.20] — 2026-02-06 — Adaptive Grid Parity & Ionic Phase-Sampling Finalization
+
+### Critical Fixes
+
+**Batch Ionization Grid Strategy Parity** (`DW_main.py`)
+- `run_from_config(..., calculation_type="ionization")` now supports the same grid strategy behavior as other flows:
+  - `manual`: fixed `r_max/n_points`
+  - `global`: adaptive grid from `E_min` using scan-level `L_eff`
+  - `local`: per-energy adaptive recalculation with target re-preparation when grid changes
+- Fixes previous mismatch where batch ionization ignored adaptive grid scaling.
+
+**Centralized Effective L Estimation** (`DW_main.py`)
+- Added `estimate_effective_projectile_lmax()` and replaced duplicated inline formulas (`k*8+5` + `+15`) across:
+  - interactive excitation
+  - interactive ionization
+  - batch excitation
+  - batch ionization
+  - pilot calibration
+- Reduces divergence risk between runtime wave caching and grid sizing.
+
+**`r_max='auto'` Contract Finalization** (`config_loader.py`, `DW_main.py`)
+- `GridConfig.r_max` now accepts `float | "auto"` in config validation.
+- Validation rejects invalid strings and explicitly disallows `"auto"` with `strategy="manual"`.
+- Added `resolve_grid_r_max_for_prep()` for places where a concrete prep grid is required.
+- `calculate_optimal_grid_params()` now keeps density scaling active for `"auto"` using reference `r_base=200 a.u.`.
+
+**Ionic Phase-Sampling Propagation + Formula Correction** (`oscillatory_integrals.py`, `dwba_matrix_elements.py`)
+- Propagated `eta_total` through production call paths (`check_phase_sampling`, `log_phase_diagnostic`, phase-node splitting).
+- Corrected phase-step estimate for Coulomb case to use:
+  - `Δφ ≈ |k_total + eta_total/r| * Δr`
+  instead of always adding `|eta|/r`.
+- Reduces false undersampling flags and aligns diagnostics with Coulomb phase physics.
+
+### Numerical Quality
+
+**Log-Grid-Aware Interpolation in Oscillatory Paths** (`oscillatory_integrals.py`)
+- Added `_interp_on_radial_grid()` with automatic log-space interpolation on exponential radial grids.
+- Replaced direct `np.interp(...)` calls in Filon/phase-adaptive paths with the new helper.
+- Improves interpolation behavior on strongly nonuniform radial grids.
+- Added cache for log-grid classification (`_is_log_spaced_grid_cached`) to avoid repeated O(N)
+  spacing checks in tight interpolation loops.
+
+### Documentation
+
+- Removed stale `DWBA_DEBUGGING_COMPENDIUM.md`.
+- Updated `README.md` grid section:
+  - `r_max` can be numeric or `"auto"` (adaptive modes)
+  - Coulomb `r_max` criterion and `"auto"` density-reference behavior documented.
+
+---
+
 ## [v2.19] — 2026-01-24 — Grid Scaling Propagation Fixes
 
 ### Critical Fixes
@@ -41,8 +92,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Also includes O(1/ρ) corrections per NIST DLMF §33.11
 
 **Phase Diagnostic Alt Point Fix** (`continuum.py`)
-- Changed from `idx_match - 5` to `idx_match + 10`
-- Both points now guaranteed in asymptotic region
+- Changed from `idx_match - 5` to a post-match asymptotic point.
+- Initial v2.18 implementation used `idx_match + 10`; later refined (v2.20) to
+  `r_alt = r_m + 5.0 a.u.` with `searchsorted` for log-grid consistency.
 - **Impact**: Eliminates false "Phase unstable" warnings
 
 **Oscillatory Phase Sampling for Ions** (`oscillatory_integrals.py`)

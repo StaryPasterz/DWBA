@@ -36,24 +36,25 @@ for L in [10, 20, 30, 38, 40]:
     r_turn = np.sqrt(L * (L + 1)) / k_i
     r_turn_safe = 2.5 * r_turn
     
-    print(f"  r_turn = {r_turn:.2f}, 2×r_turn = {r_turn_safe:.2f}")
+    print(f"  r_turn = {r_turn:.2f}, 2.5*r_turn = {r_turn_safe:.2f}")
     
     # Get match point
     idx_match, r_m = _find_match_point(r, U_i.U_of_r, k_i, L, threshold=1e-2)
     
     print(f"  Match point: idx={idx_match}, r_m={r_m:.2f}")
-    print(f"  r_m > 2×r_turn? {r_m > r_turn_safe}")
+    print(f"  r_m > 2.5*r_turn? {r_m > r_turn_safe}")
     
-    # Check alt point (used in diagnostic)
-    idx_alt = idx_match - 5
+    # Check alt point used in diagnostic: r_alt = r_m + 5.0 a.u.
+    idx_alt = np.searchsorted(r, r_m + 5.0)
+    idx_alt = min(idx_alt, len(r) - 1)
     r_alt = r[idx_alt]
     
     print(f"  Alt point: idx={idx_alt}, r_alt={r_alt:.2f}")
-    print(f"  r_alt > 2×r_turn? {r_alt > r_turn_safe}")
+    print(f"  r_alt > 2.5*r_turn? {r_alt > r_turn_safe}")
     
-    # The problem: if r_alt < 2×r_turn, we're comparing phase in two different regimes!
+    # If r_alt < 2.5*r_turn, we're comparing phase in different regimes.
     if r_alt < r_turn_safe:
-        print(f"  ⚠️ ALT POINT IS BEFORE 2×r_turn! This causes phase comparison to fail!")
+        print("  WARNING: ALT POINT is before 2.5*r_turn; phase comparison may be invalid.")
     
     # Also check wavelength sampling
     dr_local = r[idx_match] - r[idx_match-1]

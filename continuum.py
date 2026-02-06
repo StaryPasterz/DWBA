@@ -306,7 +306,7 @@ def _find_match_point(r_grid: np.ndarray, U_arr: np.ndarray, k_au: float, l: int
     # 3. For ionic targets: Coulomb asymptotic must be valid (ρ > 3×max(L,|η|))
     
     # Safety factor for turning point: require r > 2.5 × r_turn
-    # Note: 2.5× (not 2×) ensures diagnostic alt point at idx_match-5 is also safe
+    # This keeps phase-diagnostic comparison points in the asymptotic region.
     r_turn_safe = 2.5 * r_turn
     
     # Coulomb asymptotic criterion (only for ionic targets)
@@ -340,8 +340,8 @@ def _find_match_point(r_grid: np.ndarray, U_arr: np.ndarray, k_au: float, l: int
             return idx, r
     
     # Fallback: use the largest of (70% of grid, 2.5×r_turn, r_coulomb_min)
-    # This ensures both centrifugal AND Coulomb asymptotic safety
-    # Use +20 margin (not +5) so diagnostic alt point idx_match-5 is also safe
+    # This ensures both centrifugal AND Coulomb asymptotic safety.
+    # Use +20 margin to maintain a robust asymptotic buffer for diagnostics.
     idx_turn_safe = np.searchsorted(r_grid, r_turn_safe) if r_turn_safe > 0 else 0
     idx_coulomb_safe = np.searchsorted(r_grid, r_coulomb_min) if r_coulomb_min > 0 else 0
     fallback_idx = max(search_start, int(0.7 * N), idx_turn_safe + 20, idx_coulomb_safe + 5)
