@@ -4,6 +4,34 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [v2.21] — 2026-02-07 — GPU Hot-Path Logging & Block Auto-Tune Stability
+
+### Performance
+
+**Hot-Path DEBUG Sampling** (`dwba_matrix_elements.py`, `oscillatory_integrals.py`, `driver.py`)
+- Added sampled DEBUG logging in the most frequent GPU/Filon paths to reduce log I/O overhead.
+- Added explicit opt-in switch `DWBA_HOTPATH_DEBUG=1` for full per-call traces when deep diagnostics are needed.
+- Gated very verbose `(l_i, l_f)` GPU-integral debug in `driver.py` behind `DWBA_HOTPATH_DEBUG`.
+
+**Block-Size Auto-Tune Improvements** (`dwba_matrix_elements.py`)
+- `_compute_optimal_block_size(...)` now accepts effective free memory and uses it when available.
+- Effective free memory is computed as device-free VRAM plus reusable CuPy-pool bytes.
+- Auto block-size tuning is now executed only when block-wise/hybrid loops are actually used,
+  avoiding unnecessary per-call tuning overhead in full-matrix paths.
+- Added safer fallback for block step selection when auto-tuning cannot provide a positive value.
+
+**Long-Run Visibility & Guardrails** (`driver.py`, `oscillatory_integrals.py`)
+- Added GPU summation heartbeat logs inside `l_i` loop (`l_f` progress + elapsed), preventing long silent periods.
+- Added `Slow GPU pair` warning when a single `(l_i, l_f)` matrix-element call exceeds threshold.
+- Added Filon segment cap for outer-tail integrals (`DWBA_MAX_FILON_SEGMENTS`, default `2048`) to bound pathological runtimes.
+- Added slow outer-integral warning threshold (`DWBA_OUTER_SLOW_WARN_S`, default `20s`).
+
+### Documentation
+
+**Debug/Performance Guidance** (`README.md`)
+- Added `DWBA_HOTPATH_DEBUG` documentation and guidance for production benchmarking (`INFO` vs `DEBUG`).
+- Documented effective-memory-aware block auto-tuning and on-demand block-size tuning behavior.
+
 ## [v2.20] — 2026-02-06 — Adaptive Grid Parity & Ionic Phase-Sampling Finalization
 
 ### Critical Fixes
@@ -46,12 +74,49 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Added cache for log-grid classification (`_is_log_spaced_grid_cached`) to avoid repeated O(N)
   spacing checks in tight interpolation loops.
 
+### Performance
+
+**GPU Matrix-Stage Hot-Path Optimization** (`dwba_matrix_elements.py`)
+- Added reuse of cached kernel matrices (`inv_gtr`, `log_ratio`) via `GPUCache.build_kernel_matrix()`.
+- Added static GPU array caching (`array_cache`) and cached `V_core-U_i` construction in `GPUCache`.
+- Replaced repeated `exp(L*log_ratio)` evaluations with recursive `ratio^L` updates in the L-loop
+  (with safe fallback to per-L exponential when memory is constrained).
+- Reduced allocator synchronization overhead by removing unconditional memory-pool flushes from the
+  hot path (cleanup remains at energy-level teardown and OOM fallback).
+- Precomputed bound multipole moments once per call (CPU side) to avoid repeated per-L GPU scalar sync.
+- Improved `gpu_memory_mode="auto"` decision: includes reusable CuPy-pool bytes and cached base-kernel
+  reuse in memory estimation, reducing false fallback to block-wise mode.
+- Refined `auto` strategy to prefer `Filon/hybrid` when full Filon matrix does not fit, instead of
+  immediately falling back to block-wise mode.
+- Removed redundant standard-kernel work in `Filon/full-matrix` path (no unnecessary `kernel_L` build
+  when only extended Filon kernel is required).
+- Added extended Filon kernel caching in `GPUCache` (`filon_inv_gtr`, `filon_log_ratio`) for repeated
+  calls with unchanged `idx_limit`.
+- Precomputed CC-interpolated exchange/direct envelopes once per call (reused across all L), removing
+  repeated `cp.interp` overhead inside the L-loop.
+- Added prefix reuse for cached kernels: if a larger cached matrix exists, smaller `idx_limit` calls now
+  use slices instead of rebuilding kernels from scratch.
+- Added caching for `exp(log_ratio)` and `exp(filon_log_ratio)` in `GPUCache`, removing repeated
+  per-call exponentiation of unchanged kernel bases.
+- Added caching of Filon `kernel_at_cc_pre` tensors in `GPUCache` (keyed by Filon setup), avoiding
+  repeated reconstruction of exchange CC-kernel bases for unchanged energy/grid settings.
+
+**Outer-Tail Callable Evaluation Optimization** (`oscillatory_integrals.py`)
+- Added `_eval_callable_on_nodes()` (array-first evaluation with fallback) in Levin/Filon segment loops.
+- Reduces Python-level overhead from `np.vectorize(...)` in repeated outer-tail integrations.
+
 ### Documentation
 
 - Removed stale `DWBA_DEBUGGING_COMPENDIUM.md`.
 - Updated `README.md` grid section:
   - `r_max` can be numeric or `"auto"` (adaptive modes)
   - Coulomb `r_max` criterion and `"auto"` density-reference behavior documented.
+
+### CLI Stability
+
+**Windows Console Encoding Fallback** (`DW_main.py`)
+- Added safe console print wrapper to prevent `UnicodeEncodeError` on non-UTF code pages (e.g. cp1250).
+- Added UTF-8 stream reconfigure attempt on Windows with graceful ASCII fallback for decorative glyphs.
 
 ---
 

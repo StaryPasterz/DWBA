@@ -37,6 +37,9 @@ All inputs/outputs in Hartree atomic units (a₀, Ha).
 """
 
 from __future__ import annotations
+import logging
+import os
+import time
 import numpy as np
 from typing import Tuple, Optional
 from scipy.special import sici  # Sine and Cosine integrals
@@ -44,6 +47,61 @@ from scipy.special import sici  # Sine and Cosine integrals
 from logging_config import get_logger
 
 logger = get_logger(__name__)
+
+
+def _env_int(name: str, default: int, min_value: int = 1) -> int:
+    """Read integer env var with bounds and fallback."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return max(min_value, int(default))
+    try:
+        return max(min_value, int(raw))
+    except Exception:
+        return max(min_value, int(default))
+
+
+def _env_float(name: str, default: float, min_value: float = 0.0) -> float:
+    """Read float env var with bounds and fallback."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return max(min_value, float(default))
+    try:
+        return max(min_value, float(raw))
+    except Exception:
+        return max(min_value, float(default))
+
+
+# Runtime guardrails for pathological outer-tail costs.
+_FILON_MAX_SEGMENTS = _env_int("DWBA_MAX_FILON_SEGMENTS", 2048, min_value=128)
+_OUTER_SLOW_WARN_S = _env_float("DWBA_OUTER_SLOW_WARN_S", 20.0, min_value=1.0)
+
+
+def _is_hotpath_verbose_debug_enabled() -> bool:
+    """
+    Return True when per-segment oscillatory debug is explicitly requested.
+    """
+    return os.environ.get("DWBA_HOTPATH_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _should_sampled_debug(key: str, every: int = 500, initial: int = 2) -> bool:
+    """
+    Sample highly repetitive DEBUG logs in oscillatory inner loops.
+    """
+    if not logger.isEnabledFor(logging.DEBUG):
+        return False
+    if _is_hotpath_verbose_debug_enabled():
+        return True
+
+    counters = getattr(_should_sampled_debug, "_counters", None)
+    if counters is None:
+        counters = {}
+        _should_sampled_debug._counters = counters
+
+    count = counters.get(key, 0) + 1
+    counters[key] = count
+    if count <= initial:
+        return True
+    return (count % max(1, int(every))) == 0
 
 
 # =============================================================================
@@ -143,6 +201,25 @@ def _kahan_sum_real(values: np.ndarray) -> float:
     """
     import math
     return math.fsum(values)
+
+
+def _eval_callable_on_nodes(func, nodes: np.ndarray) -> np.ndarray:
+    """
+    Evaluate scalar/vector callable on nodes with fast array-first fallback.
+
+    Many envelope/phase callables are numpy-aware; trying array input first
+    avoids Python-loop overhead from np.vectorize in tight oscillatory loops.
+    """
+    try:
+        vals = func(nodes)
+        vals_arr = np.asarray(vals)
+        if vals_arr.shape == ():
+            vals_arr = np.full(nodes.shape, vals_arr, dtype=vals_arr.dtype)
+        elif vals_arr.shape != nodes.shape:
+            vals_arr = np.broadcast_to(vals_arr, nodes.shape)
+        return vals_arr
+    except Exception:
+        return np.vectorize(func)(nodes)
 
 
 def _is_log_spaced_grid(r: np.ndarray, rel_tol: float = 5e-3) -> bool:
@@ -298,6 +375,8 @@ def dwba_outer_integral_1d(
     """
     if r_max <= r_m + 1e-10:
         return 0.0
+
+    t_outer_start = time.perf_counter()
     
     # Decompose into cos(Φ- ) and cos(Φ+ ) terms
     (k_minus, phi_c_minus, eta_minus), (k_plus, phi_c_plus, eta_plus) = compute_product_phases(
@@ -399,7 +478,16 @@ def dwba_outer_integral_1d(
     I_plus = I_plus_complex.real
     
     # Final result: ½(I_minus - I_plus)
-    return 0.5 * (I_minus - I_plus)
+    result = 0.5 * (I_minus - I_plus)
+
+    elapsed = time.perf_counter() - t_outer_start
+    if elapsed > _OUTER_SLOW_WARN_S and _should_sampled_debug("outer_integral_slow", every=50, initial=3):
+        logger.warning(
+            "Slow outer integral: %.1fs (r=[%.2f, %.2f], k_a=%.3f, k_b=%.3f, l_a=%d, l_b=%d)",
+            elapsed, r_m, r_max, k_a, k_b, l_a, l_b
+        )
+
+    return result
 
 
 
@@ -701,9 +789,9 @@ def levin_oscillatory_integral(
         
         # Evaluate functions at nodes (vectorized)
         # Use np.vectorize for scalar functions - creates efficient C loop
-        f_vals = np.vectorize(f_func)(r_nodes)
-        Phi_vals = np.vectorize(phi_func)(r_nodes)
-        Phi_prime_vals = np.vectorize(phi_prime_func)(r_nodes)
+        f_vals = _eval_callable_on_nodes(f_func, r_nodes)
+        Phi_vals = _eval_callable_on_nodes(phi_func, r_nodes)
+        Phi_prime_vals = _eval_callable_on_nodes(phi_prime_func, r_nodes)
         
         # Levin on this segment
         contrib = _levin_segment_complex(f_vals, r_nodes, Phi_vals, Phi_prime_vals)
@@ -876,14 +964,20 @@ def filon_oscillatory_integral(
     
     # Generate segments with constant phase increment
     dr_per_segment = delta_phi / abs(omega)
-    n_segments = max(1, int(np.ceil((r_end - r_start) / dr_per_segment)))
+    n_segments_raw = max(1, int(np.ceil((r_end - r_start) / dr_per_segment)))
+    n_segments = min(n_segments_raw, _FILON_MAX_SEGMENTS)
+    if n_segments_raw > _FILON_MAX_SEGMENTS and _should_sampled_debug("filon_segment_cap", every=200, initial=3):
+        logger.debug(
+            "Filon segments capped: raw=%d -> %d (omega=%.3f, r=[%.2f, %.2f], dphi=%.3f)",
+            n_segments_raw, n_segments, omega, r_start, r_end, delta_phi
+        )
     segment_bounds = np.linspace(r_start, r_end, n_segments + 1)
     
     contributions = []
     for i in range(n_segments):
         a, b = segment_bounds[i], segment_bounds[i + 1]
         r_nodes = np.linspace(a, b, n_nodes_per_segment)
-        f_vals = np.vectorize(f_func)(r_nodes)  # Vectorized
+        f_vals = _eval_callable_on_nodes(f_func, r_nodes)
         
         # omega is constant, phase_offset is the offset at r=0
         contrib = _filon_segment_complex(f_vals, r_nodes, omega, phase_offset)
@@ -965,20 +1059,22 @@ def compute_outer_integral_oscillatory(
     
     if linearity_test < filon_threshold:
         # Use Filon (constant frequency approximation)
-        logger.debug(
-            "Outer integral: using Filon (|Φ''|×h²=%.2e < %.1f)",
-            linearity_test, filon_threshold
-        )
+        if _should_sampled_debug("outer_integral_filon", every=1000, initial=2):
+            logger.debug(
+                "Outer integral: using Filon (|Φ''|×h²=%.2e < %.1f)",
+                linearity_test, filon_threshold
+            )
         return filon_oscillatory_integral(
             f_func, omega_mid, phi_func(r_m) - omega_mid * r_m,
             r_m, r_max, delta_phi
         )
     else:
         # Use Levin (handles nonlinear phase)
-        logger.debug(
-            "Outer integral: using Levin (|Φ''|×h²=%.2e >= %.1f)",
-            linearity_test, filon_threshold
-        )
+        if _should_sampled_debug("outer_integral_levin", every=500, initial=2):
+            logger.debug(
+                "Outer integral: using Levin (|Φ''|×h²=%.2e >= %.1f)",
+                linearity_test, filon_threshold
+            )
         # Estimate number of segments
         n_segments = max(1, int(np.ceil((r_max - r_m) / h)))
         return levin_oscillatory_integral(

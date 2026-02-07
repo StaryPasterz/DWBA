@@ -116,6 +116,13 @@ OSCILLATORY_CONFIG = {
 # =============================================================================
 _SCAN_LOGGED = False  # True after first energy point logs hardware info
 
+
+def _is_hotpath_debug_enabled() -> bool:
+    """
+    Enable very verbose per-(l_i,l_f) debug only on explicit request.
+    """
+    return os.environ.get("DWBA_HOTPATH_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
+
 def reset_scan_logging():
     """Reset scan-level logging flags. Call at start of new energy scan."""
     global _SCAN_LOGGED
@@ -706,6 +713,15 @@ def compute_total_excitation_cs(
             
             lf_min = 0
             lf_max = max(L_max_proj, l_i + chan.L_max_integrals)
+            li_iter_start = time.perf_counter()
+            last_li_heartbeat = li_iter_start
+            heartbeat_every_s = float(OSCILLATORY_CONFIG.get("gpu_li_heartbeat_s", 120.0))
+            slow_pair_warn_s = float(OSCILLATORY_CONFIG.get("gpu_pair_warn_s", 20.0))
+            lf_parity_total = sum(
+                1 for lf in range(lf_min, lf_max + 1)
+                if (l_i + lf) % 2 == target_parity_change
+            )
+            lf_done = 0
             
             # Local amplitude for this l_i
             li_amplitudes = {}
@@ -719,6 +735,15 @@ def compute_total_excitation_cs(
             any_valid_lf = False
             for l_f in range(lf_min, lf_max + 1):
                 if (l_i + l_f) % 2 != target_parity_change: continue
+                lf_done += 1
+
+                now = time.perf_counter()
+                if heartbeat_every_s > 0 and (now - last_li_heartbeat) >= heartbeat_every_s:
+                    logger.info(
+                        "Summing heartbeat: l_i=%d/%d, l_f=%d/%d (current l_f=%d, elapsed %.1fs)",
+                        l_i, L_max_proj, lf_done, max(1, lf_parity_total), l_f, now - li_iter_start
+                    )
+                    last_li_heartbeat = now
                 
                 # Use Cache for chi_f
                 if l_f in chi_f_cache:
@@ -734,20 +759,22 @@ def compute_total_excitation_cs(
                 
                 any_valid_lf = True
                 
-                # --- DEBUG: Log array sizes before GPU integrals ---
-                logger.debug(
-                    "GPU INTEGRALS DEBUG | l_i=%d, l_f=%d | "
-                    "grid.r=%d, V_core=%d, U_i=%d, U_f=%d | "
-                    "orb_i.u=%d, orb_f.u=%d | "
-                    "chi_i.chi=%d (idx_m=%d), chi_f.chi=%d (idx_m=%d)",
-                    l_i, l_f,
-                    len(grid.r), len(V_core), len(U_i.U_of_r), len(U_f.U_of_r),
-                    len(orb_i.u_of_r), len(orb_f.u_of_r),
-                    len(chi_i.chi_of_r), chi_i.idx_match,
-                    len(chi_f.chi_of_r), chi_f.idx_match
-                )
+                # Very verbose hot-path debug can significantly slow long runs.
+                if _is_hotpath_debug_enabled():
+                    logger.debug(
+                        "GPU INTEGRALS DEBUG | l_i=%d, l_f=%d | "
+                        "grid.r=%d, V_core=%d, U_i=%d, U_f=%d | "
+                        "orb_i.u=%d, orb_f.u=%d | "
+                        "chi_i.chi=%d (idx_m=%d), chi_f.chi=%d (idx_m=%d)",
+                        l_i, l_f,
+                        len(grid.r), len(V_core), len(U_i.U_of_r), len(U_f.U_of_r),
+                        len(orb_i.u_of_r), len(orb_f.u_of_r),
+                        len(chi_i.chi_of_r), chi_i.idx_match,
+                        len(chi_f.chi_of_r), chi_f.idx_match
+                    )
                 
                 # --- GPU INTEGRALS ---
+                t_pair = time.perf_counter()
                 integrals = radial_ME_all_L_gpu(
                     grid, V_core, U_i.U_of_r, orb_i, orb_f, chi_i, chi_f, chan.L_max_integrals,
                     use_oscillatory_quadrature=True,
@@ -762,6 +789,15 @@ def compute_total_excitation_cs(
                     gpu_cache=gpu_cache,  # Phase 3: pass energy-level cache
                     U_f_array=U_f.U_of_r  # Bug #2 fix: check both potentials
                 )
+                pair_elapsed = time.perf_counter() - t_pair
+                if slow_pair_warn_s > 0 and pair_elapsed >= slow_pair_warn_s:
+                    logger.warning(
+                        "Slow GPU pair: l_i=%d, l_f=%d took %.1fs (idx_i=%d, idx_f=%d, L_int=%d)",
+                        l_i, l_f, pair_elapsed,
+                        getattr(chi_i, "idx_match", -1),
+                        getattr(chi_f, "idx_match", -1),
+                        chan.L_max_integrals
+                    )
                 
                 # Distribute (CPU - fast)
                 for Mi in range(-Li, Li+1):

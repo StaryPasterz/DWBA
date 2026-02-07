@@ -41,6 +41,7 @@ import os
 import sys
 import glob
 import argparse
+import builtins
 from dataclasses import asdict
 
 from driver import (
@@ -68,6 +69,61 @@ import atom_library
 from calibration import TongModel
 from output_utils import get_results_dir, get_output_path, get_json_path, find_result_files
 from logging_config import get_logger
+
+# -----------------------------------------------------------------------------
+# Console output safety (Windows code pages)
+# -----------------------------------------------------------------------------
+# Some terminals (e.g. cp1250/cp1252) cannot encode box-drawing symbols used by
+# this CLI, which may raise UnicodeEncodeError and abort batch runs.
+#
+# Strategy:
+# 1) Try UTF-8 reconfigure when available.
+# 2) Wrap module-local print() with graceful ASCII fallback on encoding errors.
+# -----------------------------------------------------------------------------
+if os.name == "nt":
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
+    if hasattr(sys.stderr, "reconfigure"):
+        try:
+            sys.stderr.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
+
+
+def _safe_print(*args, **kwargs) -> None:
+    """Print with fallback for non-UTF console encodings."""
+    try:
+        builtins.print(*args, **kwargs)
+        return
+    except UnicodeEncodeError:
+        pass
+
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+
+    def _normalize(s: str) -> str:
+        # Replace decorative glyphs with ASCII-safe equivalents.
+        s = (
+            s.replace("→", "->")
+            .replace("✓", "[OK]")
+            .replace("✗", "[X]")
+            .replace("⚠", "[!]")
+            .replace("•", "-")
+            .replace("╔", "+").replace("╗", "+").replace("╚", "+").replace("╝", "+")
+            .replace("═", "=").replace("─", "-")
+            .replace("│", "|")
+            .replace("┌", "+").replace("┐", "+").replace("└", "+").replace("┘", "+")
+        )
+        return s.encode(encoding, errors="replace").decode(encoding, errors="replace")
+
+    safe_args = [_normalize(str(a)) for a in args]
+    builtins.print(*safe_args, **kwargs)
+
+
+# Module-local override: all print() calls in this file use safe output.
+print = _safe_print
 
 # Initialize logger for debug messages
 logger = get_logger(__name__)

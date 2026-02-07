@@ -407,6 +407,11 @@ All numerical defaults are organized by category and displayed before calculatio
 - **full** — Force full matrix construction *(fastest, may OOM)*
 - **block** — Force block-wise processing *(slowest, constant memory)*
 
+`auto` now evaluates effective free memory as:
+- device free VRAM
+- plus reusable bytes already reserved in the CuPy memory pool
+- plus reuse of cached base kernels when `idx_limit` is unchanged
+
 ---
 
 ### Output Parameters
@@ -494,6 +499,28 @@ set DWBA_LOG_LEVEL=DEBUG    # Windows
 export DWBA_LOG_LEVEL=DEBUG # Linux/Mac
 ```
 Levels: DEBUG, INFO, WARNING, ERROR, CRITICAL
+
+### Hot-Path Debug Control
+
+`DWBA_LOG_LEVEL=DEBUG` enables diagnostics globally, but the hottest GPU/Filon loops are now
+sampled by default to reduce log I/O overhead during long runs.
+
+For full per-call hot-path traces (heavier and slower), enable:
+```bash
+set DWBA_HOTPATH_DEBUG=1    # Windows
+export DWBA_HOTPATH_DEBUG=1 # Linux/Mac
+```
+
+Optional runtime guards for very long outer-tail integrations:
+```bash
+set DWBA_MAX_FILON_SEGMENTS=2048   # cap Filon phase segments per outer integral
+set DWBA_OUTER_SLOW_WARN_S=20      # warn if single outer integral exceeds this time
+```
+Linux/Mac:
+```bash
+export DWBA_MAX_FILON_SEGMENTS=2048
+export DWBA_OUTER_SLOW_WARN_S=20
+```
 
 ### Comprehensive Diagnostic Suite
 
@@ -827,7 +854,7 @@ integrals = radial_ME_all_L(
 To prevent system memory exhaustion on large grids:
 - Kernels are built in **blocks of 8192 rows** (default).
 - Each block calculates a subset of the $r_1$ outer integral.
-- Memory for each block is explicitly freed from the CuPy pool before the next block begins.
+- Intermediate block buffers are released and memory is reused by the CuPy pool.
 - Result: **Constant VRAM usage**, independent of $N_{grid}$.
 
 #### GPU Cache Architecture (v2.5+)
@@ -836,7 +863,9 @@ The `GPUCache` class provides **energy-level resource reuse** to minimize GPU tr
 
 **Cached Resources:**
 - `r_gpu`, `w_gpu` — Persistent grid arrays (full grid)
+- `inv_gtr`, `log_ratio` — Base kernel matrices reused for repeated `idx_limit`
 - `chi_cache` — LRU-managed continuum wave cache (max 20 entries)
+- `array_cache` — Reused static arrays (`u_i`, bound `u_f`) and cached `V_core-U_i`
 
 **Synchronization Reduction:**
 - Radial matrix elements accumulated in GPU arrays (`I_L_dir_gpu`, `I_L_exc_gpu`)
@@ -863,6 +892,17 @@ gpu_cache.clear()
 - Module-level CC weight caching (~25% speedup)
 - Vectorized kernel interpolation (searchsorted + linear)
 - Pre-computed ratio/log_ratio matrices for kernel construction
+- Recursive `ratio^L` updates in the L-loop (avoids repeated `exp(L*log_ratio)`)
+- Reduced allocator synchronization in hot GPU path (fewer pool flush barriers)
+- Array-first callable evaluation in Filon/Levin tail segments (fallback to scalar vectorize)
+- Auto mode now selects `Filon/full` / `Filon/hybrid` / `block-wise` in tiers by effective memory budget
+- Extended Filon kernel base matrices are cached in `GPUCache` when `idx_limit` repeats
+- CC interpolations for Filon exchange/direct envelopes are computed once and reused over all `L`
+- Cached kernels are reused for smaller `idx_limit` via prefix slicing (no rebuild on minor match-point shifts)
+- Cached `exp(log_ratio)` / `exp(filon_log_ratio)` bases are reused across repeated calls
+- Filon `kernel_at_cc_pre` tensors are cached and reused when Filon setup (`idx_limit`, `k_total`, CC) is unchanged
+- Block-size auto-tuning now uses effective free VRAM (device free + reusable CuPy pool bytes)
+- Block-size auto-tuning runs only when a block-wise/hybrid path is actually used
 - Phase-adaptive subdivision with constant Δφ = π/2
 - **GPU:** Pure-GPU interpolation via `cp.interp` (no CPU transfers)
 
@@ -892,6 +932,9 @@ The oscillatory integral module includes automatic safeguards:
 | "r_m not in asymptotic region" | Fixed in v2.1 - relaxed threshold to 1% |
 | Non-finite integral warnings | Check input wavefunctions; reduce L_max |
 | LOCAL "index out of bounds" | Fixed in v2.12 - turning point bounds now clamped |
+| `UnicodeEncodeError` on Windows console | Fixed in v2.20 - DW_main now falls back to ASCII-safe output on non-UTF terminals |
+| GPU run slower after enabling DEBUG | Use `DWBA_LOG_LEVEL=INFO` for production timing; keep `DWBA_HOTPATH_DEBUG=0` unless deep tracing is required |
+| Long silent periods in logs | New heartbeat/slow-pair warnings report current `l_i/l_f`; optional `DWBA_MAX_FILON_SEGMENTS` limits pathological outer-tail segmentation |
 
 ## Changelog
 
