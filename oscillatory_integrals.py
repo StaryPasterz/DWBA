@@ -41,7 +41,7 @@ import logging
 import os
 import time
 import numpy as np
-from typing import Tuple, Optional
+from typing import Callable, Dict, Tuple, Optional
 from scipy.special import sici  # Sine and Cosine integrals
 
 from logging_config import get_logger
@@ -72,7 +72,12 @@ def _env_float(name: str, default: float, min_value: float = 0.0) -> float:
 
 
 # Runtime guardrails for pathological outer-tail costs.
-_FILON_MAX_SEGMENTS = _env_int("DWBA_MAX_FILON_SEGMENTS", 2048, min_value=128)
+_FILON_MAX_SEGMENTS = _env_int("DWBA_MAX_FILON_SEGMENTS", 4096, min_value=128)
+_FILON_MAX_EFFECTIVE_DPHI = _env_float(
+    "DWBA_MAX_EFFECTIVE_DPHI",
+    np.pi / 2,
+    min_value=np.pi / 16
+)
 _OUTER_SLOW_WARN_S = _env_float("DWBA_OUTER_SLOW_WARN_S", 20.0, min_value=1.0)
 
 
@@ -142,6 +147,11 @@ _CC_CACHE = {_CC_N: (_CC_X_REF, _CC_W_REF)}
 # checks in tight interpolation loops.
 _LOG_GRID_FLAG_CACHE: dict[tuple[int, int, float, float], bool] = {}
 _LOG_GRID_FLAG_CACHE_MAX = 128
+
+# Small cache of phase-function closures for repeated outer-tail calls.
+_OUTER_PHASE_CACHE: Dict[tuple, tuple[Callable, Callable, Callable, Callable, Callable, Callable]] = {}
+_OUTER_PHASE_CACHE_LRU: list[tuple] = []
+_OUTER_PHASE_CACHE_MAX = 64
 
 
 def _get_cc_ref(n_nodes: int) -> Tuple[np.ndarray, np.ndarray]:
@@ -335,6 +345,115 @@ def compute_product_phases(
     return (k_minus, phi_const_minus, eta_minus), (k_plus, phi_const_plus, eta_plus)
 
 
+def _get_dwba_outer_phase_functions(
+    k_a: float, l_a: int, delta_a: float, eta_a: float, sigma_a: float,
+    k_b: float, l_b: int, delta_b: float, eta_b: float, sigma_b: float
+) -> tuple[Callable, Callable, Callable, Callable, Callable, Callable]:
+    """
+    Return cached phase functions used in dwba_outer_integral_1d.
+
+    These callables depend only on channel parameters and are reused across
+    repeated L-loop tail integrations for the same (l_i, l_f, energy) pair.
+    """
+    key = (
+        round(float(k_a), 12), int(l_a), round(float(delta_a), 12), round(float(eta_a), 12), round(float(sigma_a), 12),
+        round(float(k_b), 12), int(l_b), round(float(delta_b), 12), round(float(eta_b), 12), round(float(sigma_b), 12),
+    )
+    cached = _OUTER_PHASE_CACHE.get(key)
+    if cached is not None:
+        if key in _OUTER_PHASE_CACHE_LRU:
+            _OUTER_PHASE_CACHE_LRU.remove(key)
+        _OUTER_PHASE_CACHE_LRU.append(key)
+        return cached
+
+    (k_minus, phi_c_minus, _eta_minus), (k_plus, phi_c_plus, _eta_plus) = compute_product_phases(
+        k_a, l_a, delta_a, eta_a, sigma_a,
+        k_b, l_b, delta_b, eta_b, sigma_b
+    )
+
+    def phi_minus(r):
+        result = k_minus * r + phi_c_minus
+        if abs(eta_a) > 1e-15:
+            result += eta_a * np.log(2 * k_a * r + 1e-30)
+        if abs(eta_b) > 1e-15:
+            result -= eta_b * np.log(2 * k_b * r + 1e-30)
+        if l_a > 0:
+            result -= (l_a * (l_a + 1)) / (2.0 * k_a * r)
+        if l_b > 0:
+            result += (l_b * (l_b + 1)) / (2.0 * k_b * r)
+        return result
+
+    def phi_plus(r):
+        result = k_plus * r + phi_c_plus
+        if abs(eta_a) > 1e-15:
+            result += eta_a * np.log(2 * k_a * r + 1e-30)
+        if abs(eta_b) > 1e-15:
+            result += eta_b * np.log(2 * k_b * r + 1e-30)
+        if l_a > 0:
+            result -= (l_a * (l_a + 1)) / (2.0 * k_a * r)
+        if l_b > 0:
+            result -= (l_b * (l_b + 1)) / (2.0 * k_b * r)
+        return result
+
+    def phi_minus_prime(r):
+        result = k_minus
+        if abs(eta_a) > 1e-15:
+            result += eta_a / r
+        if abs(eta_b) > 1e-15:
+            result -= eta_b / r
+        if l_a > 0:
+            result += (l_a * (l_a + 1)) / (2.0 * k_a * r ** 2)
+        if l_b > 0:
+            result -= (l_b * (l_b + 1)) / (2.0 * k_b * r ** 2)
+        return result
+
+    def phi_plus_prime(r):
+        result = k_plus
+        if abs(eta_a) > 1e-15:
+            result += eta_a / r
+        if abs(eta_b) > 1e-15:
+            result += eta_b / r
+        if l_a > 0:
+            result += (l_a * (l_a + 1)) / (2.0 * k_a * r ** 2)
+        if l_b > 0:
+            result += (l_b * (l_b + 1)) / (2.0 * k_b * r ** 2)
+        return result
+
+    def phi_minus_prime2(r):
+        result = 0.0
+        if abs(eta_a) > 1e-15:
+            result -= eta_a / (r * r)
+        if abs(eta_b) > 1e-15:
+            result += eta_b / (r * r)
+        if l_a > 0:
+            result -= (l_a * (l_a + 1)) / (k_a * r ** 3)
+        if l_b > 0:
+            result += (l_b * (l_b + 1)) / (k_b * r ** 3)
+        return result
+
+    def phi_plus_prime2(r):
+        result = 0.0
+        if abs(eta_a) > 1e-15:
+            result -= eta_a / (r * r)
+        if abs(eta_b) > 1e-15:
+            result -= eta_b / (r * r)
+        if l_a > 0:
+            result -= (l_a * (l_a + 1)) / (k_a * r ** 3)
+        if l_b > 0:
+            result -= (l_b * (l_b + 1)) / (k_b * r ** 3)
+        return result
+
+    funcs = (phi_minus, phi_plus, phi_minus_prime, phi_plus_prime, phi_minus_prime2, phi_plus_prime2)
+    _OUTER_PHASE_CACHE[key] = funcs
+    if key in _OUTER_PHASE_CACHE_LRU:
+        _OUTER_PHASE_CACHE_LRU.remove(key)
+    _OUTER_PHASE_CACHE_LRU.append(key)
+    while len(_OUTER_PHASE_CACHE_LRU) > _OUTER_PHASE_CACHE_MAX:
+        old = _OUTER_PHASE_CACHE_LRU.pop(0)
+        _OUTER_PHASE_CACHE.pop(old, None)
+    return funcs
+
+
 def dwba_outer_integral_1d(
     envelope_func,
     k_a: float, l_a: int, delta_a: float, eta_a: float, sigma_a: float,
@@ -378,90 +497,14 @@ def dwba_outer_integral_1d(
 
     t_outer_start = time.perf_counter()
     
-    # Decompose into cos(Φ- ) and cos(Φ+ ) terms
-    (k_minus, phi_c_minus, eta_minus), (k_plus, phi_c_plus, eta_plus) = compute_product_phases(
+    (
+        phi_minus, phi_plus,
+        phi_minus_prime, phi_plus_prime,
+        phi_minus_prime2, phi_plus_prime2
+    ) = _get_dwba_outer_phase_functions(
         k_a, l_a, delta_a, eta_a, sigma_a,
         k_b, l_b, delta_b, eta_b, sigma_b
     )
-    
-    # Phase functions for the two terms
-    # Φ_±(r) = k_± · r + η_± · ln(2√(k_a k_b) r) + φ_const_±
-    # Note: For product, the logarithmic term is η_a ln(2k_a r) - η_b ln(2k_b r)
-    # We approximate this for the tail region where both waves are asymptotic
-    
-    def phi_minus(r):
-        result = k_minus * r + phi_c_minus
-        if abs(eta_a) > 1e-15:
-            result += eta_a * np.log(2 * k_a * r + 1e-30)
-        if abs(eta_b) > 1e-15:
-            result -= eta_b * np.log(2 * k_b * r + 1e-30)
-        # Centrifugal terms
-        if l_a > 0:
-            result -= (l_a * (l_a + 1)) / (2.0 * k_a * r)
-        if l_b > 0:
-            result += (l_b * (l_b + 1)) / (2.0 * k_b * r)
-        return result
-    
-    def phi_plus(r):
-        result = k_plus * r + phi_c_plus
-        if abs(eta_a) > 1e-15:
-            result += eta_a * np.log(2 * k_a * r + 1e-30)
-        if abs(eta_b) > 1e-15:
-            result += eta_b * np.log(2 * k_b * r + 1e-30)
-        # Centrifugal terms (both additive to total phase)
-        if l_a > 0:
-            result -= (l_a * (l_a + 1)) / (2.0 * k_a * r)
-        if l_b > 0:
-            result -= (l_b * (l_b + 1)) / (2.0 * k_b * r)
-        return result
-    
-    def phi_minus_prime(r):
-        result = k_minus
-        if abs(eta_a) > 1e-15:
-            result += eta_a / r
-        if abs(eta_b) > 1e-15:
-            result -= eta_b / r
-        if l_a > 0:
-            result += (l_a * (l_a + 1)) / (2.0 * k_a * r ** 2)
-        if l_b > 0:
-            result -= (l_b * (l_b + 1)) / (2.0 * k_b * r ** 2)
-        return result
-    
-    def phi_plus_prime(r):
-        result = k_plus
-        if abs(eta_a) > 1e-15:
-            result += eta_a / r
-        if abs(eta_b) > 1e-15:
-            result += eta_b / r
-        if l_a > 0:
-            result += (l_a * (l_a + 1)) / (2.0 * k_a * r ** 2)
-        if l_b > 0:
-            result += (l_b * (l_b + 1)) / (2.0 * k_b * r ** 2)
-        return result
-    
-    def phi_minus_prime2(r):
-        result = 0.0
-        if abs(eta_a) > 1e-15:
-            result -= eta_a / (r * r)
-        if abs(eta_b) > 1e-15:
-            result += eta_b / (r * r)
-        if l_a > 0:
-            result -= (l_a * (l_a + 1)) / (k_a * r ** 3)
-        if l_b > 0:
-            result += (l_b * (l_b + 1)) / (k_b * r ** 3)
-        return result
-    
-    def phi_plus_prime2(r):
-        result = 0.0
-        if abs(eta_a) > 1e-15:
-            result -= eta_a / (r * r)
-        if abs(eta_b) > 1e-15:
-            result -= eta_b / (r * r)
-        if l_a > 0:
-            result -= (l_a * (l_a + 1)) / (k_a * r ** 3)
-        if l_b > 0:
-            result -= (l_b * (l_b + 1)) / (k_b * r ** 3)
-        return result
     
     # Compute I_minus = ∫ f(r) cos(Φ_-(r)) dr = Re ∫ f(r) exp(iΦ_-(r)) dr
     I_minus_complex = compute_outer_integral_oscillatory(
@@ -966,17 +1009,28 @@ def filon_oscillatory_integral(
     dr_per_segment = delta_phi / abs(omega)
     n_segments_raw = max(1, int(np.ceil((r_end - r_start) / dr_per_segment)))
     n_segments = min(n_segments_raw, _FILON_MAX_SEGMENTS)
+    effective_delta_phi = abs(omega) * (r_end - r_start) / max(1, n_segments)
+    n_nodes_eff = int(n_nodes_per_segment)
     if n_segments_raw > _FILON_MAX_SEGMENTS and _should_sampled_debug("filon_segment_cap", every=200, initial=3):
         logger.debug(
-            "Filon segments capped: raw=%d -> %d (omega=%.3f, r=[%.2f, %.2f], dphi=%.3f)",
-            n_segments_raw, n_segments, omega, r_start, r_end, delta_phi
+            "Filon segments capped: raw=%d -> %d (omega=%.3f, r=[%.2f, %.2f], dphi_req=%.3f, dphi_eff=%.3f)",
+            n_segments_raw, n_segments, omega, r_start, r_end, delta_phi, effective_delta_phi
         )
+    if effective_delta_phi > _FILON_MAX_EFFECTIVE_DPHI:
+        # Improve robustness when segment cap inflates phase swing per segment.
+        scale = int(np.ceil(effective_delta_phi / _FILON_MAX_EFFECTIVE_DPHI))
+        n_nodes_eff = min(15, max(n_nodes_per_segment, n_nodes_per_segment + 2 * (scale - 1)))
+        if _should_sampled_debug("filon_nodes_adjust", every=200, initial=3):
+            logger.debug(
+                "Filon node-upscale due to dphi_eff=%.3f > %.3f: nodes %d -> %d",
+                effective_delta_phi, _FILON_MAX_EFFECTIVE_DPHI, n_nodes_per_segment, n_nodes_eff
+            )
     segment_bounds = np.linspace(r_start, r_end, n_segments + 1)
     
     contributions = []
     for i in range(n_segments):
         a, b = segment_bounds[i], segment_bounds[i + 1]
-        r_nodes = np.linspace(a, b, n_nodes_per_segment)
+        r_nodes = np.linspace(a, b, n_nodes_eff)
         f_vals = _eval_callable_on_nodes(f_func, r_nodes)
         
         # omega is constant, phase_offset is the offset at r=0

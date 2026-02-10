@@ -4,6 +4,85 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [v2.24] — 2026-02-10 — Outer-Tail Guardrails & Ratio-Cache Retention Fixes
+
+### Performance
+
+**GPU ratio-cache retention fixes** (`dwba_matrix_elements.py`)
+- `GPUCache.get_kernel_ratio()` / `GPUCache.get_filon_ratio()` now compute `exp(log_ratio)` only on the requested prefix instead of full historical matrices.
+- Added oversized-cache shrink logic to avoid retaining stale large ratio buffers after `idx_limit` decreases.
+- When recursive ratio mode is not used for the current call, stale cached ratio buffers are dropped (`ratio`, `filon_ratio`).
+- CC recursive ratio path no longer stores `ratio_at_cc` persistently in cached CC tensors unless actively needed in-call.
+
+**Outer-tail CPU hot-path reuse** (`oscillatory_integrals.py`)
+- Added small LRU cache for DWBA outer-tail phase closures (`phi±`, `phi'±`, `phi''±`) keyed by channel parameters.
+- Removes repeated closure construction overhead in per-`L` outer-tail integrations.
+
+**Driver memory/CPU hygiene** (`driver.py`)
+- Replaced unbounded `dcs_history` list with `deque(maxlen=4)` in GPU convergence checks.
+- Replaced fixed `chi_f` precompute buffer (`L_max_proj + 15`) with dynamic upper bound `L_max_proj + L_max_integrals`.
+
+### Numerical Quality
+
+**Filon segment-cap robustness** (`oscillatory_integrals.py`)
+- Increased default `DWBA_MAX_FILON_SEGMENTS` from `2048` to `4096`.
+- Added `DWBA_MAX_EFFECTIVE_DPHI` guard (default `pi/2`): if segment capping inflates effective phase-per-segment, Filon now increases nodes per segment adaptively (bounded) to reduce under-resolution risk.
+- Added sampled debug diagnostics for cap-triggered effective `dphi` and adaptive node scaling.
+
+### Documentation
+
+- Updated `README.md` with:
+  - new default for `DWBA_MAX_FILON_SEGMENTS`,
+  - `DWBA_MAX_EFFECTIVE_DPHI`,
+  - notes on ratio-cache prefix sizing and outer-phase closure caching.
+
+## [v2.23] — 2026-02-10 — GPU Ratio-Path Memory Control & Cache Stability
+
+### Performance
+
+**GPU ratio-path policy and memory-aware fallback** (`dwba_matrix_elements.py`)
+- Added active policy switch via `DWBA_GPU_RATIO_POLICY` (`auto` / `on` / `off`) in the GPU matrix hot path.
+- `auto` now enables recursive ratio updates only for moderate matrix sizes with adequate memory headroom.
+- Restored safe legacy behavior (`inv_gtr * exp(L*log_ratio)`) automatically when matrices are large or memory is tight.
+- Replaced per-L `ratio_pow.copy(); ratio_pow *= ratio` pattern with a single recursive working-kernel buffer when recursion is enabled.
+- Reduced persistent VRAM pressure in Filon/CC paths by keeping `log_ratio_at_cc` as baseline and materializing ratio caches only when policy allows.
+- Improved `gpu_memory_mode="auto"` estimation to include optional recursive-ratio working buffers (previous estimate was optimistic for large Filon matrices).
+
+**GPU cache reuse stability** (`dwba_matrix_elements.py`)
+- Upgraded Filon parameter and CC-kernel reuse from single-entry cache to small key-based LRU caches in `GPUCache`.
+- Reduces rebuild churn when `idx_limit` changes across nearby calls in the same energy point.
+
+### Debug
+
+**Micro-benchmark script** (`debug/benchmark_gpu_ratio_policy.py`)
+- Added a lightweight benchmark to compare `DWBA_GPU_RATIO_POLICY=off/auto/on` on a synthetic GPU DWBA case.
+- Reports per-policy runtime and CuPy pool snapshot without running full production scans.
+
+### Documentation
+
+- Updated `README.md` with `DWBA_GPU_RATIO_POLICY` usage, tuning guidance, and benchmark command.
+
+## [v2.22] — 2026-02-07 — Excitation Scaling Parity & Convergence Ordering
+
+### Critical Fixes
+
+**Config excitation `N_equiv` parity** (`DW_main.py`)
+- Batch/config excitation path now uses `N_equiv=1` (SAE), matching interactive path.
+- Removes the unintended factor-of-two raw DCS/TCS scaling mismatch in YAML-driven runs.
+
+**GPU convergence check ordering** (`driver.py`)
+- Per-angle DCS stability is now evaluated **after** adding the current `l_i` contribution.
+- Prevents premature early-stop decisions based on the pre-add state.
+- Added explicit finiteness guard for current `l_i` amplitudes before accumulation.
+
+### Debug
+
+**Regression script** (`debug/test_p1_p2_regression.py`)
+- Added lightweight checks for:
+  - config-path `N_equiv` value,
+  - linear DCS scaling with `N_equiv`,
+  - synthetic pre-add vs post-add convergence-order behavior.
+
 ## [v2.21] — 2026-02-07 — GPU Hot-Path Logging & Block Auto-Tune Stability
 
 ### Performance

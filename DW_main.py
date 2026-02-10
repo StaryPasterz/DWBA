@@ -1977,7 +1977,7 @@ def run_from_config(config_path: str, verbose: bool = False) -> None:
         spec = ExcitationChannelSpec(
             l_i=li, l_f=lf,
             n_index_i=ni-li, n_index_f=nf-lf,
-            N_equiv=2,
+            N_equiv=1,  # SAE: one active electron (match interactive path)
             L_max_integrals=params['excitation']['L_max_integrals'],
             L_target_i=li, L_target_f=lf,
             L_max_projectile=params['excitation']['L_max_projectile']

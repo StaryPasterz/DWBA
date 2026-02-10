@@ -113,6 +113,65 @@ def _should_sampled_hotpath_debug(
         return True
     return (count % max(1, int(every))) == 0
 
+
+def _get_ratio_policy() -> str:
+    """
+    Read ratio-power policy for GPU kernel generation.
+
+    Environment:
+        DWBA_GPU_RATIO_POLICY = auto | on | off
+    """
+    raw = os.environ.get("DWBA_GPU_RATIO_POLICY", "auto").strip().lower()
+    if raw in {"auto", "on", "off"}:
+        return raw
+    return "auto"
+
+
+def _matrix_bytes(n_rows: int, n_cols: int, itemsize: int = 8) -> int:
+    """Return approximate dense matrix size in bytes."""
+    return int(n_rows) * int(n_cols) * int(itemsize)
+
+
+def _should_enable_ratio_cache(
+    policy: str,
+    matrix_bytes: int,
+    mem_budget_bytes: Optional[float],
+    kind: str
+) -> bool:
+    """
+    Decide whether ratio-cache/recursive power path should be enabled.
+
+    Notes
+    -----
+    - `on`: always enabled
+    - `off`: always disabled (legacy per-L exp path)
+    - `auto`: enabled only for moderate matrix sizes and sufficient budget headroom
+    """
+    if policy == "on":
+        return True
+    if policy == "off":
+        return False
+
+    # auto: conservative thresholds to avoid VRAM pressure on consumer GPUs.
+    if kind == "filon":
+        abs_limit = 128 * 1024 * 1024
+    elif kind == "standard":
+        abs_limit = 96 * 1024 * 1024
+    elif kind == "cc":
+        abs_limit = 80 * 1024 * 1024
+    else:
+        abs_limit = 64 * 1024 * 1024
+
+    if matrix_bytes > abs_limit:
+        return False
+
+    # Recursive mode needs ratio-cache + working matrix (~2x matrix_bytes extra).
+    extra_need = 2.0 * float(matrix_bytes)
+    if mem_budget_bytes is not None and extra_need > 0.35 * float(mem_budget_bytes):
+        return False
+
+    return True
+
 def check_cupy_runtime() -> bool:
     """
     Verifies if CuPy can actually run on this system.
@@ -168,9 +227,13 @@ class GPUCache:
     filon_ratio : cupy.ndarray or None
         Cached exp(filon_log_ratio) for full Filon recursive L-updates.
     kernel_cc_pre : dict or None
-        Precomputed Filon exchange kernel-at-CC base tensors.
+        Last precomputed Filon exchange kernel-at-CC base tensors (backward compatibility).
+    kernel_cc_cache : dict[tuple, dict] or None
+        Small LRU cache for Filon exchange kernel-at-CC tensors keyed by Filon params.
     filon_params : dict or None
-        Precomputed Filon quadrature parameters.
+        Last precomputed Filon quadrature parameters (backward compatibility).
+    filon_params_cache : dict[tuple, dict] or None
+        Small LRU cache for Filon quadrature parameters keyed by Filon params.
     idx_limit : int
         Grid index limit used for cached matrices.
     chi_cache : dict
@@ -194,6 +257,11 @@ class GPUCache:
     kernel_cc_pre: Optional[dict] = None
     kernel_cc_key: Optional[tuple] = None
     filon_params: Optional[dict] = None
+    kernel_cc_cache: Optional[Dict[tuple, dict]] = None
+    kernel_cc_lru: Optional[List[tuple]] = None
+    filon_params_cache: Optional[Dict[tuple, dict]] = None
+    filon_params_lru: Optional[List[tuple]] = None
+    max_small_cached: int = 6
     idx_limit: int = -1
     # Phase 4: Continuum wave cache with LRU
     chi_cache: Optional[Dict] = None
@@ -211,6 +279,14 @@ class GPUCache:
             self.array_cache = {}
         if self.chi_lru is None:
             self.chi_lru = []
+        if self.kernel_cc_cache is None:
+            self.kernel_cc_cache = {}
+        if self.kernel_cc_lru is None:
+            self.kernel_cc_lru = []
+        if self.filon_params_cache is None:
+            self.filon_params_cache = {}
+        if self.filon_params_lru is None:
+            self.filon_params_lru = []
     
     @classmethod
     def from_grid(cls, grid: RadialGrid, idx_limit: int = -1, max_chi_cached: int = 20) -> 'GPUCache':
@@ -378,8 +454,14 @@ class GPUCache:
         """
         if self.log_ratio is None or self.idx_limit < idx_limit:
             return None
-        if self.ratio is None or len(self.ratio) < idx_limit:
-            self.ratio = cp.exp(self.log_ratio)
+        if self.ratio is None or self.ratio.shape[0] < idx_limit:
+            # Compute only requested prefix (avoid historical-size escalation).
+            self.ratio = cp.exp(self.log_ratio[:idx_limit, :idx_limit])
+        else:
+            # If cached ratio is much larger than current need, shrink it.
+            cached_n = int(self.ratio.shape[0])
+            if cached_n > (idx_limit + 512) and cached_n > int(1.5 * idx_limit):
+                self.ratio = self.ratio[:idx_limit, :idx_limit].copy()
         return self.ratio[:idx_limit, :idx_limit]
 
     def build_filon_kernel_matrix(self, idx_limit: int) -> None:
@@ -414,8 +496,86 @@ class GPUCache:
         if self.filon_log_ratio is None or self.filon_idx_limit < idx_limit:
             return None
         if self.filon_ratio is None or self.filon_ratio.shape[0] < idx_limit:
-            self.filon_ratio = cp.exp(self.filon_log_ratio)
+            # Compute only requested rows (avoid historical-size escalation).
+            self.filon_ratio = cp.exp(self.filon_log_ratio[:idx_limit, :])
+        else:
+            cached_rows = int(self.filon_ratio.shape[0])
+            if cached_rows > (idx_limit + 512) and cached_rows > int(1.5 * idx_limit):
+                self.filon_ratio = self.filon_ratio[:idx_limit, :].copy()
         return self.filon_ratio[:idx_limit, :]
+
+    @staticmethod
+    def _lru_get(cache: Dict[tuple, dict], lru: List[tuple], key: tuple) -> Optional[dict]:
+        """LRU helper: return value and refresh recency."""
+        value = cache.get(key)
+        if value is None:
+            return None
+        if key in lru:
+            lru.remove(key)
+        lru.append(key)
+        return value
+
+    @staticmethod
+    def _lru_set(
+        cache: Dict[tuple, dict],
+        lru: List[tuple],
+        key: tuple,
+        value: dict,
+        max_size: int
+    ) -> None:
+        """LRU helper: insert/replace and evict oldest if needed."""
+        cache[key] = value
+        if key in lru:
+            lru.remove(key)
+        lru.append(key)
+        while len(lru) > max(1, int(max_size)):
+            old = lru.pop(0)
+            cache.pop(old, None)
+
+    def get_filon_params_cached(self, key: tuple) -> Optional[dict]:
+        """Return Filon params from small LRU cache."""
+        if self.filon_params_cache is None or self.filon_params_lru is None:
+            return None
+        return self._lru_get(self.filon_params_cache, self.filon_params_lru, key)
+
+    def set_filon_params_cached(self, key: tuple, params: dict) -> None:
+        """Store Filon params in small LRU cache."""
+        if self.filon_params_cache is None:
+            self.filon_params_cache = {}
+        if self.filon_params_lru is None:
+            self.filon_params_lru = []
+        self._lru_set(
+            self.filon_params_cache,
+            self.filon_params_lru,
+            key,
+            params,
+            self.max_small_cached
+        )
+        # Backward compatibility (single-entry fields).
+        self.filon_params = {"key": key, "params": params}
+
+    def get_kernel_cc_cached(self, key: tuple) -> Optional[dict]:
+        """Return precomputed Filon exchange kernel-at-CC tensors from LRU cache."""
+        if self.kernel_cc_cache is None or self.kernel_cc_lru is None:
+            return None
+        return self._lru_get(self.kernel_cc_cache, self.kernel_cc_lru, key)
+
+    def set_kernel_cc_cached(self, key: tuple, kernel_cc_pre: dict) -> None:
+        """Store precomputed Filon exchange kernel-at-CC tensors in LRU cache."""
+        if self.kernel_cc_cache is None:
+            self.kernel_cc_cache = {}
+        if self.kernel_cc_lru is None:
+            self.kernel_cc_lru = []
+        self._lru_set(
+            self.kernel_cc_cache,
+            self.kernel_cc_lru,
+            key,
+            kernel_cc_pre,
+            self.max_small_cached
+        )
+        # Backward compatibility (single-entry fields).
+        self.kernel_cc_pre = kernel_cc_pre
+        self.kernel_cc_key = key
     
     def clear(self) -> None:
         """Clear all cached data (call at end of energy point)."""
@@ -429,6 +589,14 @@ class GPUCache:
         self.kernel_cc_pre = None
         self.kernel_cc_key = None
         self.filon_params = None
+        if self.kernel_cc_cache:
+            self.kernel_cc_cache.clear()
+        if self.kernel_cc_lru:
+            self.kernel_cc_lru.clear()
+        if self.filon_params_cache:
+            self.filon_params_cache.clear()
+        if self.filon_params_lru:
+            self.filon_params_lru.clear()
         self.idx_limit = -1
         self.v_diff_cache = None
         self.v_diff_key = None
@@ -1547,11 +1715,16 @@ def radial_ME_all_L_gpu(
     # Strategy selection: "auto" checks memory, "full" forces matrix, "block" forces block-wise
     
     use_filon = use_oscillatory_quadrature and k_total > k_threshold
+    ratio_policy = _get_ratio_policy()
+    matrix_bytes_standard = _matrix_bytes(idx_limit, idx_limit, itemsize=8)
+    matrix_bytes_filon = _matrix_bytes(idx_limit, N_grid, itemsize=8)
     
     # Memory-based decision for matrix construction
     use_block_wise = False
     prefer_filon_full = False
     effective_free_mem = None
+    mem_budget_bytes = None
+    required_mem_estimate = 0
     if gpu_memory_mode == "block":
         use_block_wise = True
     elif gpu_memory_mode == "full":
@@ -1569,6 +1742,8 @@ def radial_ME_all_L_gpu(
             pool_reusable = max(0, pool_total - pool_used)
             effective_free = free_mem + pool_reusable
             effective_free_mem = int(effective_free)
+            mem_budget = float(effective_free) * float(gpu_memory_threshold)
+            mem_budget_bytes = mem_budget
 
             # If base kernel is already cached for this idx_limit, don't count it again.
             has_cached_base_kernel = (
@@ -1577,31 +1752,56 @@ def radial_ME_all_L_gpu(
                 gpu_cache.log_ratio is not None and
                 gpu_cache.idx_limit >= idx_limit
             )
-            standard_mem = 0 if has_cached_base_kernel else (idx_limit * idx_limit * 8 * 3)
-            mem_budget = effective_free * gpu_memory_threshold
+            standard_build_mem = 0 if has_cached_base_kernel else (matrix_bytes_standard * 3)
+            standard_recursive_mem = 0
+            if L_max > 0 and _should_enable_ratio_cache(
+                ratio_policy,
+                matrix_bytes_standard,
+                mem_budget_bytes,
+                "standard"
+            ):
+                # ratio cache + recursive working kernel
+                standard_recursive_mem = matrix_bytes_standard * 2
+            standard_required_mem = standard_build_mem + standard_recursive_mem
 
             # Memory estimation depends on mode:
-            # - Standard: 3 matrices (inv_gtr, ratio, log_ratio) × idx_limit²
-            # - Filon: Extended matrix (idx_limit × N_grid) + standard
+            # - Standard: kernel build + optional recursive-ratio buffers
+            # - Filon: extended kernel build + optional recursive-ratio buffers
             if use_filon:
-                # For full Filon path, standard kernel is not mandatory.
                 has_cached_filon_kernel = (
                     gpu_cache is not None and
                     gpu_cache.filon_inv_gtr is not None and
                     gpu_cache.filon_log_ratio is not None and
                     gpu_cache.filon_idx_limit >= idx_limit
                 )
-                filon_full_mem = 0 if has_cached_filon_kernel else (idx_limit * N_grid * 8 * 2)
-                if filon_full_mem <= mem_budget:
+                filon_build_mem = 0 if has_cached_filon_kernel else (matrix_bytes_filon * 2)
+                filon_recursive_mem = 0
+                if L_max > 0 and _should_enable_ratio_cache(
+                    ratio_policy,
+                    matrix_bytes_filon,
+                    mem_budget_bytes,
+                    "filon"
+                ):
+                    # ratio cache + recursive working kernel
+                    filon_recursive_mem = matrix_bytes_filon * 2
+
+                # Conservative CC/workspace headroom for full Filon mode.
+                filon_workspace_mem = matrix_bytes_standard
+                filon_required_mem = filon_build_mem + filon_recursive_mem + filon_workspace_mem
+
+                if filon_required_mem <= mem_budget:
                     prefer_filon_full = True
-                elif standard_mem <= mem_budget:
+                    required_mem_estimate = filon_required_mem
+                elif standard_required_mem <= mem_budget:
                     # Not enough for full Filon matrix, but enough for hybrid.
                     prefer_filon_full = False
+                    required_mem_estimate = standard_required_mem
                 else:
                     use_block_wise = True
+                    required_mem_estimate = max(filon_required_mem, standard_required_mem)
             else:
-                required_mem = standard_mem
-                if required_mem > mem_budget:
+                required_mem_estimate = standard_required_mem
+                if required_mem_estimate > mem_budget:
                     use_block_wise = True
 
             if use_block_wise:
@@ -1609,10 +1809,7 @@ def radial_ME_all_L_gpu(
                     "GPU memory limited (free %.1f GB + pool %.1f GB, need %.1f GB). Using block-wise.",
                     free_mem / 1e9,
                     pool_reusable / 1e9,
-                    (
-                        (idx_limit * N_grid * 8 * 2) if use_filon
-                        else standard_mem
-                    ) / 1e9
+                    required_mem_estimate / 1e9
                 )
         except Exception as e:
             logger.debug("Could not check GPU memory: %s. Using block-wise as fallback.", e)
@@ -1732,24 +1929,22 @@ def radial_ME_all_L_gpu(
             float(np.round(phase_increment, 8)),
             int(CC_nodes),
         )
-        if gpu_cache is not None and isinstance(gpu_cache.filon_params, dict):
-            if gpu_cache.filon_params.get("key") == filon_key:
-                filon_params = gpu_cache.filon_params.get("params")
+        if gpu_cache is not None:
+            filon_params = gpu_cache.get_filon_params_cached(filon_key)
 
         if filon_params is None:
             filon_params = _generate_gpu_filon_params(r_gpu, k_total, phase_increment, CC_nodes)
-            if gpu_cache is not None:
-                gpu_cache.filon_params = {"key": filon_key, "params": filon_params}
+            if gpu_cache is not None and filon_params is not None:
+                gpu_cache.set_filon_params_cached(filon_key, filon_params)
 
         if filon_params:
             kernel_cc_key = filon_key
-            if (
-                gpu_cache is not None and
-                gpu_cache.kernel_cc_pre is not None and
-                gpu_cache.kernel_cc_key == kernel_cc_key
-            ):
-                kernel_at_cc_pre = gpu_cache.kernel_cc_pre
+            if gpu_cache is not None:
+                kernel_at_cc_pre = gpu_cache.get_kernel_cc_cached(kernel_cc_key)
             else:
+                kernel_at_cc_pre = None
+
+            if kernel_at_cc_pre is None:
                 # Precompute CC node kernels for Filon
                 idx_l, idx_r = filon_params['idx_left'], filon_params['idx_right']
                 w_l, w_r = filon_params['w_left'], filon_params['w_right']
@@ -1766,22 +1961,14 @@ def radial_ME_all_L_gpu(
 
                 inv_gtr_at_cc = inv_gtr_cc_l * w_l + inv_gtr_cc_r * w_r
                 log_ratio_at_cc = log_ratio_cc_l * w_l + log_ratio_cc_r * w_r
-                try:
-                    ratio_at_cc = cp.exp(log_ratio_at_cc)
-                    kernel_at_cc_pre = {
-                        'inv_gtr_at_cc': inv_gtr_at_cc,
-                        'ratio_at_cc': ratio_at_cc
-                    }
-                except Exception:
-                    # Memory-constrained fallback: keep log-ratio and evaluate per L.
-                    kernel_at_cc_pre = {
-                        'inv_gtr_at_cc': inv_gtr_at_cc,
-                        'log_ratio_at_cc': log_ratio_at_cc
-                    }
+                # Keep log-ratio by default; ratio cache is policy-driven and optional.
+                kernel_at_cc_pre = {
+                    'inv_gtr_at_cc': inv_gtr_at_cc,
+                    'log_ratio_at_cc': log_ratio_at_cc
+                }
                 del r_col, r_cc_l, r_cc_r, inv_gtr_cc_l, inv_gtr_cc_r, log_ratio_cc_l, log_ratio_cc_r
                 if gpu_cache is not None:
-                    gpu_cache.kernel_cc_pre = kernel_at_cc_pre
-                    gpu_cache.kernel_cc_key = kernel_cc_key
+                    gpu_cache.set_kernel_cc_cached(kernel_cc_key, kernel_at_cc_pre)
         else:
             use_filon = False  # Fallback if params generation failed
     
@@ -1859,7 +2046,7 @@ def radial_ME_all_L_gpu(
             moments_head[Lm] = float(np.dot(base_head, r_pow_head))
             moments_full[Lm] = float(np.dot(base_full, r_pow_full))
 
-    # Precompute ratio matrices once; update powers recursively in the L-loop.
+    # Ratio policy: keep recursive power path only when memory/size are favorable.
     need_standard_kernel_for_direct = (not use_filon) or (use_filon and not filon_kernel_built)
     need_standard_kernel_for_exchange = not (
         use_oscillatory_quadrature and k_total > k_threshold and kernel_at_cc_pre is not None
@@ -1867,29 +2054,101 @@ def radial_ME_all_L_gpu(
     need_standard_kernel = need_standard_kernel_for_direct or need_standard_kernel_for_exchange
 
     kernel_ratio = None
-    kernel_ratio_pow = None
-    if full_matrix_built and need_standard_kernel and L_max > 0:
+    kernel_L_work = None
+    enable_standard_recursive = (
+        full_matrix_built and need_standard_kernel and L_max > 0 and
+        _should_enable_ratio_cache(
+            ratio_policy,
+            matrix_bytes_standard,
+            mem_budget_bytes,
+            "standard"
+        )
+    )
+    if enable_standard_recursive:
         try:
             if gpu_cache is not None:
                 kernel_ratio = gpu_cache.get_kernel_ratio(idx_limit)
             if kernel_ratio is None:
                 kernel_ratio = cp.exp(log_ratio)
-        except Exception:
+            kernel_L_work = inv_gtr.copy()
+        except Exception as e:
+            logger.debug("GPU standard recursive-ratio disabled: %s", e)
+            enable_standard_recursive = False
             kernel_ratio = None
+            kernel_L_work = None
 
     filon_ratio = None
-    filon_ratio_pow = None
-    if filon_kernel_built and L_max > 0:
+    filon_kernel_work = None
+    enable_filon_recursive = (
+        filon_kernel_built and L_max > 0 and
+        _should_enable_ratio_cache(
+            ratio_policy,
+            matrix_bytes_filon,
+            mem_budget_bytes,
+            "filon"
+        )
+    )
+    if enable_filon_recursive:
         try:
             if gpu_cache is not None:
                 filon_ratio = gpu_cache.get_filon_ratio(idx_limit)
             if filon_ratio is None:
                 filon_ratio = cp.exp(filon_log_ratio)
-        except Exception:
+            filon_kernel_work = filon_inv_gtr.copy()
+        except Exception as e:
+            logger.debug("GPU Filon recursive-ratio disabled: %s", e)
+            enable_filon_recursive = False
             filon_ratio = None
+            filon_kernel_work = None
 
-    cc_ratio = kernel_at_cc_pre.get('ratio_at_cc') if (kernel_at_cc_pre is not None and L_max > 0) else None
-    cc_ratio_pow = None
+    cc_ratio = None
+    cc_kernel_work = None
+    enable_cc_recursive = False
+    if kernel_at_cc_pre is not None and L_max > 0:
+        cc_shape = kernel_at_cc_pre['inv_gtr_at_cc'].shape
+        cc_matrix_bytes = _matrix_bytes(cc_shape[0], cc_shape[1], itemsize=8)
+        enable_cc_recursive = _should_enable_ratio_cache(
+            ratio_policy,
+            cc_matrix_bytes,
+            mem_budget_bytes,
+            "cc"
+        )
+        if enable_cc_recursive:
+            try:
+                cc_ratio = kernel_at_cc_pre.get('ratio_at_cc')
+                if cc_ratio is None:
+                    log_ratio_at_cc = kernel_at_cc_pre.get('log_ratio_at_cc')
+                    if log_ratio_at_cc is not None:
+                        cc_ratio = cp.exp(log_ratio_at_cc)
+                if cc_ratio is not None:
+                    cc_kernel_work = kernel_at_cc_pre['inv_gtr_at_cc'].copy()
+                else:
+                    enable_cc_recursive = False
+            except Exception as e:
+                logger.debug("GPU CC recursive-ratio disabled: %s", e)
+                enable_cc_recursive = False
+                cc_ratio = None
+                cc_kernel_work = None
+
+    if _should_sampled_hotpath_debug("ratio_policy_mode", every=200, initial=2):
+        logger.debug(
+            "GPU ratio policy=%s | recursive standard=%s filon=%s cc=%s | matrix MB std=%.1f filon=%.1f",
+            ratio_policy,
+            enable_standard_recursive,
+            enable_filon_recursive,
+            enable_cc_recursive,
+            matrix_bytes_standard / (1024.0 * 1024.0),
+            matrix_bytes_filon / (1024.0 * 1024.0),
+        )
+
+    # Drop stale ratio caches when recursive mode is not used in this call.
+    if gpu_cache is not None:
+        if not enable_standard_recursive:
+            gpu_cache.ratio = None
+        if not enable_filon_recursive:
+            gpu_cache.filon_ratio = None
+    if kernel_at_cc_pre is not None and not enable_cc_recursive:
+        kernel_at_cc_pre.pop('ratio_at_cc', None)
 
     # Precompute CC interpolations reused across all L for Filon outer loops.
     rho1_dir_cc_pre = None
@@ -1914,14 +2173,11 @@ def radial_ME_all_L_gpu(
                 if L == 0:
                     kernel_L = inv_gtr
                 else:
-                    if kernel_ratio is None:
-                        kernel_L = inv_gtr * cp.exp(L * log_ratio)
+                    if enable_standard_recursive and kernel_ratio is not None and kernel_L_work is not None:
+                        kernel_L_work *= kernel_ratio
+                        kernel_L = kernel_L_work
                     else:
-                        if kernel_ratio_pow is None:
-                            kernel_ratio_pow = kernel_ratio.copy()
-                        else:
-                            kernel_ratio_pow *= kernel_ratio
-                        kernel_L = inv_gtr * kernel_ratio_pow
+                        kernel_L = inv_gtr * cp.exp(L * log_ratio)
             
             # For Filon mode, compute int_r2_dir:
             # FAST: If filon_kernel_built, use full (idx_limit × N_grid) matrix
@@ -1934,16 +2190,14 @@ def radial_ME_all_L_gpu(
                     if L == 0:
                         filon_kernel_L = filon_inv_gtr
                     else:
-                        if filon_ratio is None:
-                            filon_kernel_L = filon_inv_gtr * cp.exp(L * filon_log_ratio)
+                        if enable_filon_recursive and filon_ratio is not None and filon_kernel_work is not None:
+                            filon_kernel_work *= filon_ratio
+                            filon_kernel_L = filon_kernel_work
                         else:
-                            if filon_ratio_pow is None:
-                                filon_ratio_pow = filon_ratio.copy()
-                            else:
-                                filon_ratio_pow *= filon_ratio
-                            filon_kernel_L = filon_inv_gtr * filon_ratio_pow
+                            filon_kernel_L = filon_inv_gtr * cp.exp(L * filon_log_ratio)
                     int_r2_dir = cp.dot(filon_kernel_L, rho2_eff_full)
-                    del filon_kernel_L
+                    if filon_kernel_L is not filon_kernel_work:
+                        del filon_kernel_L
                 else:
                     # HYBRID PATH: Use standard matrix for head + block-wise for tail
                     if kernel_L is None:
@@ -2082,16 +2336,11 @@ def radial_ME_all_L_gpu(
                 if L == 0:
                     k_spec = {'kernel_at_cc': kernel_at_cc_pre['inv_gtr_at_cc']}
                 else:
-                    if cc_ratio is None:
-                        k_spec = {**kernel_at_cc_pre, 'L': L}
+                    if enable_cc_recursive and cc_ratio is not None and cc_kernel_work is not None:
+                        cc_kernel_work *= cc_ratio
+                        k_spec = {'kernel_at_cc': cc_kernel_work}
                     else:
-                        if cc_ratio_pow is None:
-                            cc_ratio_pow = cc_ratio.copy()
-                        else:
-                            cc_ratio_pow *= cc_ratio
-                        k_spec = {
-                            'kernel_at_cc': kernel_at_cc_pre['inv_gtr_at_cc'] * cc_ratio_pow
-                        }
+                        k_spec = {**kernel_at_cc_pre, 'L': L}
             else:
                 k_spec = kernel_L
             I_ex_L = _gpu_filon_exchange(

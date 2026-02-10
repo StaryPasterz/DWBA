@@ -33,6 +33,7 @@ Uses logging_config module. Set DWBA_LOG_LEVEL=DEBUG for verbose output.
 
 from __future__ import annotations
 import numpy as np
+from collections import deque
 from dataclasses import dataclass
 from typing import Optional, Dict, Tuple, List
 import time
@@ -675,8 +676,14 @@ def compute_total_excitation_cs(
         
         t_pre = time.perf_counter()
         chi_i_cache = precompute_continuum_waves(L_max_proj, E_incident_eV, z_ion, U_i, grid)
-        chi_f_cache = precompute_continuum_waves(L_max_proj + 15, E_final_eV, z_ion, U_f, grid)
-        logger.debug("Pre-calc: Done in %.3f s. (Cached %d i-waves, %d f-waves)", time.perf_counter() - t_pre, len(chi_i_cache), len(chi_f_cache))
+        l_f_precompute_max = L_max_proj + max(0, int(chan.L_max_integrals))
+        chi_f_cache = precompute_continuum_waves(l_f_precompute_max, E_final_eV, z_ion, U_f, grid)
+        logger.debug(
+            "Pre-calc: Done in %.3f s. (Cached %d i-waves [0..%d], %d f-waves [0..%d])",
+            time.perf_counter() - t_pre,
+            len(chi_i_cache), L_max_proj,
+            len(chi_f_cache), l_f_precompute_max
+        )
 
         # === PHASE 3: Create GPU cache for energy-level reuse ===
         from dwba_matrix_elements import GPUCache
@@ -687,7 +694,7 @@ def compute_total_excitation_cs(
         # Sequential Loop, but with fast GPU integrals
         
         sigma_accumulated = 0.0  # For progress logging
-        dcs_history = []   # v2.15+: Track (l_i, DCS_array) for per-angle stability convergence
+        dcs_history = deque(maxlen=4)   # v2.15+: Track recent (l_i, DCS_array) for per-angle stability convergence
         
         t0_sum = time.perf_counter()
         for l_i in range(L_max_proj + 1):
@@ -831,70 +838,61 @@ def compute_total_excitation_cs(
             # due to interference in |f±g|². Correct test: stability of TOTAL DCS.
             should_add = True
             stop_reason = None
-            
-            # CHECK 1: PER-ANGLE DCS STABILITY
-            # ================================================================
-            # Check max relative change across ALL angles in theta_grid.
-            # This catches both forward and backward scattering convergence.
-            # ================================================================
-            if l_i >= 5 and total_amplitudes:
-                # Compute current DCS for full theta grid
-                current_dcs = np.zeros_like(theta_grid, dtype=float)
-                for (Mi, Mf), amps in total_amplitudes.items():
-                    chan_dcs = dcs_dwba(theta_grid, amps.f_theta, amps.g_theta, k_i_au, k_f_au, Li, chan.N_equiv)
-                    current_dcs += chan_dcs
-                
-                # Store for convergence check (store DCS array, not just TCS)
-                dcs_history.append((l_i, current_dcs.copy()))
-                
-                # Check stability over last 4 partial waves
-                if len(dcs_history) >= 4:
-                    old_dcs = dcs_history[-4][1]  # DCS from 3 L's ago
-                    
-                    # Max relative change across all angles (avoid div by zero)
-                    with np.errstate(divide='ignore', invalid='ignore'):
-                        angle_changes = np.abs(current_dcs - old_dcs) / (current_dcs + 1e-50)
-                        angle_changes[~np.isfinite(angle_changes)] = 0.0
-                    
-                    max_change = np.max(angle_changes)
-                    avg_change = np.mean(angle_changes)
-                    
-                    # Convergence: <1% max change at all angles after L>15
-                    if max_change < 0.01 and l_i > 15:
-                        stop_reason = f"Converged: max Δ(DCS)/DCS = {max_change:.2e} over all θ (stable)"
-                        logger.info("Partial wave sum converged at L=%d: max angle change = %.2e, avg = %.2e", 
-                                   l_i, max_change, avg_change)
-            
-            # CHECK 2: NUMERICAL SAFETY (true failure detection)
-            # ================================================================
+
+            # CHECK 0: Numerical safety on CURRENT l_i contribution.
+            for (Mi, Mf), amps in li_amplitudes.items():
+                if not np.all(np.isfinite(amps.f_theta)) or not np.all(np.isfinite(amps.g_theta)):
+                    stop_reason = "Numerical failure: NaN/Inf in l_i amplitudes"
+                    logger.error("Numerical failure at L=%d: non-finite l_i amplitudes for (Mi=%d, Mf=%d)", l_i, Mi, Mf)
+                    should_add = False
+                    break
+
+            # CHECK 1: Numerical safety on accumulated state.
             if total_amplitudes and stop_reason is None:
-                # Check for NaN/Inf in amplitudes
                 for (Mi, Mf), amps in total_amplitudes.items():
                     if not np.all(np.isfinite(amps.f_theta)) or not np.all(np.isfinite(amps.g_theta)):
-                        stop_reason = "Numerical failure: NaN/Inf in amplitudes"
-                        logger.error("Numerical failure at L=%d: non-finite amplitudes", l_i)
+                        stop_reason = "Numerical failure: NaN/Inf in accumulated amplitudes"
+                        logger.error("Numerical failure at L=%d: non-finite accumulated amplitudes", l_i)
                         should_add = False
                         break
-            
+
             # === ACCUMULATE OR STOP ===
             if should_add:
                 for k_amp, v_amp in li_amplitudes.items():
                     if k_amp not in total_amplitudes:
                          total_amplitudes[k_amp] = Amplitudes(np.zeros_like(theta_grid, dtype=complex), np.zeros_like(theta_grid, dtype=complex))
-                    
+
                     total_amplitudes[k_amp].f_theta += v_amp.f_theta
                     total_amplitudes[k_amp].g_theta += v_amp.g_theta
-            
+
             if stop_reason:
                 logger.info("Stopping partial wave sum at L=%d: %s", l_i, stop_reason)
                 break
-                
-            # Compute Total CS snapshot
+
+            # Compute TOTAL DCS snapshot AFTER adding current l_i.
             snap_dcs = np.zeros_like(theta_grid, dtype=float)
             for (Mi, Mf), amps in total_amplitudes.items():
                 chan_dcs = dcs_dwba(theta_grid, amps.f_theta, amps.g_theta, k_i_au, k_f_au, Li, chan.N_equiv)
                 snap_dcs += chan_dcs
             snap_sigma = sigma_au_to_cm2(integrate_dcs_over_angles(theta_grid, snap_dcs))
+
+            # CHECK 2: Per-angle DCS stability (post-add state only).
+            # This prevents false convergence decisions based on the pre-add state.
+            if l_i >= 5 and total_amplitudes:
+                dcs_history.append((l_i, snap_dcs.copy()))
+                if len(dcs_history) >= 4:
+                    old_dcs = dcs_history[-4][1]  # DCS from 3 L's ago
+                    with np.errstate(divide='ignore', invalid='ignore'):
+                        angle_changes = np.abs(snap_dcs - old_dcs) / (snap_dcs + 1e-50)
+                        angle_changes[~np.isfinite(angle_changes)] = 0.0
+                    max_change = np.max(angle_changes)
+                    avg_change = np.mean(angle_changes)
+                    if max_change < 0.01 and l_i > 15:
+                        stop_reason = f"Converged: max Δ(DCS)/DCS = {max_change:.2e} over all θ (stable)"
+                        logger.info(
+                            "Partial wave sum converged at L=%d: max angle change = %.2e, avg = %.2e",
+                            l_i, max_change, avg_change
+                        )
             
             delta_sigma = abs(snap_sigma - sigma_accumulated)
             rel_change = delta_sigma / (snap_sigma + 1e-30)
@@ -903,6 +901,10 @@ def compute_total_excitation_cs(
             # Progress log
             if l_i % 5 == 0:
                  logger.debug("l_i=%d done. Sigma=%.3e (dL/L=%.1e)", l_i, snap_sigma, rel_change)
+
+            if stop_reason:
+                logger.info("Stopping partial wave sum at L=%d: %s", l_i, stop_reason)
+                break
 
         # === END OF GPU BLOCK: Cleanup cache ===
         gpu_cache.clear()

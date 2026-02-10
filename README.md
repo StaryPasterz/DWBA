@@ -82,7 +82,8 @@ DW_antigravity_v2/
 │   ├── diag_bound.py       # Bound state solver health
 │   ├── diag_upturn.py      # High-E convergence analysis
 │   ├── diag_radial_integrals.py  # I_L multipole diagnostics
-│   └── diag_oscillatory.py # Integral stability tests
+│   ├── diag_oscillatory.py # Integral stability tests
+│   └── test_p1_p2_regression.py # Lightweight regression checks for critical fixes
 ├── article.md              # Reference theory paper
 ├── results/                # All output files (auto-created)
 │   ├── results_*.json      # Calculation results
@@ -513,13 +514,27 @@ export DWBA_HOTPATH_DEBUG=1 # Linux/Mac
 
 Optional runtime guards for very long outer-tail integrations:
 ```bash
-set DWBA_MAX_FILON_SEGMENTS=2048   # cap Filon phase segments per outer integral
+set DWBA_MAX_FILON_SEGMENTS=4096   # cap Filon phase segments per outer integral
+set DWBA_MAX_EFFECTIVE_DPHI=1.5708 # if cap is hit, increase Filon nodes to keep per-segment phase reasonable
 set DWBA_OUTER_SLOW_WARN_S=20      # warn if single outer integral exceeds this time
+set DWBA_GPU_RATIO_POLICY=auto     # GPU ratio path: auto / on / off
 ```
 Linux/Mac:
 ```bash
-export DWBA_MAX_FILON_SEGMENTS=2048
+export DWBA_MAX_FILON_SEGMENTS=4096
+export DWBA_MAX_EFFECTIVE_DPHI=1.5708
 export DWBA_OUTER_SLOW_WARN_S=20
+export DWBA_GPU_RATIO_POLICY=auto
+```
+
+`DWBA_GPU_RATIO_POLICY` controls how `K_L` is built on GPU:
+- `off` -> legacy path `exp(L*log_ratio)` (lower VRAM pressure)
+- `auto` -> enable recursive ratio path only for moderate matrix sizes / safe headroom
+- `on` -> always use recursive ratio path (fastest only when VRAM is ample)
+
+Quick micro-benchmark:
+```bash
+python debug/benchmark_gpu_ratio_policy.py --n-grid 3200 --L-max 12 --repeats 2
 ```
 
 ### Comprehensive Diagnostic Suite
@@ -595,6 +610,7 @@ DWBA COMPREHENSIVE DIAGNOSTIC SUITE
 | `diag_atoms.py` | Multi-atom potential comparison |
 | `diag_oscillatory.py` | Oscillatory integral function tests |
 | `diag_partial_waves.py` | Analyze partial waves from result JSON |
+| `test_p1_p2_regression.py` | Regression checks for config scaling and convergence-order fix |
 
 
 ## Performance Tips
@@ -892,15 +908,18 @@ gpu_cache.clear()
 - Module-level CC weight caching (~25% speedup)
 - Vectorized kernel interpolation (searchsorted + linear)
 - Pre-computed ratio/log_ratio matrices for kernel construction
-- Recursive `ratio^L` updates in the L-loop (avoids repeated `exp(L*log_ratio)`)
+- `DWBA_GPU_RATIO_POLICY`-driven kernel generation (`exp(L*log_ratio)` fallback vs recursive ratio path)
+- Recursive ratio path uses a single working kernel buffer (no per-L `ratio_pow.copy()` allocation)
 - Reduced allocator synchronization in hot GPU path (fewer pool flush barriers)
 - Array-first callable evaluation in Filon/Levin tail segments (fallback to scalar vectorize)
 - Auto mode now selects `Filon/full` / `Filon/hybrid` / `block-wise` in tiers by effective memory budget
 - Extended Filon kernel base matrices are cached in `GPUCache` when `idx_limit` repeats
 - CC interpolations for Filon exchange/direct envelopes are computed once and reused over all `L`
 - Cached kernels are reused for smaller `idx_limit` via prefix slicing (no rebuild on minor match-point shifts)
-- Cached `exp(log_ratio)` / `exp(filon_log_ratio)` bases are reused across repeated calls
-- Filon `kernel_at_cc_pre` tensors are cached and reused when Filon setup (`idx_limit`, `k_total`, CC) is unchanged
+- Cached `exp(log_ratio)` / `exp(filon_log_ratio)` bases are used only when ratio policy allows recursion
+- Ratio caches are built from requested prefixes and can shrink when oversized (prevents stale large-cache VRAM retention)
+- Filon params and `kernel_at_cc_pre` tensors use small key-based LRU caches for repeated setups
+- Phase-function closures for DWBA outer-tail integrals are cached and reused across repeated calls
 - Block-size auto-tuning now uses effective free VRAM (device free + reusable CuPy pool bytes)
 - Block-size auto-tuning runs only when a block-wise/hybrid path is actually used
 - Phase-adaptive subdivision with constant Δφ = π/2
