@@ -34,8 +34,8 @@ Uses logging_config module. Set DWBA_LOG_LEVEL=DEBUG for verbose output.
 from __future__ import annotations
 import numpy as np
 from collections import deque
-from dataclasses import dataclass
-from typing import Optional, Dict, Tuple, List
+from dataclasses import dataclass, replace
+from typing import Optional, Dict, Tuple, List, Any
 import time
 import concurrent.futures
 import os
@@ -298,6 +298,7 @@ class DWBAResult:
     
     # Detailed Breakdown
     partial_waves: Dict[str, float] = None 
+    metadata: Optional[Dict[str, Any]] = None
 
 
 def _worker_partial_wave(
@@ -495,6 +496,86 @@ def _pick_bound_orbital(orbs: Tuple[BoundOrbital, ...], n_index_wanted: int) -> 
             return o
     raise ValueError(f"Requested bound state n_index={n_index_wanted} not found.")
 
+
+def _radial_quantile_radius(
+    grid: RadialGrid,
+    u_of_r: np.ndarray,
+    quantile: float = 0.95
+) -> float:
+    """
+    Estimate radial support of a bound orbital from cumulative probability.
+
+    Parameters
+    ----------
+    grid : RadialGrid
+        Radial grid with trapezoidal weights.
+    u_of_r : np.ndarray
+        Reduced radial function u(r), normalized so ∫|u|²dr = 1.
+    quantile : float
+        CDF quantile in [0, 1], e.g. 0.95 for r_95.
+    """
+    if u_of_r.shape != grid.r.shape:
+        return float(grid.r[-1])
+
+    q = float(np.clip(quantile, 0.5, 0.999))
+    prob = np.maximum(np.abs(u_of_r) ** 2, 0.0)
+    cdf = np.cumsum(prob * grid.w_trapz)
+    total = float(cdf[-1]) if cdf.size else 0.0
+
+    if not np.isfinite(total) or total <= 1e-30:
+        return float(grid.r[-1])
+
+    idx = int(np.searchsorted(cdf, q * total, side="left"))
+    idx = max(0, min(idx, len(grid.r) - 1))
+    return float(grid.r[idx])
+
+
+def _auto_L_max_integrals_qr(
+    grid: RadialGrid,
+    orb_i: BoundOrbital,
+    orb_f: BoundOrbital,
+    k_i_au: float,
+    k_f_au: float,
+    l_i: int,
+    l_f: int,
+    L_floor: int = 8,
+    L_cap: int = 40,
+    radial_quantile: float = 0.95,
+    L_buffer: float = 3.0,
+) -> tuple[int, Dict[str, float]]:
+    """
+    Physics-motivated multipole cutoff for Coulomb expansion.
+
+    Rationale:
+    - In scattering theory, angular content scales with q*R from spherical
+      expansions (e.g. e^{iq·r} = Σ (2L+1)i^L j_L(qr)P_L).
+    - Significant multipoles satisfy roughly L ≲ q*R, where q=|k_i-k_f| and
+      R is the transition-region radius.
+    - Here R is estimated from bound-state support (r_95 of |u|²).
+    """
+    q_transfer = float(abs(k_i_au - k_f_au))
+    r95_i = _radial_quantile_radius(grid, orb_i.u_of_r, quantile=radial_quantile)
+    r95_f = _radial_quantile_radius(grid, orb_f.u_of_r, quantile=radial_quantile)
+    R_eff = max(r95_i, r95_f)
+
+    L_qr = int(np.ceil(q_transfer * R_eff + L_buffer))
+    dipole_bonus = 2 if abs(l_f - l_i) == 1 else 0
+    L_est = L_qr + dipole_bonus
+    L_used = int(np.clip(max(int(L_floor), L_est), 3, int(L_cap)))
+
+    return L_used, {
+        "q_transfer_au": q_transfer,
+        "r95_i_au": float(r95_i),
+        "r95_f_au": float(r95_f),
+        "R_eff_au": float(R_eff),
+        "L_qr": int(L_qr),
+        "L_dipole_bonus": int(dipole_bonus),
+        "L_est": int(L_est),
+        "L_floor": int(L_floor),
+        "L_cap": int(L_cap),
+        "L_used": int(L_used),
+    }
+
 def compute_total_excitation_cs(
     E_incident_eV: float,
     chan: ExcitationChannelSpec,
@@ -558,6 +639,44 @@ def compute_total_excitation_cs(
     k_i_au = float(k_from_E_eV(E_incident_eV))
     k_f_au = float(k_from_E_eV(E_final_eV))
     z_ion = core_params.Zc - 1.0
+
+    # Resolve multipole expansion cutoff for Coulomb integrals.
+    # Fixed int keeps legacy behavior. "auto" enables qR-based estimate.
+    L_int_requested_raw = chan.L_max_integrals
+    L_int_auto_meta = None
+    if isinstance(L_int_requested_raw, str):
+        if L_int_requested_raw.strip().lower() != "auto":
+            raise ValueError(f"Unsupported L_max_integrals value: {L_int_requested_raw!r}. Use int or 'auto'.")
+        L_int_floor = max(8, abs(chan.l_f - chan.l_i) + 6)
+        L_int_used, L_int_auto_meta = _auto_L_max_integrals_qr(
+            grid=grid,
+            orb_i=orb_i,
+            orb_f=orb_f,
+            k_i_au=k_i_au,
+            k_f_au=k_f_au,
+            l_i=chan.l_i,
+            l_f=chan.l_f,
+            L_floor=L_int_floor,
+            L_cap=40,
+            radial_quantile=0.95,
+            L_buffer=3.0,
+        )
+        logger.info(
+            "Auto-Lint       | q=%.3f, R_eff=%.2f a.u. -> L_int=%d (qr=%d, floor=%d, cap=%d)",
+            L_int_auto_meta["q_transfer_au"],
+            L_int_auto_meta["R_eff_au"],
+            L_int_used,
+            L_int_auto_meta["L_qr"],
+            L_int_auto_meta["L_floor"],
+            L_int_auto_meta["L_cap"],
+        )
+    else:
+        L_int_used = int(L_int_requested_raw)
+
+    if L_int_used < 1:
+        raise ValueError(f"L_max_integrals must be >= 1, got {L_int_used}")
+
+    chan = replace(chan, L_max_integrals=L_int_used)
 
     # 4. Distorting Potentials
     # Article Eq. 456-463: Static potentials U_j = V_core + V_Hartree
@@ -623,33 +742,24 @@ def compute_total_excitation_cs(
     # R_eff ~ 8 a.u. typical for low excited states, buffer +5
     L_dynamic = int(k_i_au * 8.0) + 5
     
-    # Use the minimum of:
-    # 1. User requested (chan.L_max_projectile) - can be explicit ceiling for pilot
-    # 2. Dynamic estimate (convergence requirement)  
-    # 3. Turning point limit (physical constraint from r_max)
-    #
-    # Note: If user explicitly set a higher L_max, use that (for production).
-    # If user explicitly set a lower L_max (like pilot mode), respect that as ceiling.
-    if L_requested >= L_dynamic:
-        # User wants MORE than dynamic estimate - trust user (production)
-        L_max_proj = min(L_requested, L_turning_point)
-    else:
-        # User set lower explicit value (e.g., pilot speed) - respect ceiling
-        # But warn if convergence might be affected
-        L_max_proj = L_requested
-        if L_dynamic > L_requested + 10:
-            logger.debug("L_max=%d (user) may be insufficient for convergence (L_dynamic=%d). "
-                        "Increase if results unstable.", L_requested, L_dynamic)
+    # Treat user value as a BASE (floor), not a hard ceiling.
+    # Runtime target is max(base, dynamic), then constrained by turning-point physics.
+    L_target = max(L_requested, L_dynamic)
+    L_max_proj = min(L_target, L_turning_point)
     
     # Hard cap for extreme cases (prevents runaway computation)
     L_max_proj = min(L_max_proj, 100)
     
-    logger.debug("Auto-L: E=%.1f eV (k=%.2f, r_max=%.0f) -> L_max_proj=%d (turning_pt=%d)", 
-                E_incident_eV, k_i_au, r_max_actual, L_max_proj, L_turning_point)
+    logger.debug(
+        "Auto-L: E=%.1f eV (k=%.2f, r_max=%.0f) -> L_base=%d, L_dynamic=%d, L_target=%d, L_max_proj=%d (turning_pt=%d)",
+        E_incident_eV, k_i_au, r_max_actual, L_requested, L_dynamic, L_target, L_max_proj, L_turning_point
+    )
     
-    if L_max_proj < L_dynamic:
-        logger.debug("L_max=%d limited by turning point (need r_max~%.0f for L=%d).",
-                       L_max_proj, compute_required_r_max(k_i_au, L_dynamic), L_dynamic)
+    if L_max_proj < L_target:
+        logger.warning(
+            "L_max limited by turning point/grid: using L=%d vs target L=%d (need r_max~%.0f for L=%d).",
+            L_max_proj, L_target, compute_required_r_max(k_i_au, L_target), L_target
+        )
 
     
     # --- Execution Strategy Selection ---
@@ -664,6 +774,10 @@ def compute_total_excitation_cs(
     log_calculation_params("GPU" if USE_GPU else "CPU Parallel", L_max_proj)
 
     partial_waves_dict = {} # Initialize for both paths
+
+    stop_reason_global = None
+    stop_L_global = None
+    skipped_li_count = 0
 
     if USE_GPU:
         # Sequential Loop, but with fast GPU integrals
@@ -716,7 +830,13 @@ def compute_total_excitation_cs(
                 # Fallback if precalc missed it (rare)
                 chi_i = solve_continuum_wave(grid, U_i, l_i, E_incident_eV, z_ion) 
             
-            if chi_i is None: break
+            if chi_i is None:
+                skipped_li_count += 1
+                if skipped_li_count <= 3:
+                    logger.warning("Skipping l_i=%d: failed to solve incoming continuum wave (chi_i).", l_i)
+                else:
+                    logger.debug("Skipping l_i=%d: failed to solve incoming continuum wave (chi_i).", l_i)
+                continue
             
             lf_min = 0
             lf_max = max(L_max_proj, l_i + chan.L_max_integrals)
@@ -867,6 +987,8 @@ def compute_total_excitation_cs(
 
             if stop_reason:
                 logger.info("Stopping partial wave sum at L=%d: %s", l_i, stop_reason)
+                stop_reason_global = stop_reason
+                stop_L_global = l_i
                 break
 
             # Compute TOTAL DCS snapshot AFTER adding current l_i.
@@ -904,6 +1026,8 @@ def compute_total_excitation_cs(
 
             if stop_reason:
                 logger.info("Stopping partial wave sum at L=%d: %s", l_i, stop_reason)
+                stop_reason_global = stop_reason
+                stop_L_global = l_i
                 break
 
         # === END OF GPU BLOCK: Cleanup cache ===
@@ -984,8 +1108,10 @@ def compute_total_excitation_cs(
                     if snap_sigma > 1e-40 and rel_change < convergence_threshold:
                          # Need to be sure it's not jsut a lucky flat spot.
                          # Since batch is ~10-20 waves, if change over 20 waves is tiny, we are done.
-                         logger.info("Convergence: Auto-stop at batch end l=%d", l_end-1)
-                         pool_running = False
+                        logger.info("Convergence: Auto-stop at batch end l=%d", l_end-1)
+                        stop_reason_global = "Converged: small relative sigma change across batch"
+                        stop_L_global = l_end - 1
+                        pool_running = False
                          
                     current_l = l_end
 
@@ -997,6 +1123,9 @@ def compute_total_excitation_cs(
         except Exception as e:
              logger.error("Pool Execution Failed: %s", e)
              raise
+
+    if skipped_li_count > 0:
+        logger.warning("Skipped %d projectile partial waves due to chi_i solve failures.", skipped_li_count)
 
     logger.info("Summation complete in %.3f s", time.perf_counter() - t0)
 
@@ -1150,14 +1279,36 @@ def compute_total_excitation_cs(
         trans_type = "E1 (dipole)" if is_dipole_allowed else "Forbidden"
         logger.info("Top-Up          | Not applied (%s transition, no suitable decay)", trans_type)
 
+    l_indices = sorted(
+        int(k[1:]) for k in partial_waves_dict.keys()
+        if k.startswith("L") and k[1:].isdigit()
+    )
+    l_max_summed = l_indices[-1] if l_indices else -1
+    runtime_metadata = {
+        "L_max_integrals_requested": L_int_requested_raw if isinstance(L_int_requested_raw, str) else int(L_int_requested_raw),
+        "L_max_integrals_used": int(L_int_used),
+        "L_max_projectile_base": int(L_requested),
+        "L_dynamic_required": int(L_dynamic),
+        "L_max_projectile_target": int(L_target),
+        "L_max_turning_point_limit": int(L_turning_point),
+        "L_max_projectile_used": int(L_max_proj),
+        "L_max_projectile_summed": int(l_max_summed),
+        "n_projectile_partial_waves_summed": int(len(l_indices)),
+        "n_projectile_partial_waves_skipped": int(skipped_li_count),
+        "summation_stop_reason": stop_reason_global or "Reached configured/runtime L_max",
+        "summation_stop_L": int(stop_L_global if stop_L_global is not None else L_max_proj),
+    }
+    if L_int_auto_meta is not None:
+        runtime_metadata["L_max_integrals_auto"] = L_int_auto_meta
+
     return DWBAResult(
         True, E_incident_eV, dE_target_eV,
         sigma_total_au, sigma_total_cm2,
         k_i_au, k_f_au,
         theta_grid * 180.0 / np.pi,
         total_dcs,
-
-        partial_waves_dict
+        partial_waves_dict,
+        runtime_metadata
     )
 
 # --- Optimized Pre-calculation Interface ---
@@ -1256,7 +1407,6 @@ def compute_excitation_cs_precalc(
     chan = prep.chan
     if L_max_integrals_override is not None or L_max_projectile_override is not None:
         # Create modified ChannelSpec for pilot light mode
-        from dataclasses import replace
         chan = replace(
             prep.chan,
             L_max_integrals=L_max_integrals_override or prep.chan.L_max_integrals,

@@ -380,7 +380,7 @@ def log_active_configuration(params: dict, context: str = "calculation") -> None
     # Excitation-specific
     if 'excitation' in params:
         e = params['excitation']
-        logger.info("Excitation: L_max_int=%d, L_max_proj=%d, n_theta=%d",
+        logger.info("Excitation: L_max_int=%s, L_max_proj=%d, n_theta=%d",
                    e.get('L_max_integrals', 15), e.get('L_max_projectile', 5), 
                    e.get('n_theta', 200))
     
@@ -546,6 +546,33 @@ def generate_flexible_energy_grid(start_eV: float, end_eV: float, density_factor
     
     # Ensure they are unique and sorted (geomspace should be, but safety first)
     return np.unique(np.round(energies, 3))
+
+
+def build_energy_grid_above_threshold(
+    energy_grid,
+    threshold_eV: float,
+    energy_type: str | None = None,
+    log_end_eV: float | None = None,
+    log_density: float = 1.0,
+    threshold_margin_eV: float = 0.5,
+) -> tuple[list[float], bool]:
+    """
+    Ensure batch energy grid is physically above threshold.
+
+    For log grids, if user-provided start includes sub-threshold points, regenerate
+    the log grid from (threshold + margin) to preserve intended log-point density,
+    matching interactive behavior.
+    """
+    arr = np.asarray(energy_grid, dtype=float)
+    regenerated = False
+
+    if energy_type == "log" and log_end_eV is not None and np.any(arr <= threshold_eV):
+        new_start = threshold_eV + threshold_margin_eV
+        arr = generate_flexible_energy_grid(new_start, log_end_eV, log_density)
+        regenerated = True
+
+    filtered = [float(E) for E in arr if E > threshold_eV]
+    return filtered, regenerated
 
 
 def get_energy_list_interactive() -> np.ndarray | tuple:
@@ -1107,6 +1134,7 @@ def run_scan_excitation(run_name) -> None:
                     else:
                         dcs_cal_au = None
 
+                runtime_meta = dict(res.metadata or {})
                 results.append({
                     "energy_eV": E,
                     "sigma_au": res.sigma_total_au,
@@ -1118,7 +1146,15 @@ def run_scan_excitation(run_name) -> None:
                     "dcs_au_raw": dcs_raw_au,
                     "dcs_au_calibrated": dcs_cal_au,
                     "partial_waves": res.partial_waves,
-                    "meta": run_meta
+                    "L_max_integrals_used": runtime_meta.get("L_max_integrals_used"),
+                    "L_max_projectile_used": runtime_meta.get("L_max_projectile_used"),
+                    "L_dynamic_required": runtime_meta.get("L_dynamic_required"),
+                    "maxL_in_result": runtime_meta.get("L_max_projectile_summed"),
+                    "n_projectile_partial_waves_summed": runtime_meta.get("n_projectile_partial_waves_summed"),
+                    "meta": {
+                        **run_meta,
+                        "runtime": runtime_meta,
+                    }
                 })
                 
             except Exception as e:
@@ -1825,8 +1861,14 @@ def run_pilot_calibration(
             pilot_L_proj = int(pilot_L_proj_cfg)
         
         if pilot_L_int_cfg == 'auto':
-            # L_max for multipole expansion: typically L_proj/4, capped at 25 for efficiency
-            pilot_L_int = max(spec.L_max_integrals, min(25, pilot_L_proj // 4))
+            # L_max for multipole expansion: typically L_proj/4, capped at 25 for efficiency.
+            # If production config uses L_max_integrals="auto", use a conservative floor.
+            spec_lint_base = spec.L_max_integrals
+            if isinstance(spec_lint_base, str):
+                spec_lint_floor = 8 if spec_lint_base.strip().lower() == "auto" else 15
+            else:
+                spec_lint_floor = int(spec_lint_base)
+            pilot_L_int = max(spec_lint_floor, min(25, pilot_L_proj // 4))
         else:
             pilot_L_int = int(pilot_L_int_cfg)
         
@@ -2040,11 +2082,23 @@ def run_from_config(config_path: str, verbose: bool = False) -> None:
         delta_l = abs(lf - li)
         t_class = "dipole" if delta_l == 1 else "non_dipole"
         
-        # Filter energies below threshold
-        energies = [E for E in energy_grid if E > threshold_eV]
+        # Filter energies below threshold (regenerate log-grid if needed)
+        energies, log_regenerated = build_energy_grid_above_threshold(
+            energy_grid,
+            threshold_eV,
+            energy_type=config.energy.type,
+            log_end_eV=config.energy.end_eV,
+            log_density=config.energy.density,
+            threshold_margin_eV=0.5,
+        )
         if not energies:
             print_error("All energies are below threshold!")
             return
+        if log_regenerated:
+            logger.info(
+                "Energy Grid     | LOG regenerated above threshold: %d points (%.1f - %.1f eV)",
+                len(energies), energies[0], energies[-1]
+            )
 
         # --- Initialize calibrator ---
         alpha = 1.0
@@ -2186,6 +2240,7 @@ def run_from_config(config_path: str, verbose: bool = False) -> None:
                         dcs_cal_au = (res.dcs_au * cal_factor).tolist()
 
                     # Result entry (IDENTICAL format to interactive)
+                    runtime_meta = dict(res.metadata or {})
                     results.append({
                         "energy_eV": E,
                         "sigma_au": res.sigma_total_au,
@@ -2197,7 +2252,15 @@ def run_from_config(config_path: str, verbose: bool = False) -> None:
                         "dcs_au_raw": dcs_raw_au,
                         "dcs_au_calibrated": dcs_cal_au,
                         "partial_waves": res.partial_waves,
-                        "meta": run_meta
+                        "L_max_integrals_used": runtime_meta.get("L_max_integrals_used"),
+                        "L_max_projectile_used": runtime_meta.get("L_max_projectile_used"),
+                        "L_dynamic_required": runtime_meta.get("L_dynamic_required"),
+                        "maxL_in_result": runtime_meta.get("L_max_projectile_summed"),
+                        "n_projectile_partial_waves_summed": runtime_meta.get("n_projectile_partial_waves_summed"),
+                        "meta": {
+                            **run_meta,
+                            "runtime": runtime_meta,
+                        }
                     })
                     
                 except Exception as e:
@@ -2265,11 +2328,23 @@ def run_from_config(config_path: str, verbose: bool = False) -> None:
         
         print(f"  Ionization potential: {threshold_eV:.2f} eV")
         
-        # Filter energies
-        energies = [E for E in energy_grid if E > threshold_eV]
+        # Filter energies (regenerate log-grid if needed)
+        energies, log_regenerated = build_energy_grid_above_threshold(
+            energy_grid,
+            threshold_eV,
+            energy_type=config.energy.type,
+            log_end_eV=config.energy.end_eV,
+            log_density=config.energy.density,
+            threshold_margin_eV=0.5,
+        )
         if not energies:
             print_error("All energies are below ionization threshold!")
             return
+        if log_regenerated:
+            logger.info(
+                "Energy Grid     | LOG regenerated above ionization threshold: %d points (%.1f - %.1f eV)",
+                len(energies), energies[0], energies[-1]
+            )
         
         print(f"  Grid: {len(energies)} points above threshold")
         

@@ -22,44 +22,45 @@ physics:
 
 energy:
   type: "log"            # Grid type: "single", "linear", "log", "list"
-  start_eV: 10.2         # [eV] Start energy (just above threshold for 1s→2s)
+  start_eV: 10.7         # [eV] Start energy (threshold+margin for H 1s→2s)
   end_eV: 300.0          # [eV] End energy
-  density: 0.5           # [dimensionless] Log grid density (0.5 = sparser, 1.0 = normal)
+  density: 1.0           # [dimensionless] Log grid density (1.0 = balanced quality)
 
 grid:
-  strategy: "global"     # "manual" = fixed params, "global" = adaptive for E_min (recommended), "local" = per-energy
-  r_max: 200             # [a.u.] Maximum radial extent (for manual; base value for adaptive)
-  n_points: 1000         # [count] Base grid points (for manual; minimum for adaptive modes)
-  r_max_scale_factor: 2.5  # [dimensionless] Safety factor for turning point criterion
-  n_points_max: 15000    # [count] Maximum allowed grid points (caps adaptive scaling)
-  min_points_per_wavelength: 15  # [count] Minimum pts/λ for high-E (v2.7+). Set to 0 to disable.
+  strategy: "local"      # "manual" = fixed params, "global" = adaptive for E_min, "local" = per-energy (best quality)
+  r_max: "auto"          # [a.u.] Use physics-based auto scaling in adaptive modes
+  n_points: 1500         # [count] Base grid points (minimum for adaptive modes)
+  r_max_scale_factor: 2.8  # [dimensionless] More conservative turning-point margin for quality
+  n_points_max: 20000    # [count] Maximum allowed grid points (caps adaptive scaling)
+  min_points_per_wavelength: 18  # [count] Higher sampling at high energy
 
 excitation:
   # Production parameters
-  L_max_integrals: 15    # [dimensionless] Max multipole L in 1/r₁₂ Coulomb expansion
-  L_max_projectile: 5    # [dimensionless] Base partial wave L_max (auto-scaled at high E)
-  n_theta: 200           # [count] Angular grid points for DCS integration
+  L_max_integrals: "auto" # [dimensionless] int (fixed) or "auto" (qR-based physically scaled cutoff)
+  L_max_projectile: 8    # [dimensionless] Base projectile L; runtime still auto-raises with energy
+  n_theta: 241           # [count] Angular grid points for DCS integration
   pilot_energy_eV: 1000  # [eV] Calibration pilot energy for Tong model
   # Pilot light mode (v2.5+) - "auto" = dynamic scaling based on energy, int = explicit value
-  # Note (v2.7+): "auto" calculates L_max from k*r_max to ensure convergence at high energies
-  pilot_L_max_integrals: "auto"    # "auto" or int (e.g., 8)
-  pilot_L_max_projectile: "auto"   # "auto" or int (e.g., 30)
-  pilot_n_theta: 50                # [count] TCS only, DCS not needed
+  # Note: Production projectile L_max is already dynamic in runtime; pilot uses explicit auto policy.
+  pilot_L_max_integrals: "auto"    # "auto" or int
+  pilot_L_max_projectile: "auto"   # "auto" or int
+  pilot_n_theta: 80                # [count] Pilot TCS quality
 
 oscillatory:
-  method: "advanced"             # "legacy" | "advanced" | "full_split"
-  CC_nodes: 5                    # [count] Clenshaw-Curtis nodes per interval
+  method: "full_split"           # "legacy" | "advanced" | "full_split" (best quality)
+  CC_nodes: 7                    # [count] Clenshaw-Curtis nodes per interval
   phase_increment: 1.5708        # [rad] Phase increment (π/2) per sub-interval
   min_grid_fraction: 0.1         # [dimensionless] Minimum match point as fraction of grid
   k_threshold: 0.5               # [a.u.] Total momentum threshold for Filon/Levin switch
-  # GPU Configuration (v2.5+)
+  max_chi_cached: 20             # [count] LRU cache size for continuum waves on GPU
+  phase_extraction: "hybrid"     # [v2.11+] "hybrid", "logderiv", or "lsq"
+  solver: "rk45"                 # [v2.13+] "auto", "rk45" (recommended), "johnson", "numerov"
+
+hardware:
   gpu_block_size: "auto"         # "auto" = auto-tune based on VRAM, int = explicit size
   gpu_memory_mode: "auto"        # "auto" (smart), "full" (fast), "block" (safe)
-  gpu_memory_threshold: 0.8      # [dimensionless] Max VRAM fraction to use
-  max_chi_cached: 20             # [count] LRU cache size for continuum waves on GPU
-  n_workers: "auto"              # "auto" (balanced), "max" (all cores), or int count
-  phase_extraction: "hybrid"     # [v2.11+] "hybrid", "logderiv", or "lsq"
-  solver: "rk45"                  # [v2.13+] "auto", "rk45" (recommended), "johnson", "numerov"
+  gpu_memory_threshold: 0.75     # [dimensionless] Slightly safer margin for mixed desktop usage
+  n_workers: "max"               # "auto" (balanced), "max" (all cores), or int count
 
 output:
   save_dcs: true                 # Save differential cross section

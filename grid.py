@@ -227,6 +227,15 @@ def validate_high_energy(E_eV: float, L_max: int = 0, r_max: float = 200.0,
             warnings.append(
                 f"L_max={L_max} exceeds turning point limit ({L_safe}) for r_max={r_max:.0f} a.u. at k={k:.2f}."
             )
+        # Match runtime excitation heuristic (driver.py): L_dynamic ~= k*8 + 5.
+        # Here L_max is the configured base value, so warn when it is far below the
+        # dynamic requirement at the highest scan energy.
+        L_dynamic = int(k * 8.0) + 5
+        if L_max + 5 < L_dynamic:
+            warnings.append(
+                f"L_max={L_max} is likely too low at {E_eV:.1f} eV (dynamic target ~{L_dynamic}). "
+                "Runtime will raise toward this target, but convergence may still be limited by r_max."
+            )
     
     return warnings
 

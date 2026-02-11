@@ -4,6 +4,91 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [v2.31] — 2026-02-12 — Physics-Based Auto Multipole Cutoff for Excitation
+
+### Added
+
+**Production `L_max_integrals: "auto"`** (`driver.py`, `config_loader.py`)
+- Excitation now supports `L_max_integrals` as either:
+  - fixed integer (legacy behavior), or
+  - `"auto"` using a physics-based `q·R` estimate.
+- Auto mode computes multipole cutoff from:
+  - momentum transfer `q = |k_i - k_f|`,
+  - transition-region radius `R` estimated from bound-state `r_95`,
+  - dipole bonus and safety floor/cap.
+- Added runtime metadata fields:
+  - `L_max_integrals_requested`,
+  - `L_max_integrals_used`,
+  - `L_max_integrals_auto` (diagnostic components for the estimate).
+
+### Changed
+
+- Batch/config validation now accepts `excitation.L_max_integrals: "auto"`.
+- Pilot auto path is robust when production config uses `L_max_integrals="auto"`.
+- Updated excitation example config to demonstrate production auto multipole scaling.
+
+### Documentation
+
+- Updated `README.md` parameter reference and notes for `L_max_integrals: "auto"` and its `q·R` rationale.
+
+## [v2.30] — 2026-02-12 — Example Config Refresh (Quality-Oriented Baseline)
+
+### Documentation / UX
+
+**Updated example YAML templates** (`examples/config_excitation.yaml`, `examples/config_ionization.yaml`)
+- Refreshed examples to current recommended baseline focused on numerical quality:
+  - adaptive `grid.strategy: "local"` with `r_max: "auto"`,
+  - stronger grid safety/sampling (`r_max_scale_factor=2.8`, `min_points_per_wavelength=18`, higher `n_points_max`),
+  - richer angular/partial-wave settings for production-like quality.
+- Moved GPU/CPU execution controls to the dedicated `hardware:` section (while keeping oscillatory section focused on quadrature/phase).
+- Updated ionization example to set `output.calibrate: false` (calibration applies to excitation, not ionization).
+
+## [v2.29] — 2026-02-12 — Batch Log-Grid Threshold Regeneration Parity
+
+### Fixed
+
+**Batch/config energy-grid behavior aligned with interactive mode** (`DW_main.py`)
+- Added shared helper `build_energy_grid_above_threshold(...)`.
+- For `energy.type: "log"`, when configured start includes sub-threshold points, batch mode now regenerates the log grid above threshold (with the same margin strategy as interactive mode) instead of only dropping points.
+- Applied in both excitation and ionization batch flows.
+- Added explicit INFO log when regeneration is applied, including resulting point count and energy range.
+
+### Documentation
+
+- Updated `README.md` performance notes with batch log-grid thresholding behavior.
+
+## [v2.28] — 2026-02-11 — Partial-Wave Runtime Guardrails and Result Metadata
+
+### Critical Fixes
+
+**Excitation `L_max_projectile` semantics restored** (`driver.py`)
+- Runtime projectile limit now treats config `L_max_projectile` as a **base/floor**.
+- Effective target uses `max(L_max_projectile, k*8+5)` and is then constrained by turning-point physics (`r_max`) and hard safety cap.
+- Removes unintended low-`L` truncation when user base value was below dynamic requirement.
+
+**GPU loop robustness for `chi_i` failures** (`driver.py`)
+- Replaced premature `break` on `chi_i is None` with per-`l_i` `continue`.
+- Added skip counters and summary logging to avoid aborting full summation because of a single failed incoming wave.
+
+### Diagnostics / Metadata
+
+**Per-energy runtime L metadata in excitation outputs** (`driver.py`, `DW_main.py`)
+- Added runtime metadata to `DWBAResult` (`metadata` field).
+- Excitation JSON entries now include:
+  - `L_max_projectile_used`
+  - `L_dynamic_required`
+  - `maxL_in_result`
+  - `n_projectile_partial_waves_summed`
+  - extended diagnostics under `meta.runtime` (targets/limits, stop reason, skipped waves).
+
+**High-energy validation warning for low configured `L_max`** (`grid.py`)
+- `validate_high_energy(...)` now warns when configured `L_max` is significantly below dynamic runtime target (`k*8+5`) at scan high end.
+
+### Documentation
+
+- Updated `README.md` parameter reference to clarify `L_max_projectile` floor semantics and turning-point-limited runtime behavior.
+- Documented new excitation output metadata fields for partial-wave auditing.
+
 ## [v2.27] — 2026-02-11 — Debug Suite Cleanup and Deep-Tool Integration
 
 ### Debug

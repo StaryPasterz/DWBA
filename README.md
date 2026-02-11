@@ -359,13 +359,18 @@ All numerical defaults are organized by category and displayed before calculatio
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `L_max_integrals` | 15 | Maximum multipole order L for radial Coulomb integrals. |
-| `L_max_projectile` | 5 | Base partial wave $L_{max}$ for projectile. Automatically increased relative to $k \cdot r_{max}$ at runtime. |
+| `L_max_integrals` | 15 | Maximum multipole order `L` for radial Coulomb integrals (`int`) or `"auto"` (physics-based `q·R` estimate with safety floor/cap, excitation). |
+| `L_max_projectile` | 5 | Base (minimum) projectile partial-wave limit. Runtime target is `max(L_max_projectile, k*8+5)` and is then limited by turning-point/grid constraints. |
 | `n_theta` | 200 | Number of scattering angle points for DCS calculation ($0^\circ-180^\circ$). |
 | `pilot_energy_eV` | 1000 | Reference energy for pre-calculating calibration $\alpha$. |
 | `pilot_L_max_integrals` | `"auto"` | Dynamically scales based on `k × r_max × 0.6` |
 | `pilot_L_max_projectile`| `"auto"` | Dynamically scales based on `k × r_max × 0.6` |
 | `pilot_n_theta` | 50 | Angular grid for pilot run (TCS only). |
+
+`L_max_integrals: "auto"` follows a physical `q·R` rule of thumb for multipole content:
+- `q = |k_i - k_f|` (momentum transfer),
+- `R` from bound-state radial support (`r_95`),
+- then `L_int` is chosen from `qR` with dipole/safety corrections and bounded cap.
 
 ### Ionization Parameters
 
@@ -474,6 +479,14 @@ enabled only when enough active moments are detected (`DWBA_OUTER_BATCH_MIN_ACTI
 falls back automatically to the legacy per-`L` outer-tail integration on failure.
 
 Outputs: `results_<run>_exc.json`, `results_<run>_ion.json` in project root. Excitation entries include angular grids (`theta_deg`) and both raw/calibrated DCS in a.u. for later plotting. Ionization entries include SDCS data and optional TDCS entries (`angles_deg`, `values`).
+
+Excitation JSON entries now also store runtime convergence metadata:
+- `L_max_integrals_used` - effective multipole cutoff used in radial Coulomb integrals
+- `L_max_projectile_used` - effective projectile `L_max` after dynamic/turning-point logic
+- `L_dynamic_required` - dynamic estimate (`k*8+5`) at the given energy
+- `maxL_in_result` - largest actually summed `L` present in `partial_waves`
+- `n_projectile_partial_waves_summed` - number of summed projectile partial waves
+- `meta.runtime` - extended runtime diagnostics (`L` targets/limits, stop reason, skipped waves)
 
 ## Atom Library (`atoms.json`)
 
@@ -870,6 +883,7 @@ integrals = radial_ME_all_L(
 ### General Performance Tips
 
 - **Near-threshold**: Grid auto-scales, but consider using log energy grid
+- **Batch log-grid thresholding**: In YAML/config runs, `energy.type: log` is regenerated above threshold when needed (instead of only filtering), keeping comparable point density.
 - **keV energies**: Ensure sufficient `L_max_projectile`
 - **Turning point warning**: Logs show when L_max is limited; r_max is auto-increased
 - **GPU**: Install CuPy for 5-10× speedup on radial integrals (auto-detected)

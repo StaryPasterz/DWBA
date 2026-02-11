@@ -77,7 +77,7 @@ class GridConfig:
 class ExcitationConfig:
     """Excitation-specific parameters."""
     # Production parameters
-    L_max_integrals: int = 15
+    L_max_integrals: Union[int, str] = 15  # int (fixed) or "auto" (qR-based estimate)
     L_max_projectile: int = 5
     n_theta: int = 200
     pilot_energy_eV: float = 1000.0
@@ -422,6 +422,19 @@ def validate_config(config: DWBAConfig) -> List[str]:
     # Oscillatory
     if config.oscillatory.method not in ("legacy", "advanced", "full_split"):
         errors.append(f"Invalid oscillatory method: '{config.oscillatory.method}'")
+
+    # Excitation multipole cutoff
+    ex_lint = config.excitation.L_max_integrals
+    if isinstance(ex_lint, str):
+        if ex_lint.strip().lower() != "auto":
+            errors.append(f"excitation.L_max_integrals must be int or 'auto', got '{ex_lint}'")
+    else:
+        try:
+            ex_lint_int = int(ex_lint)
+            if ex_lint_int < 1:
+                errors.append(f"excitation.L_max_integrals must be >= 1, got {ex_lint}")
+        except (TypeError, ValueError):
+            errors.append(f"excitation.L_max_integrals must be int or 'auto', got {ex_lint}")
     
     # Hardware
     if config.hardware.gpu_memory_mode not in ("auto", "full", "block"):
@@ -540,7 +553,7 @@ grid:
   min_points_per_wavelength: 15
 
 {calc_type}:
-  L_max_integrals: 15
+  L_max_integrals: 15   # int (fixed) or "auto" (excitation only, qR-based)
   L_max_projectile: 5
   n_theta: 200
   pilot_energy_eV: 1000
