@@ -24,6 +24,7 @@ import sys
 import time
 import json
 import traceback
+import runpy
 from dataclasses import dataclass, field, asdict
 from typing import List, Dict, Optional, Any, Tuple, Callable
 from contextlib import contextmanager
@@ -646,6 +647,18 @@ def quick_health_check() -> DiagnosticResult:
 # SPECIALIZED DIAGNOSTICS (from existing scripts)
 # =============================================================================
 
+def _run_external_script(script_path: str, label: str):
+    """
+    Execute an external debug script as __main__ with consistent error handling.
+    """
+    print(f"\n[INFO] Running {label}...")
+    try:
+        runpy.run_path(script_path, run_name="__main__")
+    except Exception as e:
+        print(f"[ERROR] {e}")
+        traceback.print_exc()
+
+
 def run_phase_extraction_diagnostic():
     """Run diag_phase_extraction.py - analyzes phase extraction for H 1s→2s."""
     print("\n[INFO] Running phase extraction diagnostic...")
@@ -754,30 +767,30 @@ def run_L0_L1_anomaly_diagnostic():
 
 def run_upturn_diagnostic():
     """Run diag_upturn.py"""
-    print("\n[INFO] Running upturn diagnostic (69.26 eV)...")
-    try:
-        exec(open("debug/diag_upturn.py").read())
-    except Exception as e:
-        print(f"[ERROR] {e}")
-        traceback.print_exc()
+    _run_external_script("debug/diag_upturn.py", "upturn diagnostic (69.26 eV)")
 
 def run_atoms_diagnostic():
     """Run diag_atoms.py"""
-    print("\n[INFO] Running multi-atom diagnostic...")
-    try:
-        exec(open("debug/diag_atoms.py").read())
-    except Exception as e:
-        print(f"[ERROR] {e}")
-        traceback.print_exc()
+    _run_external_script("debug/diag_atoms.py", "multi-atom diagnostic")
 
 def run_method_comparison():
     """Run diag_method_compare.py - compare oscillatory integral methods."""
-    print("\n[INFO] Running legacy vs advanced method comparison...")
-    try:
-        exec(open("debug/diag_method_compare.py").read())
-    except Exception as e:
-        print(f"[ERROR] {e}")
-        traceback.print_exc()
+    _run_external_script("debug/diag_method_compare.py", "legacy vs advanced method comparison")
+
+
+def run_phase_method_comparison_deep():
+    """Run full diagnostic from diag_phase_methods_compare.py."""
+    _run_external_script("debug/diag_phase_methods_compare.py", "deep phase-method comparison")
+
+
+def run_upturn_hypothesis_deep():
+    """Run deep upturn hypothesis test sweep."""
+    _run_external_script("debug/deep_hypothesis_test.py", "deep upturn hypotheses")
+
+
+def run_performance_profile():
+    """Run performance profiler script."""
+    _run_external_script("debug/profile_performance.py", "performance profiler")
 
 
 def run_all_diagnostics():
@@ -846,6 +859,10 @@ def print_menu():
     print(" 13. Cross Section Analysis")
     print(" 14. L0/L1 Anomaly Investigation")
     print(" 15. High-Energy Upturn Analysis")
+    print("\n[ADVANCED]")
+    print(" 16. Deep Phase-Method Comparison")
+    print(" 17. Deep Upturn Hypotheses")
+    print(" 18. Performance Profiler")
     print("\n[BATCH]")
     print(" 20. Run ALL Diagnostics")
     print("\n  q. Quit")
@@ -889,6 +906,12 @@ def main():
                 run_L0_L1_anomaly_diagnostic()
             elif choice == '15':
                 run_upturn_diagnostic()
+            elif choice == '16':
+                run_phase_method_comparison_deep()
+            elif choice == '17':
+                run_upturn_hypothesis_deep()
+            elif choice == '18':
+                run_performance_profile()
             elif choice == '20':
                 run_all_diagnostics()
             elif choice == 'q':

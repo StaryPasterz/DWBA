@@ -4,6 +4,44 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [v2.27] — 2026-02-11 — Debug Suite Cleanup and Deep-Tool Integration
+
+### Debug
+
+**Integrated external deep diagnostics into `debug/debug.py` menu**
+- Added unified external-script runner via `runpy` for better error handling and consistency.
+- Added menu entries for:
+  - deep phase-method comparison (`debug/diag_phase_methods_compare.py`),
+  - deep upturn hypothesis sweep (`debug/deep_hypothesis_test.py`),
+  - performance profiling (`debug/profile_performance.py`).
+
+**Upturn diagnostic path fix**
+- Renamed `debug/diagnose_upturn.py` -> `debug/diag_upturn.py`.
+- Updated menu execution path to use the correct script name.
+
+**Debug-folder cleanup**
+- Removed obsolete/one-off scripts:
+  - `debug/check_gpu_mem.py`
+  - `debug/debug_high_l_phase.py`
+  - `debug/debug_match_point.py`
+  - `debug/deep_phase_analysis.py`
+  - `debug/test_adaptive_grid.py`
+  - `debug/test_auto_rmax.py`
+  - `debug/test_batch_filon.py`
+  - `debug/test_rmax_impact.py`
+  - `debug/test_single_segment.py`
+- Removed stale debug artifacts:
+  - `debug/run_gpu.log`
+  - `debug/test_output.txt`
+  - `debug/test_single_output.txt`
+  - `debug/profile_gpu.py` (incomplete local helper)
+
+### Documentation
+
+- Updated `README.md` diagnostic menu snapshot to match current `debug/debug.py` options.
+- Expanded script inventory with deep diagnostics and profiling tools.
+- Added ignore rules for debug artifacts in `.gitignore` (`debug/*.log`, `debug/*output*.txt`).
+
 ## [v2.26] — 2026-02-11 — Documentation Sync for Batch Outer-Tail and GPU Pool Hygiene
 
 ### Performance

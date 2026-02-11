@@ -2419,9 +2419,18 @@ def radial_ME_all_L_gpu(
         del filon_inv_gtr
     if 'filon_log_ratio' in locals() and filon_log_ratio is not None:
         del filon_log_ratio
-    # Release CuPy pool blocks that are no longer in use.
-    # Without this, the pool grows across repeated (l_i, l_f) calls
-    # and can exhaust device VRAM on consumer GPUs (e.g. 8 GB RTX 3070).
-    cp.get_default_memory_pool().free_all_blocks()
+    # Conditional pool cleanup: only release when pool pressure is high.
+    # Unconditional free_all_blocks() after every call kills GPU utilization
+    # (forces cudaMalloc/cudaFree instead of fast pool reuse).
+    # 70% of device VRAM threshold protects consumer GPUs from OOM while
+    # preserving pool reuse across the ~60 (l_i, l_f) calls per energy.
+    _pool = cp.get_default_memory_pool()
+    _pool_total = _pool.total_bytes()
+    if _pool_total > 0:
+        # Cache device total VRAM to avoid repeated sync-inducing mem_info calls
+        if not hasattr(radial_ME_all_L_gpu, '_dev_total_vram'):
+            _, radial_ME_all_L_gpu._dev_total_vram = cp.cuda.Device().mem_info
+        if _pool_total > 0.70 * radial_ME_all_L_gpu._dev_total_vram:
+            _pool.free_all_blocks()
 
     return RadialDWBAIntegrals(I_L_direct=I_L_dir, I_L_exchange=I_L_exc)

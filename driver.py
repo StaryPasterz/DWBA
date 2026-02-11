@@ -908,6 +908,12 @@ def compute_total_excitation_cs(
 
         # === END OF GPU BLOCK: Cleanup cache ===
         gpu_cache.clear()
+        # Full pool cleanup between energy points (safe: runs once per energy)
+        try:
+            import cupy as cp
+            cp.get_default_memory_pool().free_all_blocks()
+        except Exception:
+            pass
         logger.debug("GPU: Cache cleared at end of energy point")
 
     else:

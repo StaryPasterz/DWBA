@@ -575,30 +575,32 @@ DWBA COMPREHENSIVE DIAGNOSTIC SUITE
 [CONTINUUM WAVES]
   4. Continuum Wave Analysis    - Phase shifts, asymptotic amplitude
   5. Phase Extraction           - Multi-point phase stability diagnostic
-  6. High-L Stability Scan      - Scan up to L=30 for instabilities
+  6. Phase Method Comparison    - Fast built-in logderiv vs LSQ checks
+  7. High-L Stability Scan      - Scan up to L=30 for instabilities
 
 [POTENTIALS]
-  7. Potential Analysis         - Core potential V(r) and Z_eff(r)
-  8. Multi-Atom Comparison      - Compare H, Li, Na potentials
+  8. Potential Analysis         - Core potential V(r) and Z_eff(r)
+  9. Multi-Atom Comparison      - Compare H, Li, Na potentials
 
 [RADIAL INTEGRALS]
-  9. Radial Integral Breakdown  - I_L per multipole analysis
- 10. Method Comparison          - Legacy vs Advanced oscillatory methods
+ 10. Radial Integral Breakdown  - I_L per multipole analysis
+ 11. Method Comparison          - Legacy vs Advanced oscillatory methods
 
 [ANGULAR COUPLING]
- 11. Angular Coefficient Check  - Verify CG and Racah coefficients
+ 12. Angular Coefficient Check  - Verify CG and Racah coefficients
 
 [CROSS SECTIONS]
- 12. Cross Section Analysis     - σ(E) and partial wave contributions
- 13. L0/L1 Anomaly              - Investigate 11-17 eV anomaly
- 14. High-Energy Upturn         - Analyze 69.26 eV upturn phenomenon
+ 13. Cross Section Analysis     - σ(E) and partial wave contributions
+ 14. L0/L1 Anomaly              - Investigate 11-17 eV anomaly
+ 15. High-Energy Upturn         - Analyze 69.26 eV upturn phenomenon
 
-[FULL TRACES]
- 15. Full Physics Trace (Exc)   - Complete excitation pipeline trace
- 16. Full Physics Trace (Ion)   - Complete ionization pipeline trace
+[ADVANCED]
+ 16. Deep Phase-Method Comparison - Extended phase diagnostics and plots
+ 17. Deep Upturn Hypotheses       - Structured hypothesis stress tests
+ 18. Performance Profiler         - Stage timing breakdown for bottlenecks
 
 [BATCH]
- 20. Run ALL Diagnostics        - Execute all tests with summary
+  20. Run ALL Diagnostics        - Execute all tests with summary
 
   q. Quit
 ```
@@ -623,6 +625,10 @@ DWBA COMPREHENSIVE DIAGNOSTIC SUITE
 | `diag_atoms.py` | Multi-atom potential comparison |
 | `diag_oscillatory.py` | Oscillatory integral function tests |
 | `diag_partial_waves.py` | Analyze partial waves from result JSON |
+| `diag_phase_methods_compare.py` | Extended phase-method comparison with plots/statistics |
+| `deep_hypothesis_test.py` | Deep upturn hypothesis verification suite |
+| `profile_performance.py` | Coarse performance profiler (stage-level timings) |
+| `benchmark_gpu_ratio_policy.py` | GPU ratio-policy micro-benchmark (`off/auto/on`) |
 | `test_p1_p2_regression.py` | Regression checks for config scaling and convergence-order fix |
 
 
