@@ -468,6 +468,11 @@ The mode is logged once at the start of GPU calculations:
 GPU mode: Filon/full-matrix
 ```
 
+For excitation with `oscillatory_method=advanced` or `full_split`, outer-tail terms can be
+precomputed in batch across many multipoles `L` and reused in the GPU `L` loop. This path is
+enabled only when enough active moments are detected (`DWBA_OUTER_BATCH_MIN_ACTIVE`) and it
+falls back automatically to the legacy per-`L` outer-tail integration on failure.
+
 Outputs: `results_<run>_exc.json`, `results_<run>_ion.json` in project root. Excitation entries include angular grids (`theta_deg`) and both raw/calibrated DCS in a.u. for later plotting. Ionization entries include SDCS data and optional TDCS entries (`angles_deg`, `values`).
 
 ## Atom Library (`atoms.json`)
@@ -516,6 +521,8 @@ Optional runtime guards for very long outer-tail integrations:
 ```bash
 set DWBA_MAX_FILON_SEGMENTS=4096   # cap Filon phase segments per outer integral
 set DWBA_MAX_EFFECTIVE_DPHI=1.5708 # if cap is hit, increase Filon nodes to keep per-segment phase reasonable
+set DWBA_OUTER_BATCH_MIN_ACTIVE=4  # use batch outer-tail only if at least this many active multipoles
+set DWBA_OUTER_BATCH_MOMENT_TOL=1e-12 # skip tiny multipole moments in batch outer-tail
 set DWBA_OUTER_SLOW_WARN_S=20      # warn if single outer integral exceeds this time
 set DWBA_GPU_RATIO_POLICY=auto     # GPU ratio path: auto / on / off
 ```
@@ -523,9 +530,15 @@ Linux/Mac:
 ```bash
 export DWBA_MAX_FILON_SEGMENTS=4096
 export DWBA_MAX_EFFECTIVE_DPHI=1.5708
+export DWBA_OUTER_BATCH_MIN_ACTIVE=4
+export DWBA_OUTER_BATCH_MOMENT_TOL=1e-12
 export DWBA_OUTER_SLOW_WARN_S=20
 export DWBA_GPU_RATIO_POLICY=auto
 ```
+
+Batch outer-tail controls apply to excitation only (`advanced` / `full_split` paths):
+- `DWBA_OUTER_BATCH_MIN_ACTIVE`: minimum number of active `L>=1` moments needed to activate batching.
+- `DWBA_OUTER_BATCH_MOMENT_TOL`: absolute moment threshold below which multipoles are skipped.
 
 `DWBA_GPU_RATIO_POLICY` controls how `K_L` is built on GPU:
 - `off` -> legacy path `exp(L*log_ratio)` (lower VRAM pressure)
@@ -910,7 +923,9 @@ gpu_cache.clear()
 - Pre-computed ratio/log_ratio matrices for kernel construction
 - `DWBA_GPU_RATIO_POLICY`-driven kernel generation (`exp(L*log_ratio)` fallback vs recursive ratio path)
 - Recursive ratio path uses a single working kernel buffer (no per-L `ratio_pow.copy()` allocation)
-- Reduced allocator synchronization in hot GPU path (fewer pool flush barriers)
+- CuPy memory-pool hygiene around large matrix stages:
+  - pre-allocation cleanup when reusable pool exceeds ~256 MB,
+  - end-of-call cleanup to limit cumulative VRAM growth across many `(l_i, l_f)` calls
 - Array-first callable evaluation in Filon/Levin tail segments (fallback to scalar vectorize)
 - Auto mode now selects `Filon/full` / `Filon/hybrid` / `block-wise` in tiers by effective memory budget
 - Extended Filon kernel base matrices are cached in `GPUCache` when `idx_limit` repeats
@@ -920,6 +935,9 @@ gpu_cache.clear()
 - Ratio caches are built from requested prefixes and can shrink when oversized (prevents stale large-cache VRAM retention)
 - Filon params and `kernel_at_cc_pre` tensors use small key-based LRU caches for repeated setups
 - Phase-function closures for DWBA outer-tail integrals are cached and reused across repeated calls
+- Advanced/full-split outer-tail for excitation supports batch computation over many `L` (reduces per-L CPU overhead)
+- Final-channel continuum precompute upper bound is now dynamic (`L_max_proj + L_max_integrals`) instead of fixed `+15`
+- GPU convergence DCS history buffer uses `deque(maxlen=4)` to keep memory bounded
 - Block-size auto-tuning now uses effective free VRAM (device free + reusable CuPy pool bytes)
 - Block-size auto-tuning runs only when a block-wise/hybrid path is actually used
 - Phase-adaptive subdivision with constant Δφ = π/2

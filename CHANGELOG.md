@@ -4,6 +4,41 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [v2.26] — 2026-02-11 — Documentation Sync for Batch Outer-Tail and GPU Pool Hygiene
+
+### Performance
+
+**GPU memory-pool hygiene guardrails** (`dwba_matrix_elements.py`)
+- Added pre-allocation CuPy pool cleanup when reusable cached pool bytes exceed ~256 MB before large kernel-matrix allocations.
+- Added end-of-call pool cleanup after GPU radial-integral completion to reduce cumulative VRAM growth across repeated `(l_i, l_f)` calls.
+
+### Documentation
+
+- Updated `README.md` to document:
+  - batch outer-tail activation scope and thresholds (`DWBA_OUTER_BATCH_MIN_ACTIVE`, `DWBA_OUTER_BATCH_MOMENT_TOL`),
+  - current CuPy memory-pool cleanup behavior in GPU matrix hot paths,
+  - dynamic `l_f` precompute bound (`L_max_proj + L_max_integrals`) and bounded DCS-history buffer (`deque(maxlen=4)`).
+
+## [v2.25] — 2026-02-10 — Batch Outer-Tail Integrals for Multi-L Excitation
+
+### Performance
+
+**Batch outer-tail CPU path** (`oscillatory_integrals.py`, `dwba_matrix_elements.py`)
+- Added `dwba_outer_integral_1d_multipole_batch(...)` to compute outer-tail oscillatory integrals for multiple multipoles in one batch.
+- Added internal batch Filon/Levin helpers for envelopes `m_L / r^(L+1)` with shared phase evaluation.
+- GPU radial-integral driver now precomputes advanced/full-split excitation outer-tail terms in batch and reuses them inside the L-loop.
+- Falls back automatically to legacy per-L outer-tail path on any batch failure.
+
+### Configuration
+
+- Added `DWBA_OUTER_BATCH_MIN_ACTIVE` (default `4`) - minimum number of active multipoles required to use batch outer-tail.
+- Added `DWBA_OUTER_BATCH_MOMENT_TOL` (default `1e-12`) - threshold for skipping tiny multipole moments in batch mode.
+- Exposed batch tuning via `get_outer_batch_config()`.
+
+### Documentation
+
+- Updated `README.md` with new batch outer-tail environment variables and optimization notes.
+
 ## [v2.24] — 2026-02-10 — Outer-Tail Guardrails & Ratio-Cache Retention Fixes
 
 ### Performance

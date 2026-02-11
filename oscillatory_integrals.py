@@ -79,6 +79,8 @@ _FILON_MAX_EFFECTIVE_DPHI = _env_float(
     min_value=np.pi / 16
 )
 _OUTER_SLOW_WARN_S = _env_float("DWBA_OUTER_SLOW_WARN_S", 20.0, min_value=1.0)
+_OUTER_BATCH_MIN_ACTIVE = _env_int("DWBA_OUTER_BATCH_MIN_ACTIVE", 4, min_value=1)
+_OUTER_BATCH_MOMENT_TOL = _env_float("DWBA_OUTER_BATCH_MOMENT_TOL", 1e-12, min_value=0.0)
 
 
 def _is_hotpath_verbose_debug_enabled() -> bool:
@@ -531,6 +533,318 @@ def dwba_outer_integral_1d(
         )
 
     return result
+
+
+def get_outer_batch_config() -> tuple[int, float]:
+    """Return batch outer-tail tuning parameters."""
+    return int(_OUTER_BATCH_MIN_ACTIVE), float(_OUTER_BATCH_MOMENT_TOL)
+
+
+def _filon_3pt_batch(
+    f_mat: np.ndarray,
+    r0: float, r1: float, r2: float,
+    omega: float,
+    phase_offset: float
+) -> np.ndarray:
+    """
+    Vectorized 3-point Filon for multiple envelopes simultaneously.
+
+    Parameters
+    ----------
+    f_mat : np.ndarray, shape (n_terms, 3)
+        Envelope values at nodes [r0, r1, r2] for each L-term.
+    r0, r1, r2 : float
+        Segment nodes.
+    omega : float
+        Constant frequency.
+    phase_offset : float
+        Phase offset.
+
+    Returns
+    -------
+    np.ndarray, shape (n_terms,), complex
+        Integral contribution from this 3-point segment for all L-terms.
+    """
+    h = r2 - r0
+    if h < 1e-15:
+        return np.zeros(f_mat.shape[0], dtype=np.complex128)
+
+    theta = omega * h / 2.0
+
+    # Compute Filon coefficients (scalar, shared across all L-terms)
+    if abs(theta) < 0.3:
+        # Taylor expansion for numerical stability near theta=0
+        t2 = theta ** 2
+        t3 = theta ** 3
+        alpha = 2 * t3 / 45 * (1 - t2 / 7 + t2 ** 2 / 189)
+        beta = 2 / 3 + 2 * t2 / 15 - 4 * t2 ** 2 / 105 + 2 * t2 ** 3 / 567
+        gamma = 4 / 3 - 2 * t2 / 15 + t2 ** 2 / 210 - t2 ** 3 / 11340
+    elif abs(omega * h) < 1e-3:
+        # Nearly non-oscillatory: midpoint approximation for all terms
+        mid_phase = omega * (r0 + r2) / 2 + phase_offset
+        # Simpson weights for 3 points: [h/6, 4h/6, h/6]
+        simpson_w = np.array([h / 6.0, 4.0 * h / 6.0, h / 6.0])
+        integral_f = f_mat @ simpson_w  # (n_terms,)
+        return integral_f * np.exp(1j * mid_phase)
+    else:
+        sin_t = np.sin(theta)
+        cos_t = np.cos(theta)
+        sin_2t = np.sin(2 * theta)
+        cos_2t = np.cos(2 * theta)
+        t2 = theta ** 2
+        t3 = theta ** 3
+        alpha = (t2 + theta * sin_2t / 2 - 2 * sin_t ** 2) / t3
+        beta = 2 * (theta * (1 + cos_2t) - sin_2t) / t3
+        gamma = 4 * (sin_t - theta * cos_t) / t3
+
+    # Phase exponentials (scalar)
+    exp0 = np.exp(1j * (omega * r0 + phase_offset))
+    exp1 = np.exp(1j * (omega * r1 + phase_offset))
+    exp2 = np.exp(1j * (omega * r2 + phase_offset))
+
+    # Vectorized Filon formula across all L-terms:
+    # I_L = (h/2) * [alpha*(-i/omega)*(f2_L*exp2 - f0_L*exp0)
+    #              + beta*(f0_L*exp0 + f2_L*exp2) + gamma*f1_L*exp1]
+    f0 = f_mat[:, 0]   # (n_terms,)
+    f1 = f_mat[:, 1]   # (n_terms,)
+    f2 = f_mat[:, 2]   # (n_terms,)
+
+    result = (h / 2.0) * (
+        alpha * (-1j / omega) * (f2 * exp2 - f0 * exp0) +
+        beta * (f0 * exp0 + f2 * exp2) +
+        gamma * f1 * exp1
+    )
+    return result
+
+
+def _filon_oscillatory_integral_multipole_batch(
+    moments: np.ndarray,
+    L_values: np.ndarray,
+    omega: float,
+    phase_offset: float,
+    r_start: float,
+    r_end: float,
+    delta_phi: float = np.pi / 4,
+    n_nodes_per_segment: int = 5
+) -> np.ndarray:
+    """
+    Batch Filon quadrature for envelopes m_L / r^(L+1).
+
+    Vectorized over L-terms: Filon coefficients are computed ONCE per segment
+    and applied to all multipole envelopes simultaneously via broadcasting.
+    """
+    n_terms = len(L_values)
+    out = np.zeros(n_terms, dtype=np.complex128)
+    if n_terms == 0 or r_end <= r_start + 1e-10:
+        return out
+
+    if abs(omega) < 1e-10:
+        from scipy.integrate import simpson
+        n_pts = max(257, 32 * n_nodes_per_segment)
+        r_nodes = np.linspace(r_start, r_end, n_pts)
+        phase = np.exp(1j * (omega * r_nodes + phase_offset))
+        inv_r = 1.0 / np.maximum(r_nodes, 1e-30)
+        pow_mat = inv_r[None, :] ** (L_values[:, None] + 1.0)
+        f_mat = moments[:, None] * pow_mat
+        for i in range(n_terms):
+            out[i] = simpson(f_mat[i] * phase, x=r_nodes)
+        return out
+
+    dr_per_segment = delta_phi / abs(omega)
+    n_segments_raw = max(1, int(np.ceil((r_end - r_start) / dr_per_segment)))
+    n_segments = min(n_segments_raw, _FILON_MAX_SEGMENTS)
+    effective_delta_phi = abs(omega) * (r_end - r_start) / max(1, n_segments)
+    n_nodes_eff = int(n_nodes_per_segment)
+    if effective_delta_phi > _FILON_MAX_EFFECTIVE_DPHI:
+        scale = int(np.ceil(effective_delta_phi / _FILON_MAX_EFFECTIVE_DPHI))
+        n_nodes_eff = min(15, max(n_nodes_per_segment, n_nodes_per_segment + 2 * (scale - 1)))
+
+    # Precompute L+1 exponents for pow()
+    L_plus1 = L_values.astype(float) + 1.0  # (n_terms,)
+
+    segment_bounds = np.linspace(r_start, r_end, n_segments + 1)
+    for i_seg in range(n_segments):
+        a = segment_bounds[i_seg]
+        b = segment_bounds[i_seg + 1]
+        r_nodes = np.linspace(a, b, n_nodes_eff)
+        inv_r = 1.0 / np.maximum(r_nodes, 1e-30)
+
+        # f_mat shape: (n_terms, n_nodes_eff)
+        pow_mat = inv_r[None, :] ** L_plus1[:, None]
+        f_mat = moments[:, None] * pow_mat
+
+        # Process in 3-point (triplet) sub-segments, vectorized over L
+        for j in range(0, n_nodes_eff - 2, 2):
+            out += _filon_3pt_batch(
+                f_mat[:, j:j + 3],
+                r_nodes[j], r_nodes[j + 1], r_nodes[j + 2],
+                omega, phase_offset
+            )
+
+        # Handle odd leftover (last 2 points) with trapezoidal rule
+        if n_nodes_eff > 2 and (n_nodes_eff - 1) % 2 == 1:
+            r_last = r_nodes[-2:]
+            f_last = f_mat[:, -2:]  # (n_terms, 2)
+            phi_last = omega * r_last + phase_offset
+            h_last = r_last[-1] - r_last[0]
+            exp_last = np.exp(1j * phi_last)  # (2,)
+            # Trapezoid for all L-terms at once
+            out += 0.5 * h_last * (f_last[:, 0] * exp_last[0] +
+                                    f_last[:, 1] * exp_last[1])
+
+    return out
+
+
+def _levin_oscillatory_integral_multipole_batch(
+    moments: np.ndarray,
+    L_values: np.ndarray,
+    phi_func,
+    phi_prime_func,
+    r_start: float,
+    r_end: float,
+    n_nodes: int = 8,
+    n_segments: int = 1
+) -> np.ndarray:
+    """Batch Levin quadrature for envelopes m_L / r^(L+1)."""
+    n_terms = len(L_values)
+    out = np.zeros(n_terms, dtype=np.complex128)
+    if n_terms == 0 or r_end <= r_start + 1e-10:
+        return out
+
+    if n_segments < 1:
+        n_segments = 1
+    segment_bounds = np.linspace(r_start, r_end, n_segments + 1)
+
+    for i_seg in range(n_segments):
+        a = segment_bounds[i_seg]
+        b = segment_bounds[i_seg + 1]
+        theta = np.pi * np.arange(n_nodes) / (n_nodes - 1)
+        x_ref = np.cos(theta)[::-1]
+        r_nodes = 0.5 * (b - a) * (x_ref + 1.0) + a
+
+        Phi_vals = _eval_callable_on_nodes(phi_func, r_nodes)
+        Phi_prime_vals = _eval_callable_on_nodes(phi_prime_func, r_nodes)
+        inv_r = 1.0 / np.maximum(r_nodes, 1e-30)
+        pow_mat = inv_r[None, :] ** (L_values[:, None] + 1.0)
+        f_mat = moments[:, None] * pow_mat  # (n_terms, n_nodes)
+
+        # Vectorized Levin: same A matrix for all L-terms, different RHS
+        h_seg = r_nodes[-1] - r_nodes[0]
+        if h_seg < 1e-15:
+            continue
+
+        D_ref = _chebyshev_differentiation_matrix(n_nodes)
+        D = D_ref * (2.0 / h_seg)
+        A = D + 1j * np.diag(Phi_prime_vals)
+
+        # Solve for all L-terms at once: A @ U = F^T → U has shape (n_nodes, n_terms)
+        try:
+            U = np.linalg.solve(A, f_mat.T.astype(complex))  # (n_nodes, n_terms)
+        except np.linalg.LinAlgError:
+            U, _, _, _ = np.linalg.lstsq(A, f_mat.T.astype(complex), rcond=None)
+
+        # Boundary terms for all L-terms at once
+        exp_a = np.exp(1j * Phi_vals[0])
+        exp_b = np.exp(1j * Phi_vals[-1])
+        out += U[-1, :] * exp_b - U[0, :] * exp_a  # (n_terms,)
+
+    return out
+
+
+def _outer_integral_multipole_batch_phase(
+    moments: np.ndarray,
+    L_values: np.ndarray,
+    phi_func,
+    phi_prime_func,
+    phi_prime2_func,
+    r_m: float,
+    r_max: float,
+    delta_phi: float = np.pi / 4,
+    n_nodes: int = 8,
+    filon_threshold: float = 0.1
+) -> np.ndarray:
+    """Batch outer integral for one phase branch (minus or plus)."""
+    n_terms = len(L_values)
+    out = np.zeros(n_terms, dtype=np.complex128)
+    if n_terms == 0 or r_max <= r_m + 1e-10:
+        return out
+
+    r_mid = 0.5 * (r_m + r_max)
+    omega_mid = abs(phi_prime_func(r_mid))
+    if omega_mid < 1e-10:
+        from scipy.integrate import simpson
+        n_pts = max(257, 32 * n_nodes)
+        r_nodes = np.linspace(r_m, r_max, n_pts)
+        phase = np.exp(1j * _eval_callable_on_nodes(phi_func, r_nodes))
+        inv_r = 1.0 / np.maximum(r_nodes, 1e-30)
+        pow_mat = inv_r[None, :] ** (L_values[:, None] + 1.0)
+        f_mat = moments[:, None] * pow_mat
+        for i in range(n_terms):
+            out[i] = simpson(f_mat[i] * phase, x=r_nodes)
+        return out
+
+    h = delta_phi / omega_mid
+    phi_pp_mid = abs(phi_prime2_func(r_mid))
+    linearity_test = phi_pp_mid * h * h
+    if linearity_test < filon_threshold:
+        phase_offset = float(phi_func(r_m) - omega_mid * r_m)
+        return _filon_oscillatory_integral_multipole_batch(
+            moments, L_values, omega_mid, phase_offset, r_m, r_max, delta_phi=delta_phi, n_nodes_per_segment=5
+        )
+
+    n_segments = max(1, int(np.ceil((r_max - r_m) / h)))
+    return _levin_oscillatory_integral_multipole_batch(
+        moments, L_values, phi_func, phi_prime_func, r_m, r_max, n_nodes=n_nodes, n_segments=n_segments
+    )
+
+
+def dwba_outer_integral_1d_multipole_batch(
+    moments: np.ndarray,
+    L_values: np.ndarray,
+    k_a: float, l_a: int, delta_a: float, eta_a: float, sigma_a: float,
+    k_b: float, l_b: int, delta_b: float, eta_b: float, sigma_b: float,
+    r_m: float,
+    r_max: float,
+    delta_phi: float = np.pi / 4,
+    n_nodes: int = 8,
+    filon_threshold: float = 0.1
+) -> Dict[int, float]:
+    """
+    Compute DWBA outer-tail integrals for multiple multipoles in one batch.
+
+    Returns mapping: L -> I_out(L), where I_out(L)=0.5*(I_minus(L)-I_plus(L)).
+    """
+    moments_arr = np.asarray(moments, dtype=float)
+    L_arr = np.asarray(L_values, dtype=int)
+    if moments_arr.ndim != 1 or L_arr.ndim != 1 or len(moments_arr) != len(L_arr):
+        raise ValueError("moments and L_values must be 1D arrays of equal length")
+    if r_max <= r_m + 1e-10:
+        return {}
+
+    mask = (L_arr >= 1) & np.isfinite(moments_arr) & (np.abs(moments_arr) > _OUTER_BATCH_MOMENT_TOL)
+    if not np.any(mask):
+        return {}
+
+    L_active = L_arr[mask]
+    moments_active = moments_arr[mask]
+    (
+        phi_minus, phi_plus,
+        phi_minus_prime, phi_plus_prime,
+        phi_minus_prime2, phi_plus_prime2
+    ) = _get_dwba_outer_phase_functions(
+        k_a, l_a, delta_a, eta_a, sigma_a,
+        k_b, l_b, delta_b, eta_b, sigma_b
+    )
+    I_minus = _outer_integral_multipole_batch_phase(
+        moments_active, L_active, phi_minus, phi_minus_prime, phi_minus_prime2,
+        r_m, r_max, delta_phi=delta_phi, n_nodes=n_nodes, filon_threshold=filon_threshold
+    )
+    I_plus = _outer_integral_multipole_batch_phase(
+        moments_active, L_active, phi_plus, phi_plus_prime, phi_plus_prime2,
+        r_m, r_max, delta_phi=delta_phi, n_nodes=n_nodes, filon_threshold=filon_threshold
+    )
+    I_out = 0.5 * (I_minus.real - I_plus.real)
+    return {int(L): float(v) for L, v in zip(L_active, I_out)}
 
 
 
@@ -2408,4 +2722,3 @@ def oscillatory_kernel_integral_2d(
     
     else:
         raise ValueError(f"Unknown method: {method}")
-

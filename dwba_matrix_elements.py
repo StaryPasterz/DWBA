@@ -37,6 +37,7 @@ All inputs/outputs in Hartree atomic units (a₀, Ha).
 from __future__ import annotations
 import logging
 import os
+import time
 import numpy as np
 from dataclasses import dataclass
 from typing import Dict, List, Union, Optional
@@ -56,6 +57,8 @@ from oscillatory_integrals import (
     _kahan_sum_real,
     _kahan_sum_complex,
     dwba_outer_integral_1d,
+    dwba_outer_integral_1d_multipole_batch,
+    get_outer_batch_config,
     compute_outer_integral_oscillatory,
     compute_asymptotic_phase,
     compute_phase_derivative,
@@ -1826,6 +1829,13 @@ def radial_ME_all_L_gpu(
     full_matrix_built = False
     inv_gtr = None
     log_ratio = None
+
+    # Defensive: release reusable pool blocks before large matrix allocations
+    # to avoid cumulative growth from previous calls exhausting device VRAM.
+    mem_pool = cp.get_default_memory_pool()
+    pool_reusable_pre = max(0, mem_pool.total_bytes() - mem_pool.used_bytes())
+    if pool_reusable_pre > 256 * 1024 * 1024:  # >256 MB sitting unused in pool
+        mem_pool.free_all_blocks()
     
     if not use_block_wise and (not use_filon or not prefer_filon_full):
         # Try to build/reuse full kernel matrix (works for BOTH Filon and standard).
@@ -2045,6 +2055,35 @@ def radial_ME_all_L_gpu(
             r_pow_full *= r_full
             moments_head[Lm] = float(np.dot(base_head, r_pow_head))
             moments_full[Lm] = float(np.dot(base_full, r_pow_full))
+
+    # Batch CPU outer-tail integrals for advanced/full_split mode.
+    # This reduces per-L Python/closure overhead in the hot loop.
+    outer_tail_batch = None
+    outer_batch_moment_tol = 1e-12
+    if use_filon and oscillatory_method != "legacy" and is_excitation and idx_limit < N_grid - 10 and moments_full is not None and L_max >= 1:
+        min_active_batch, outer_batch_moment_tol = get_outer_batch_config()
+        L_arr = np.arange(1, L_max + 1, dtype=int)
+        moments_arr = moments_full[1:]
+        n_active = int(np.count_nonzero(np.abs(moments_arr) > outer_batch_moment_tol))
+        if n_active >= min_active_batch:
+            try:
+                t_outer_batch = time.perf_counter()
+                outer_tail_batch = dwba_outer_integral_1d_multipole_batch(
+                    moments_arr,
+                    L_arr,
+                    k_i, l_i, delta_i, eta_i, sigma_i,
+                    k_f, l_f, delta_f, eta_f, sigma_f,
+                    r_match, float(grid.r[-1]),
+                    delta_phi=np.pi / 4
+                )
+                if _should_sampled_hotpath_debug("outer_tail_batch", every=100, initial=2):
+                    logger.debug(
+                        "Outer-tail batch ready: active=%d/%d, elapsed=%.3fs",
+                        n_active, L_max, time.perf_counter() - t_outer_batch
+                    )
+            except Exception as e:
+                logger.debug("Outer-tail batch failed, fallback to per-L path: %s", e)
+                outer_tail_batch = None
 
     # Ratio policy: keep recursive power path only when memory/size are favorable.
     need_standard_kernel_for_direct = (not use_filon) or (use_filon and not filon_kernel_built)
@@ -2292,21 +2331,24 @@ def radial_ME_all_L_gpu(
                 if L >= 1 and idx_limit < N_grid - 10 and is_excitation:
                     # Multipole moment from bound states (use full grid for accuracy)
                     moment_L = moments_full[L] if moments_full is not None else 0.0
-                    if abs(moment_L) > 1e-12:
-                        def make_envelope(mL, Lval):
-                            def envelope(r_val):
-                                return mL / (r_val ** (Lval + 1)) if r_val > 1e-6 else 0.0
-                            return envelope
-                        
-                        env_func = make_envelope(moment_L, L)
-                        I_out = dwba_outer_integral_1d(
-                            env_func,
-                            k_i, l_i, delta_i, eta_i, sigma_i,
-                            k_f, l_f, delta_f, eta_f, sigma_f,
-                            r_match, float(grid.r[-1]),
-                            delta_phi=np.pi / 4
-                        )
-                        
+                    if abs(moment_L) > outer_batch_moment_tol:
+                        if outer_tail_batch is not None:
+                            I_out = outer_tail_batch.get(L, 0.0)
+                        else:
+                            def make_envelope(mL, Lval):
+                                def envelope(r_val):
+                                    return mL / (r_val ** (Lval + 1)) if r_val > 1e-6 else 0.0
+                                return envelope
+
+                            env_func = make_envelope(moment_L, L)
+                            I_out = dwba_outer_integral_1d(
+                                env_func,
+                                k_i, l_i, delta_i, eta_i, sigma_i,
+                                k_f, l_f, delta_f, eta_f, sigma_f,
+                                r_match, float(grid.r[-1]),
+                                delta_phi=np.pi / 4
+                            )
+
                         # Bug #3 fix: Add analytical tail from r_max to ∞
                         I_tail_inf = _analytical_multipole_tail(
                             float(grid.r[-1]), k_i, k_f, delta_i, delta_f, l_i, l_f, L,
@@ -2377,6 +2419,9 @@ def radial_ME_all_L_gpu(
         del filon_inv_gtr
     if 'filon_log_ratio' in locals() and filon_log_ratio is not None:
         del filon_log_ratio
-    # NOTE: Removed free_all_blocks() from here - moved to driver.py level (Phase 2)
+    # Release CuPy pool blocks that are no longer in use.
+    # Without this, the pool grows across repeated (l_i, l_f) calls
+    # and can exhaust device VRAM on consumer GPUs (e.g. 8 GB RTX 3070).
+    cp.get_default_memory_pool().free_all_blocks()
 
     return RadialDWBAIntegrals(I_L_direct=I_L_dir, I_L_exchange=I_L_exc)
