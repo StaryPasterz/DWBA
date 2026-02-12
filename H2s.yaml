@@ -32,26 +32,26 @@ energy:
 grid:
   strategy: "local"      # "manual" = fixed params, "global" = adaptive for E_min (recommended), "local" = per-energy
   r_max: 200             # [a.u.] Maximum radial extent (for manual; base value for adaptive)
-  n_points: 2000         # [count] Base grid points (for manual; minimum for adaptive modes)
-  r_max_scale_factor: 2.5  # [dimensionless] Safety factor for turning point criterion
+  n_points: 1500         # [count] Base grid points (for manual; minimum for adaptive modes)
+  r_max_scale_factor: 2.8  # [dimensionless] Safety factor for turning point criterion
   n_points_max: 10000    # [count] Maximum allowed grid points (caps adaptive scaling)
-  min_points_per_wavelength: 15  # [count] Minimum pts/λ for high-E (v2.7+). Set to 0 to disable.
+  min_points_per_wavelength: 18  # [count] Minimum pts/λ for high-E (v2.7+). Set to 0 to disable.
 
 excitation:
   # Production parameters
-  L_max_integrals: 15    # [dimensionless] Max multipole L in Coulomb expansion
-  L_max_projectile: 5    # [dimensionless] Base partial wave L_max (auto-scaled)
-  n_theta: 200           # [count] Angular grid for DCS integration
+  L_max_integrals: "auto"    # [dimensionless] Max multipole L in Coulomb expansion
+  L_max_projectile: 8    # [dimensionless] Base partial wave L_max (auto-scaled)
+  n_theta: 241           # [count] Angular grid for DCS integration
   pilot_energy_eV: 1000  # [eV] Calibration pilot energy
   # Pilot light mode (v2.5+) - "auto" = dynamic scaling based on energy, int = explicit value
   # Note (v2.7+): "auto" calculates L_max from k*r_max to ensure convergence at high energies
-  pilot_L_max_integrals: 8    # "auto" or int (e.g., 8)
-  pilot_L_max_projectile: 30   # "auto" or int (e.g., 30)
-  pilot_n_theta: 50            # [count] TCS only, DCS not needed
+  pilot_L_max_integrals: "auto"    # "auto" or int (e.g., 8)
+  pilot_L_max_projectile: "auto"   # "auto" or int (e.g., 30)
+  pilot_n_theta: 80            # [count] TCS only, DCS not needed
 
 oscillatory:
   method: "full_split"             # "legacy" | "advanced" | "full_split"
-  CC_nodes: 5                    # [count] Clenshaw-Curtis nodes per interval
+  CC_nodes: 7                    # [count] Clenshaw-Curtis nodes per interval
   phase_increment: 1.5708        # [rad] Phase increment (π/2)
   min_grid_fraction: 0.1         # [dimensionless] Min match point fraction
   k_threshold: 0.5               # [a.u.] Momentum threshold for Filon/Levin

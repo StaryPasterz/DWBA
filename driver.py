@@ -1262,22 +1262,37 @@ def compute_total_excitation_cs(
             except Exception as e:
                 logger.debug("Born Top-Up: Skipped: %s", e)
 
-    # Apply scaling and log result
+    # Apply top-up to TCS only (not global DCS scaling).
+    # A scalar rescale of DCS can distort angular structure.
+    topup_tail_frac = 0.0
     if topup_applied and sigma_total_cm2_base > 0.0:
-        tail_frac = (sigma_total_cm2 - sigma_total_cm2_base) / sigma_total_cm2_base
-        if tail_frac < 0.2:  # More permissive for Coulomb-Bethe
-            scale = sigma_total_cm2 / sigma_total_cm2_base
-            if np.isfinite(scale) and scale > 0.0:
-                total_dcs *= scale
-                sigma_total_au = sigma_total_au_base * scale
-                logger.info("Top-Up          | %s applied (tail=%.2e cm², +%.1f%%)", 
-                           topup_type, topup_value, tail_frac * 100)
+        topup_tail_frac = (sigma_total_cm2 - sigma_total_cm2_base) / sigma_total_cm2_base
+        if topup_tail_frac < 0.2:  # Conservative acceptance gate
+            sigma_total_au = sigma_cm2_to_au(sigma_total_cm2)
+            logger.info(
+                "Top-Up          | %s applied to TCS only (tail=%.2e cm², +%.1f%%); DCS shape unchanged",
+                topup_type, topup_value, topup_tail_frac * 100
+            )
         else:
-            logger.warning("Top-up fraction %.2f >= 0.2; skipping DCS scaling.", tail_frac)
-    else:
-        # Log transition type and why no top-up
+            # Reject unstable tail estimates.
+            rejected_tail_frac = topup_tail_frac
+            sigma_total_cm2 = sigma_total_cm2_base
+            sigma_total_au = sigma_total_au_base
+            topup_applied = False
+            if topup_type == "Coulomb-Bethe":
+                partial_waves_dict.pop("coulomb_bethe_topup", None)
+            elif topup_type == "Born":
+                partial_waves_dict.pop("born_topup", None)
+            topup_type = None
+            topup_value = 0.0
+            topup_tail_frac = 0.0
+            logger.warning(
+                "Top-Up          | Rejected: tail fraction %.2f >= 0.2 (unstable extrapolation)",
+                rejected_tail_frac
+            )
+    if not topup_applied:
         trans_type = "E1 (dipole)" if is_dipole_allowed else "Forbidden"
-        logger.info("Top-Up          | Not applied (%s transition, no suitable decay)", trans_type)
+        logger.info("Top-Up          | Not applied (%s transition, no suitable/stable decay)", trans_type)
 
     l_indices = sorted(
         int(k[1:]) for k in partial_waves_dict.keys()
@@ -1297,6 +1312,10 @@ def compute_total_excitation_cs(
         "n_projectile_partial_waves_skipped": int(skipped_li_count),
         "summation_stop_reason": stop_reason_global or "Reached configured/runtime L_max",
         "summation_stop_L": int(stop_L_global if stop_L_global is not None else L_max_proj),
+        "topup_applied": bool(topup_applied),
+        "topup_type": str(topup_type) if topup_type is not None else None,
+        "topup_value_cm2": float(topup_value),
+        "topup_tail_fraction": float(topup_tail_frac),
     }
     if L_int_auto_meta is not None:
         runtime_metadata["L_max_integrals_auto"] = L_int_auto_meta

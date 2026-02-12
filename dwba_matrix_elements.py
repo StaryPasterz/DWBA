@@ -685,6 +685,98 @@ class RadialDWBAIntegrals:
     I_L_exchange: Dict[int, float]
 
 
+def _refine_idx_limit_physics(
+    idx_limit: int,
+    r: np.ndarray,
+    w_trapz: np.ndarray,
+    U_i_array: np.ndarray,
+    U_f_array: Optional[np.ndarray],
+    k_i: float,
+    k_f: float,
+    l_i: int,
+    l_f: int,
+    bound_states: Optional[List[np.ndarray]] = None,
+    context: str = "CPU",
+) -> int:
+    """
+    Apply physical guardrails to match-point based split index.
+
+    Mirrors the conservative checks used in the CPU path:
+    - bound-state extent coverage (99% cumulative probability),
+    - asymptotic validity of effective potential at r_m.
+    """
+    N_grid = len(r)
+    idx_limit = int(max(1, min(int(idx_limit), N_grid)))
+    l_max_wave = max(int(l_i), int(l_f))
+
+    # Bound-state extent check: required for split-tail excitation formulas.
+    if bound_states:
+        BOUND_STATE_THRESHOLD = 0.99
+        idx_99_max = 0
+        for u_state in bound_states:
+            if u_state is None:
+                continue
+            u_arr = np.asarray(u_state)
+            if u_arr.ndim != 1 or len(u_arr) < N_grid:
+                continue
+            u_arr = u_arr[:N_grid]
+            u_sq = u_arr * u_arr
+            if float(np.sum(u_sq)) <= 1e-30:
+                continue
+            prob_cum = np.cumsum(u_sq * w_trapz[:N_grid])
+            total = float(prob_cum[-1]) if len(prob_cum) else 0.0
+            if total <= 1e-300 or not np.isfinite(total):
+                continue
+            prob_cum /= (total + 1e-300)
+            idx_99 = int(np.searchsorted(prob_cum, BOUND_STATE_THRESHOLD))
+            idx_99_max = max(idx_99_max, idx_99)
+
+        if idx_99_max > idx_limit:
+            old_idx = idx_limit
+            idx_limit = min(N_grid, idx_99_max + 1)
+            logger.debug(
+                "%s bound extent: extending idx_limit %d -> %d (r_m %.2f -> %.2f a0)",
+                context,
+                old_idx,
+                idx_limit,
+                r[max(old_idx - 1, 0)],
+                r[min(idx_limit - 1, N_grid - 1)],
+            )
+
+    # Asymptotic validation: V_eff / (k^2/2) should be small at split point.
+    ASYMPTOTIC_THRESHOLD = 0.03
+    kinetic_energy = 0.5 * min(float(k_i), float(k_f)) ** 2
+    if kinetic_energy > 1e-10 and idx_limit > 0:
+        r_m_idx = max(0, min(idx_limit - 1, N_grid - 1))
+
+        def get_max_V_eff(idx: int) -> float:
+            ri = max(float(r[idx]), 1e-12)
+            Ui = abs(float(U_i_array[idx]))
+            Uf = abs(float(U_f_array[idx])) if U_f_array is not None else 0.0
+            V_cent = (l_max_wave * (l_max_wave + 1)) / (2.0 * ri * ri)
+            return max(Ui, Uf) + V_cent
+
+        V_eff_rm = get_max_V_eff(r_m_idx)
+        ratio = V_eff_rm / kinetic_energy
+        if ratio > ASYMPTOTIC_THRESHOLD:
+            found = False
+            for try_idx in range(idx_limit, min(idx_limit + 500, N_grid)):
+                if get_max_V_eff(try_idx) / kinetic_energy < ASYMPTOTIC_THRESHOLD:
+                    idx_limit = try_idx + 1
+                    found = True
+                    break
+            if not found:
+                logger.debug(
+                    "%s asymptotic: V_eff/E=%.2f > %.2f at r_m=%.2f a0; using best available split.",
+                    context,
+                    ratio,
+                    ASYMPTOTIC_THRESHOLD,
+                    r[min(idx_limit - 1, N_grid - 1)],
+                )
+
+    return int(max(1, min(idx_limit, N_grid)))
+
+
 def radial_ME_all_L(
     grid: RadialGrid,
     V_core_array: np.ndarray,
@@ -1605,6 +1697,27 @@ def radial_ME_all_L_gpu(
     
     if idx_limit < MIN_IDX:
         idx_limit = MIN_IDX
+
+    # Mirror CPU split-point guardrails on GPU:
+    # - bound-state extent coverage (for excitation split-tail formulas),
+    # - asymptotic V_eff/kinetic validation at r_m.
+    w_trapz = grid.w_trapz if hasattr(grid, "w_trapz") else np.gradient(r)
+    bound_states_for_extent: List[np.ndarray] = [bound_i.u_of_r]
+    if isinstance(bound_f, BoundOrbital):
+        bound_states_for_extent.append(bound_f.u_of_r)
+    idx_limit = _refine_idx_limit_physics(
+        idx_limit=idx_limit,
+        r=r,
+        w_trapz=w_trapz,
+        U_i_array=U_i_array,
+        U_f_array=U_f_array,
+        k_i=k_i,
+        k_f=k_f,
+        l_i=l_i,
+        l_f=l_f,
+        bound_states=bound_states_for_extent,
+        context="GPU",
+    )
     
     r_match = r[idx_limit - 1] if idx_limit > 0 else r[-1]
     

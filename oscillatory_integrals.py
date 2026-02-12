@@ -1713,6 +1713,48 @@ def generate_phase_nodes(
     return np.array(nodes)
 
 
+def _adaptive_phase_increment_for_grid(
+    r_grid: np.ndarray,
+    k_total: float,
+    requested_phase_increment: float,
+    eta_total: float = 0.0,
+    threshold: float = np.pi / 4,
+    min_increment: float = np.pi / 16,
+) -> float:
+    """
+    Choose a safer phase increment when the grid undersamples oscillations.
+
+    Returns a value in [min_increment, threshold]. If current sampling is poor,
+    the increment is reduced proportionally to the diagnosed max phase step.
+    """
+    dphi_req = float(max(min_increment, requested_phase_increment))
+    dphi_req = min(dphi_req, threshold)
+
+    if k_total < 1e-10 or len(r_grid) < 2:
+        return dphi_req
+
+    max_phase, is_ok, _ = check_phase_sampling(
+        np.asarray(r_grid),
+        float(k_total),
+        threshold=float(threshold),
+        eta_total=float(eta_total),
+    )
+    if is_ok:
+        return dphi_req
+
+    scale = float(threshold) / max(float(max_phase), 1e-12)
+    # Never increase dphi; at most reduce by 4x per call.
+    dphi_eff = dphi_req * max(0.25, min(1.0, scale))
+    dphi_eff = float(np.clip(dphi_eff, min_increment, threshold))
+
+    if dphi_eff < dphi_req and _should_sampled_debug("adaptive_phase_increment", every=250, initial=3):
+        logger.debug(
+            "Adaptive phase increment: %.3f -> %.3f (k=%.3f, max_dphi=%.3f, eta=%.3f)",
+            dphi_req, dphi_eff, k_total, max_phase, eta_total
+        )
+    return dphi_eff
+
+
 def integrate_with_phase_nodes(
     f_func,
     r_start: float,
@@ -2532,8 +2574,15 @@ def oscillatory_kernel_integral_2d(
             logger.warning("oscillatory_kernel_integral_2d (filon): NaN/Inf in inner integral")
             int_r2 = np.nan_to_num(int_r2, nan=0.0, posinf=0.0, neginf=0.0)
         
-        # Phase-based interval splitting
-        PHASE_INCREMENT = phase_increment
+        # Phase-based interval splitting with undersampling-aware increment.
+        PHASE_INCREMENT = _adaptive_phase_increment_for_grid(
+            r1_lim,
+            k_total,
+            phase_increment,
+            eta_total=eta_total,
+            threshold=np.pi / 4,
+            min_increment=np.pi / 16,
+        )
         
         if k_total < 1e-6:
             # Non-oscillatory: standard integration with weights for r₁
@@ -2615,7 +2664,14 @@ def oscillatory_kernel_integral_2d(
         # ==========================================================================
         
         k_total = k_i + k_f
-        PHASE_INCREMENT = phase_increment
+        PHASE_INCREMENT = _adaptive_phase_increment_for_grid(
+            r1_lim,
+            k_total,
+            phase_increment,
+            eta_total=eta_total,
+            threshold=np.pi / 4,
+            min_increment=np.pi / 16,
+        )
         
         if k_total < 1e-6:
             # Non-oscillatory: standard integration with weights

@@ -134,6 +134,8 @@ class IonizationChannelSpec:
     
     # Convergence threshold for adaptive L_max (relative change in sigma)
     convergence_threshold: float = 0.01  # 1% relative change triggers stop
+    # SDCS energy quadrature: "gauss_legendre" (recommended), "trapz_linear"
+    energy_quadrature: str = "gauss_legendre"
 
 @dataclass(frozen=True)
 class IonizationResult:
@@ -195,6 +197,132 @@ def _auto_L_max(k_i_au: float, L_requested: int, r_max: float = 200.0,
     # Ensure minimum floor for low-energy threshold behavior
     # At very low energies, k → 0, but we still need at least L_floor partial waves
     return max(L_max_proj, L_floor)
+
+
+def _build_sdcs_energy_quadrature(
+    E_total_final_eV: float,
+    n_energy_steps: int,
+    method: str,
+) -> tuple[np.ndarray, np.ndarray, str]:
+    """
+    Build SDCS integration nodes and AU weights over E_ej in [0, (E-IP)/2].
+
+    Returns
+    -------
+    nodes_eV : np.ndarray
+        Energy nodes where SDCS is evaluated.
+    weights_au : np.ndarray
+        Integration weights in atomic units of energy.
+    method_used : str
+        Effective method used.
+    """
+    E_half = max(0.5 * float(E_total_final_eV), 0.0)
+    if E_half <= 1e-12:
+        return np.array([], dtype=float), np.array([], dtype=float), "none"
+
+    method_norm = str(method).strip().lower()
+    if method_norm in ("auto", "", "gauss", "legendre"):
+        method_norm = "gauss_legendre"
+    if method_norm not in ("gauss_legendre", "trapz_linear"):
+        logger.warning("Ionization: unknown energy_quadrature='%s', using gauss_legendre.", method)
+        method_norm = "gauss_legendre"
+
+    if method_norm == "gauss_legendre":
+        # n nodes ~ n_energy_steps+1 for parity with previous "steps" semantics.
+        n_nodes = max(4, int(n_energy_steps) + 1)
+        x, w = np.polynomial.legendre.leggauss(n_nodes)  # [-1, 1]
+        nodes_eV = 0.5 * E_half * (x + 1.0)
+        weights_eV = 0.5 * E_half * w
+        weights_au = weights_eV * ev_to_au(1.0)
+        return nodes_eV.astype(float), weights_au.astype(float), "gauss_legendre"
+
+    # Legacy-style linear grid with trapezoidal weights.
+    n_nodes = max(2, int(n_energy_steps) + 1)
+    nodes_eV = np.linspace(0.0, E_half, n_nodes, dtype=float)
+    weights_eV = np.zeros_like(nodes_eV)
+    if n_nodes > 1:
+        dx = np.diff(nodes_eV)
+        weights_eV[0] = 0.5 * dx[0]
+        weights_eV[-1] = 0.5 * dx[-1]
+        if n_nodes > 2:
+            weights_eV[1:-1] = 0.5 * (dx[:-1] + dx[1:])
+    weights_au = weights_eV * ev_to_au(1.0)
+    return nodes_eV, weights_au, "trapz_linear"
+
+
+def _estimate_high_l_tail_sdcs(
+    partial_L_contribs: Dict[str, float],
+    sigma_base_au: float,
+) -> tuple[float, str]:
+    """
+    Estimate missing high-L SDCS tail from the last computed projectile waves.
+
+    Strategy:
+    1) Prefer a power-law fit a_L ~ C (L+1/2)^p (Born-like asymptotic behavior).
+    2) Fall back to geometric ratio if tail looks nearly geometric.
+    3) Apply conservative acceptance gate on tail fraction.
+    """
+    l_indices = sorted(int(k[1:]) for k in partial_L_contribs if k.startswith("L"))
+    if len(l_indices) < 4:
+        return 0.0, "none"
+
+    vals = np.array([float(partial_L_contribs.get(f"L{L}", 0.0)) for L in l_indices], dtype=float)
+    if not np.all(np.isfinite(vals)):
+        return 0.0, "none"
+
+    n_tail = min(6, len(l_indices))
+    L_tail = np.array(l_indices[-n_tail:], dtype=float)
+    v_tail = np.array(vals[-n_tail:], dtype=float)
+    if np.any(v_tail <= 0.0):
+        return 0.0, "none"
+
+    # Need at least mostly decreasing tail for stable extrapolation.
+    dec_count = int(np.sum(np.diff(v_tail) < 0.0))
+    if dec_count < max(2, n_tail - 2):
+        return 0.0, "none"
+
+    candidates: list[tuple[str, float]] = []
+
+    # Candidate A: Power-law fit in log-log space.
+    x = np.log(L_tail + 0.5)
+    y = np.log(v_tail)
+    A = np.vstack([x, np.ones_like(x)]).T
+    slope, intercept = np.linalg.lstsq(A, y, rcond=None)[0]
+    y_fit = slope * x + intercept
+    ss_res = float(np.sum((y - y_fit) ** 2))
+    ss_tot = float(np.sum((y - np.mean(y)) ** 2)) + 1e-30
+    r2 = 1.0 - ss_res / ss_tot
+    if slope < -1.05 and r2 > 0.90:
+        C = float(np.exp(intercept))
+        L0 = float(L_tail[-1] + 0.5)
+        tail_pow = C * (L0 ** (slope + 1.0)) / (-(slope + 1.0))
+        if np.isfinite(tail_pow) and tail_pow > 0.0:
+            candidates.append(("power_law", float(tail_pow)))
+
+    # Candidate B: Geometric tail (legacy behavior, now stricter).
+    if len(v_tail) >= 3:
+        ratios = v_tail[1:] / np.maximum(v_tail[:-1], 1e-300)
+        q = float(np.median(ratios[-3:]))
+        q_spread = float(np.max(np.abs(ratios[-3:] - q)))
+        if 0.0 < q < 0.98 and q_spread < 0.12:
+            tail_geo = float(v_tail[-1] * q / (1.0 - q))
+            if np.isfinite(tail_geo) and tail_geo > 0.0:
+                candidates.append(("geometric", tail_geo))
+
+    if not candidates:
+        return 0.0, "none"
+
+    # Conservative choice: smaller positive tail among plausible models.
+    method, tail_au = min(candidates, key=lambda kv: kv[1])
+    base = max(float(sigma_base_au), 1e-30)
+    frac = tail_au / base
+    if frac >= 0.25:
+        logger.debug(
+            "Ionization SDCS top-up rejected: tail/base=%.2f (method=%s) too large.",
+            frac, method
+        )
+        return 0.0, "rejected"
+    return float(tail_au), method
 
 
 # ============================================================================
@@ -520,34 +648,19 @@ def _compute_sdcs_at_energy(
     sigma_energy_au = prefac_sigma * combo_sum_total
 
     # ========================================================================
-    # BORN TOP-UP (Geometric Series Extrapolation)
-    # Accounts for higher partial waves (L > L_computed) assuming geometric decay.
+    # HIGH-L TAIL TOP-UP (power-law/geometric, conservative acceptance)
     # ========================================================================
-    l_indices = sorted([int(k[1:]) for k in partial_L_contribs.keys() if k.startswith("L")])
-    if len(l_indices) >= 3:
-        try:
-            L_last = l_indices[-1]
-            val_L = partial_L_contribs.get(f"L{L_last}", 0.0)
-            val_Lm1 = partial_L_contribs.get(f"L{L_last-1}", 0.0)
-            val_Lm2 = partial_L_contribs.get(f"L{L_last-2}", 0.0)
-            
-            # Check for monotonic decay
-            if val_L > 0 and val_Lm1 > val_L and val_Lm2 > val_Lm1:
-                q = val_L / val_Lm1
-                q_prev = val_Lm1 / val_Lm2
-                
-                # Stability check: q < 1 and consistent
-                if q < 0.95 and abs(q - q_prev) < 0.2:
-                    tail_correction = val_L * q / (1.0 - q)
-                    if tail_correction > 0:
-                        sigma_energy_au += tail_correction
-                        partial_L_contribs["born_topup"] = tail_correction
-                        logger.debug(
-                            "Ionization SDCS top-up: added %.2e (L>%d, q=%.3f)",
-                            tail_correction, L_last, q
-                        )
-        except Exception:
-            pass  # Safety fallback
+    try:
+        tail_correction, tail_method = _estimate_high_l_tail_sdcs(partial_L_contribs, sigma_energy_au)
+        if tail_correction > 0.0:
+            sigma_energy_au += tail_correction
+            partial_L_contribs["born_topup"] = tail_correction
+            logger.debug(
+                "Ionization SDCS top-up: +%.2e a.u. using %s tail model",
+                tail_correction, tail_method
+            )
+    except Exception as e:
+        logger.debug("Ionization SDCS top-up skipped: %s", e)
             
     tdcs_values = None
     if tdcs_amp is not None:
@@ -702,6 +815,7 @@ def compute_ionization_cs(
             },
             "numerics": {
                 "n_energy_steps": n_energy_steps,
+                "energy_quadrature": chan.energy_quadrature,
                 "L_max_projectile_base": chan.L_max_projectile,
                 "L_max_projectile_used": L_max_proj,
                 "L_max_projectile_cap": 100,
@@ -716,18 +830,40 @@ def compute_ionization_cs(
     E_total_final_eV = E_incident_eV - IP_eV
     
     # ========================================================================
-    # 3. Energy Integration Grid
+    # 3. SDCS Energy Quadrature (nodes + weights)
     # ========================================================================
-    steps = np.linspace(0.0, E_total_final_eV / 2.0, n_energy_steps + 1)
-    
-    # Clamp minimum energy for continuum solver stability
-    SAFE_MIN_EV = 0.1
-    steps = np.maximum(steps, SAFE_MIN_EV)
-    steps = np.unique(steps)  # Remove duplicates
-    
-    if len(steps) < 2:
-        # Recovery if range collapsed
-        steps = np.linspace(SAFE_MIN_EV, max(SAFE_MIN_EV + 0.5, E_total_final_eV / 2.0), n_energy_steps + 1)
+    nodes_eV, weights_E_au, quad_method = _build_sdcs_energy_quadrature(
+        E_total_final_eV=E_total_final_eV,
+        n_energy_steps=n_energy_steps,
+        method=chan.energy_quadrature,
+    )
+    if len(nodes_eV) == 0:
+        metadata = {
+            "model": "static+polarization" if use_polarization else "static",
+            "use_polarization": use_polarization,
+            "grid": {
+                "r_min": float(grid.r[0]),
+                "r_max": float(grid.r[-1]),
+                "n_points": len(grid.r),
+            },
+            "numerics": {
+                "n_energy_steps": n_energy_steps,
+                "energy_quadrature": quad_method,
+                "L_max_projectile_base": chan.L_max_projectile,
+                "L_max_projectile_used": _auto_L_max(float(k_from_E_eV(E_incident_eV)), chan.L_max_projectile),
+                "L_max_projectile_cap": 100,
+                "L_max": chan.L_max,
+                "l_eject_max": chan.l_eject_max,
+                "convergence_threshold": chan.convergence_threshold,
+            },
+            "use_gpu": False,
+        }
+        return IonizationResult(E_incident_eV, IP_eV, 0.0, 0.0, [], None, None, metadata)
+
+    # Keep solver-safe energies (quadrature may include exact 0 in trapz mode).
+    E_half = max(0.5 * E_total_final_eV, 0.0)
+    safe_min_ej = min(0.05, max(1e-4, 1e-3 * max(E_half, 1e-3)))
+    eval_nodes_eV = np.maximum(nodes_eV, safe_min_ej)
     
     # ========================================================================
     # 4. Build Distorting Potentials
@@ -782,7 +918,7 @@ def compute_ionization_cs(
 
     # Prepare task arguments
     tasks = []
-    for E_eject_eV in steps:
+    for E_eject_eV in eval_nodes_eV:
         tasks.append((
             E_eject_eV, E_incident_eV, E_total_final_eV,
             chan, core_params, grid, V_core, orb_i,
@@ -833,7 +969,7 @@ def compute_ionization_cs(
                         val, partials, tdcs_vals = future.result()
                         results[idx] = (val, tdcs_vals, partials)
                         completed += 1
-                        logger.debug("[%d/%d] E_ej=%.2f eV -> SDCS=%.2e", completed, total_steps, steps[idx], val)
+                        logger.debug("[%d/%d] E_ej=%.2f eV -> SDCS=%.2e", completed, total_steps, eval_nodes_eV[idx], val)
                     except Exception as e:
                         logger.error("Step %d failed: %s", idx, e)
                         results[idx] = (0.0, None, {})
@@ -855,9 +991,7 @@ def compute_ionization_cs(
     # ========================================================================
     # Integration from 0 to (E-IP)/2 covers all unique final state configurations
     # for indistinguishable electrons. No factor of 2 is needed.
-    
-    steps_au = np.array([ev_to_au(e) for e in steps])
-    total_sigma_au = np.trapz(sdcs_values_au, steps_au)
+    total_sigma_au = float(np.dot(weights_E_au, np.asarray(sdcs_values_au, dtype=float)))
     total_sigma_cm2 = sigma_au_to_cm2(total_sigma_au)
 
     partial_waves_out: Optional[Dict[str, float]] = None
@@ -867,8 +1001,8 @@ def compute_ionization_cs(
         for partials in partials_per_step:
             keys.update(partials.keys())
         for key in sorted(keys):
-            vals = np.array([p.get(key, 0.0) for p in partials_per_step])
-            partial_waves_out[key] = sigma_au_to_cm2(np.trapz(vals, steps_au))
+            vals = np.array([p.get(key, 0.0) for p in partials_per_step], dtype=float)
+            partial_waves_out[key] = sigma_au_to_cm2(float(np.dot(weights_E_au, vals)))
         if partial_waves_out:
             top = sorted(partial_waves_out.items(), key=lambda x: x[1], reverse=True)[:3]
             logger.debug("Ionization partial waves: %s", ", ".join(f"{k}={v:.1e}" for k, v in top))
@@ -880,7 +1014,7 @@ def compute_ionization_cs(
     # 8. Prepare Output
     # ========================================================================
     sdcs_data_list = list(zip(
-        steps, 
+        eval_nodes_eV, 
         [sigma_au_to_cm2(s * ev_to_au(1.0)) for s in sdcs_values_au]
     ))
 
@@ -889,7 +1023,7 @@ def compute_ionization_cs(
         tdcs_data = []
         for angle_idx, angles_deg in enumerate(tdcs_angles_deg):
             values = []
-            for e_idx, E_eject_eV in enumerate(steps):
+            for e_idx, E_eject_eV in enumerate(eval_nodes_eV):
                 tdcs_val_au = tdcs_values_au[e_idx][angle_idx]
                 tdcs_val_cm2 = sigma_au_to_cm2(tdcs_val_au * ev_to_au(1.0))
                 values.append((E_eject_eV, tdcs_val_cm2))
@@ -908,6 +1042,8 @@ def compute_ionization_cs(
         },
         "numerics": {
             "n_energy_steps": n_energy_steps,
+            "energy_quadrature": quad_method,
+            "n_energy_nodes": int(len(eval_nodes_eV)),
             "L_max_projectile_base": chan.L_max_projectile,
             "L_max_projectile_used": L_max_proj,
             "L_max_projectile_cap": 100,

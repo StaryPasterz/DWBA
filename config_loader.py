@@ -93,6 +93,7 @@ class IonizationConfig:
     L_max: int = 15
     L_max_projectile: int = 50
     n_energy_steps: int = 10
+    energy_quadrature: Literal["gauss_legendre", "trapz_linear"] = "gauss_legendre"
 
 @dataclass
 class OscillatoryConfig:
@@ -313,7 +314,8 @@ def load_config(path: Union[str, Path]) -> DWBAConfig:
             l_eject_max=ion.get('l_eject_max', 3),
             L_max=ion.get('L_max', 15),
             L_max_projectile=ion.get('L_max_projectile', 50),
-            n_energy_steps=ion.get('n_energy_steps', 10)
+            n_energy_steps=ion.get('n_energy_steps', 10),
+            energy_quadrature=ion.get('energy_quadrature', 'gauss_legendre')
         )
     
     # Oscillatory
@@ -439,6 +441,13 @@ def validate_config(config: DWBAConfig) -> List[str]:
     # Hardware
     if config.hardware.gpu_memory_mode not in ("auto", "full", "block"):
         errors.append(f"Invalid gpu_memory_mode: '{config.hardware.gpu_memory_mode}'")
+
+    # Ionization
+    if config.ionization.energy_quadrature not in ("gauss_legendre", "trapz_linear"):
+        errors.append(
+            f"Invalid ionization.energy_quadrature: '{config.ionization.energy_quadrature}'. "
+            "Must be 'gauss_legendre' or 'trapz_linear'."
+        )
     
     return errors
 
@@ -476,6 +485,7 @@ def config_to_params_dict(config: DWBAConfig) -> Dict[str, Dict[str, Any]]:
             'L_max': config.ionization.L_max,
             'L_max_projectile': config.ionization.L_max_projectile,
             'n_energy_steps': config.ionization.n_energy_steps,
+            'energy_quadrature': config.ionization.energy_quadrature,
         },
         'oscillatory': {
             'method': config.oscillatory.method,
@@ -513,6 +523,25 @@ def generate_template_config(output_path: Union[str, Path],
     calc_type : str
         "excitation" or "ionization"
     """
+    if calc_type == "excitation":
+        calc_block = '''excitation:
+  L_max_integrals: 15   # int (fixed) or "auto" (qR-based estimate)
+  L_max_projectile: 5
+  n_theta: 200
+  pilot_energy_eV: 1000
+  pilot_L_max_integrals: "auto"
+  pilot_L_max_projectile: "auto"
+  pilot_n_theta: 50
+'''
+    else:
+        calc_block = '''ionization:
+  l_eject_max: 3
+  L_max: 15
+  L_max_projectile: 50
+  n_energy_steps: 10
+  energy_quadrature: "gauss_legendre"   # "gauss_legendre" or "trapz_linear"
+'''
+
     template = f'''# DWBA Calculation Configuration
 # Generated template for {calc_type} calculations
 
@@ -552,11 +581,7 @@ grid:
   n_points_max: 15000
   min_points_per_wavelength: 15
 
-{calc_type}:
-  L_max_integrals: 15   # int (fixed) or "auto" (excitation only, qR-based)
-  L_max_projectile: 5
-  n_theta: 200
-  pilot_energy_eV: 1000
+{calc_block}
 
 oscillatory:
   method: "advanced"          # "legacy", "advanced", "full_split"

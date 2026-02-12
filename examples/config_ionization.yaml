@@ -39,6 +39,7 @@ ionization:
   L_max: 18              # [dimensionless] Multipole L_max
   L_max_projectile: 60   # [dimensionless] Base projectile L (runtime auto-scales with energy)
   n_energy_steps: 16     # [count] SDCS integration steps
+  energy_quadrature: "gauss_legendre"  # "gauss_legendre" (recommended) or "trapz_linear"
 
 oscillatory:
   method: "full_split"           # "legacy" | "advanced" | "full_split" (best quality)

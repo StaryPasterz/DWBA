@@ -44,7 +44,7 @@ Comprehensive Python suite for computing electron–atom excitation and ionizati
 - **LOCAL Adaptive Grid Strategy** *(v2.12)*: Per-energy optimal grid sizing now fully functional with turning point bounds safeguards.
 - **Wavelength-Aware Grid Scaling** *(v2.14)*: Automatic grid density increase for high energies, ensuring adequate phase sampling in bound state and match point regions.
 - **Physics-Based Convergence** *(v2.15)*: Partial wave sum convergence based on per-angle DCS stability, correctly handling interference-induced non-monotonicity.
-- **Dual Top-Up Strategy** *(v2.16)*: Physics-based tail extrapolation using Coulomb-Bethe for E1 (dipole) transitions and Born geometric series for forbidden transitions.
+- **Dual Top-Up Strategy** *(v2.16+)*: Physics-based tail extrapolation using Coulomb-Bethe for E1 (dipole) transitions and Born geometric series for forbidden transitions; applied conservatively to **TCS only** (DCS angular shape is not globally rescaled).
 - **Optimized Defaults** *(v2.16)*: RK45 solver as default (correct for exponential grids), reduced base `n_points` (adaptive scaling handles high energies).
 - **Diagnostic Tools**: Comprehensive scripts in `debug/` for analyzing partial wave convergence, radial integrals, and method comparisons.
 - **Progress Reporting**: Real-time feedback and ETA for long-running partial wave summations.
@@ -283,7 +283,7 @@ All numerical defaults are organized by category and displayed before calculatio
 |----------|----------------|
 | **Grid** | `strategy`, `r_max`, `n_points`, scale factors |
 | **Excitation** | `L_max_integrals`, `L_max_projectile`, pilot settings |
-| **Ionization** | `l_eject_max`, `L_max`, `n_energy_steps` |
+| **Ionization** | `l_eject_max`, `L_max`, `n_energy_steps`, `energy_quadrature` |
 | **Oscillatory** | `method`, `CC_nodes`, thresholds |
 | **Hardware** | `gpu_block_size`, `gpu_memory_mode`, `n_workers` |
 | **Output** | `save_dcs`, `save_partial`, `calibrate` |
@@ -316,6 +316,7 @@ All numerical defaults are organized by category and displayed before calculatio
 │  L_max                  = 15           │
 │  L_max_projectile       = 50           │
 │  n_energy_steps         = 10           │
+│  energy_quadrature      = "gauss_legendre" │
 └────────────────────────────────────────┘
 
 ┌─ OSCILLATORY ──────────────────────────┐
@@ -379,7 +380,8 @@ All numerical defaults are organized by category and displayed before calculatio
 | `l_eject_max` | 3 | Maximum angular momentum of ejected electron ($0=s, 1=p, 2=d, 3=f$). |
 | `L_max` | 15 | Maximum multipole order for ionization integrals. |
 | `L_max_projectile` | 50 | Maximum projectile angular momentum (ionization requires more partial waves). |
-| `n_energy_steps` | 10 | Number of ejected electron energy points for $d\sigma/dE_{ej}$ integration. |
+| `n_energy_steps` | 10 | Controls the number of SDCS quadrature nodes (effective points for energy integration). |
+| `energy_quadrature` | `"gauss_legendre"` | Energy integration scheme for SDCS: `gauss_legendre` (recommended for smooth integrands) or `trapz_linear` (legacy linear-grid behavior). |
 
 ### Oscillatory Integral Parameters
 

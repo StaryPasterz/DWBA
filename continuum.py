@@ -247,9 +247,17 @@ def _coulomb_FG_asymptotic(l: int, eta: float, rho: float) -> Tuple[float, float
     return F, F_prime, G, G_prime
 
 
-def _find_match_point(r_grid: np.ndarray, U_arr: np.ndarray, k_au: float, l: int,
-                       threshold: float = 1e-2, idx_start: int = 0,
-                       chi: np.ndarray = None, z_ion: float = 0.0) -> Tuple[int, float]:
+def _find_match_point(
+    r_grid: np.ndarray,
+    U_arr: np.ndarray,
+    k_au: float,
+    l: int,
+    threshold: float = 1e-2,
+    idx_start: int = 0,
+    chi: np.ndarray = None,
+    z_ion: float = 0.0,
+    min_search_fraction: float = 0.25,
+) -> Tuple[int, float]:
     """
     Find optimal matching point r_m where potential is negligible.
     
@@ -277,6 +285,10 @@ def _find_match_point(r_grid: np.ndarray, U_arr: np.ndarray, k_au: float, l: int
     z_ion : float
         Ionic charge of target (0 for neutral, 1 for He+, etc.).
         If nonzero, includes Coulomb asymptotic validity requirement.
+    min_search_fraction : float
+        Lower bound for search start as a fraction of grid length.
+        Default 0.25 keeps conservative asymptotic matching. Set to 0.0 for
+        early-search diagnostics such as analytic-bypass checks.
     
     Returns
     -------
@@ -287,9 +299,10 @@ def _find_match_point(r_grid: np.ndarray, U_arr: np.ndarray, k_au: float, l: int
     N = len(r_grid)
     
     # Minimum margin: at least 50 points past idx_start for stable oscillations
-    # and to ensure we're well past any turning point effects
+    # and to ensure we're well past any turning point effects.
     MIN_MARGIN = 50
-    search_start = max(idx_start + MIN_MARGIN, N // 4)
+    frac = float(np.clip(min_search_fraction, 0.0, 0.9))
+    search_start = max(idx_start + MIN_MARGIN, int(frac * N))
     
     # Don't search past 90% of grid (edge effects)
     search_end = int(0.9 * N)
@@ -1593,14 +1606,34 @@ def solve_continuum_wave(
     # ==========================================================================
     
     # Try to find match point - if it's at very small r, potential is negligible everywhere
-    idx_match_check, r_m_check = _find_match_point(r, U_arr, k_au, l, threshold=1e-4, z_ion=z_ion)
+    idx_match_check, r_m_check = _find_match_point(
+        r,
+        U_arr,
+        k_au,
+        l,
+        threshold=1e-4,
+        z_ion=z_ion,
+        min_search_fraction=0.0,
+    )
     
-    # If r_m is found in the first 10% of grid, potential is negligible → use analytic
-    fraction_to_match = idx_match_check / len(r)
-    use_analytic_bypass = fraction_to_match < 0.15  # If match point is in first 15% of grid
+    # If r_m is found very early on the radial span, potential is negligible -> use analytic.
+    # Use radius fraction (not only index fraction), because non-uniform/log grids cluster
+    # many points near r_min and make index-based fractions misleading.
+    idx_fraction_to_match = idx_match_check / max(len(r) - 1, 1)
+    r_span = max(float(r[-1] - r[0]), 1e-30)
+    r_fraction_to_match = (float(r_m_check) - float(r[0])) / r_span
+    use_analytic_bypass = r_fraction_to_match < 0.15
+    # Coulomb channels are long-range by construction; Born-like bypass is
+    # not robust there. Keep bypass for neutral (short-range) channels only.
+    if use_analytic_bypass and abs(z_ion) > 1e-6:
+        use_analytic_bypass = False
+        logger.debug("L=%d: bypass disabled for ionic channel (z_ion=%.3f).", l, z_ion)
     
     if use_analytic_bypass:
-        logger.debug(f"L={l}: Analytic bypass (r_m={r_m_check:.1f} at {fraction_to_match*100:.0f}% of grid)")
+        logger.debug(
+            "L=%d: Analytic bypass (r_m=%.3f a0, r-fraction=%.1f%%, idx-fraction=%.1f%%)",
+            l, r_m_check, 100.0 * r_fraction_to_match, 100.0 * idx_fraction_to_match
+        )
         
         # Calculate Born approximation phase shift:
         # δ_l^Born ≈ -k ∫₀^∞ U(r) [j_l(kr)]² r² dr
@@ -1620,7 +1653,16 @@ def solve_continuum_wave(
             chi_analytic = r * jl_vals * k_au
             # Apply phase shift properly via normalization factor
             A_norm = np.sqrt(2.0 / np.pi)  # δ(k-k') normalization
-            return ContinuumWave(l, k_au, A_norm * chi_analytic, delta_born, eta=0.0, sigma_l=0.0, phase_method="born")
+            return ContinuumWave(
+                l=l,
+                k_au=k_au,
+                chi_of_r=A_norm * chi_analytic,
+                phase_shift=delta_born,
+                eta=0.0,
+                sigma_l=0.0,
+                phase_method="born",
+                solver_method="analytic_bypass",
+            )
         else:
             # Ionic: use asymptotic Coulomb with Born phase
             eta = -z_ion / k_au
@@ -1630,7 +1672,16 @@ def solve_continuum_wave(
             # Zero below turning point (asymptotic invalid there)
             r_turning = np.sqrt(l * (l + 1)) / k_au
             chi_coulomb[r < 0.5 * r_turning] = 0.0
-            return ContinuumWave(l, k_au, chi_coulomb, delta_born, eta=eta, sigma_l=coulomb_phase, phase_method="born")
+            return ContinuumWave(
+                l=l,
+                k_au=k_au,
+                chi_of_r=chi_coulomb,
+                phase_shift=delta_born,
+                eta=eta,
+                sigma_l=coulomb_phase,
+                phase_method="born",
+                solver_method="analytic_bypass",
+            )
 
 
     # The centrifugal barrier l(l+1)/r^2 is huge at small r.
@@ -1642,7 +1693,7 @@ def solve_continuum_wave(
     # Empirically: RK45 becomes unstable around L > 10 due to turning point effects.
     # For low k (low energy), instability starts even earlier.
     #
-    # NOW USING NUMEROV AS PRIMARY METHOD - more stable chi propagation
+    # Solver dispatch remains configurable (`solver`), with fallbacks for robustness.
     # ==========================================================================
     
     idx_start = 0
@@ -2041,16 +2092,24 @@ def solve_continuum_wave(
     # =========================================================================
     # v2.14+: AMPLITUDE VALIDATION AND ENFORCEMENT
     # =========================================================================
-    # Ensure asymptotic amplitude is exactly √(2/π) ≈ 0.7979 for δ(k-k') normalization.
+    # Ensure asymptotic amplitude is exactly 1.0 (unit amplitude convention).
     # This fixes inconsistent amplitudes across L that cause upturn artifacts.
     # =========================================================================
     
     # Compute actual amplitude in asymptotic region (RMS of sine wave = A/√2)
+    # Use grid-weighted mean to avoid bias from non-uniform (exponential) grid spacing.
+    # On exponential grids, np.mean weights all points equally, but most points
+    # cluster near r=0 where χ≈0, giving a falsely low RMS and overcorrecting amplitude.
     asym_region = chi_final[idx_match:]
+    asym_weights = grid.w_trapz[idx_match:]
     if len(asym_region) > 10:
-        chi_rms = np.sqrt(np.mean(asym_region**2))
+        w_sum = np.sum(asym_weights)
+        if w_sum > 0:
+            chi_rms = np.sqrt(np.sum(asym_weights * asym_region**2) / w_sum)
+        else:
+            chi_rms = np.sqrt(np.mean(asym_region**2))
         actual_amplitude = chi_rms * np.sqrt(2.0)  # A where χ ~ A·sin(...)
-        expected_amplitude = np.sqrt(2.0 / np.pi)  # ≈ 0.7979
+        expected_amplitude = 1.0  # Unit amplitude convention (article Eq. 412 uses unit-amp χ_l)
         
         # If amplitude deviates significantly (>5%), renormalize
         amplitude_ratio = actual_amplitude / expected_amplitude if expected_amplitude > 0 else 1.0

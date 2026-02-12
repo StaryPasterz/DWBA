@@ -4,7 +4,77 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [v2.33] — 2026-02-12 — Ionization Quadrature Upgrade and High-L Tail Stabilization
+
+**Commit:** `TBD`
+
+### Changed
+
+**Ionization SDCS/TICS energy integration** (`ionization.py`)
+- Replaced fixed linear-grid trapezoidal integration as default with configurable SDCS quadrature:
+  - `gauss_legendre` (new default, recommended),
+  - `trapz_linear` (legacy behavior).
+- Added weighted-energy integration path (`dot(weights, SDCS)`) for total ionization cross section and per-partial-wave integrated outputs.
+- Added ionization metadata fields:
+  - `energy_quadrature`,
+  - `n_energy_nodes`.
+
+**High-L ionization top-up robustness** (`ionization.py`)
+- Replaced purely geometric high-L tail extrapolation with a conservative multi-model estimator:
+  - power-law fit in `L`,
+  - geometric fallback.
+- Added acceptance guard on tail fraction to reject unstable extrapolations.
+
+### Fixed
+
+**Analytic bypass safety in ionic channels** (`continuum.py`)
+- Kept analytic bypass enabled for neutral channels, but disabled it for ionic channels where long-range Coulomb asymptotics make Born-like bypass unreliable.
+
+### Configuration / Docs
+
+- Added `ionization.energy_quadrature` to YAML/config pipeline:
+  - `config_loader.py` dataclass, parsing, validation, params conversion, templates.
+  - `DW_main.py` defaults and ionization spec wiring.
+  - `examples/config_ionization.yaml` updated with recommended value.
+- Updated `README.md` ionization parameter reference.
+
+## [v2.32] — 2026-02-12 — Analytic Bypass Reachability, Split-Point Physics Guards, and Top-Up Stabilization
+
+**Commit:** `TBD`
+
+### Fixed
+
+**Analytic bypass reachability on non-uniform grids** (`continuum.py`)
+- Match-point precheck now allows early search for bypass classification (`min_search_fraction=0.0`) without weakening normal match-point selection.
+- Bypass decision now uses **radial-span fraction** (`r_m` relative to `[r_min, r_max]`) instead of only index fraction, which was misleading on log/non-uniform grids.
+- Bypass result now sets `solver_method="analytic_bypass"` explicitly in `ContinuumWave`.
+
+**Top-up application no longer distorts DCS shape** (`driver.py`)
+- Removed global DCS rescaling by top-up factor.
+- Top-up is now applied to **TCS only** and accepted only when tail fraction is stable (`< 20%`).
+- Added runtime metadata fields: `topup_applied`, `topup_type`, `topup_value_cm2`, `topup_tail_fraction`.
+
+### Changed
+
+**GPU split-point physics parity with CPU path** (`dwba_matrix_elements.py`)
+- Added `_refine_idx_limit_physics(...)` and applied it in GPU radial-integral path.
+- Split index is now guarded by:
+  - 99% bound-state extent coverage,
+  - asymptotic validity check on effective potential (`V_eff / E_kin`).
+
+**Undersampling-aware phase step in Filon kernels** (`oscillatory_integrals.py`)
+- Added `_adaptive_phase_increment_for_grid(...)`.
+- Filon and Filon-exchange 2D kernels now reduce phase increment on undersampled grids (bounded between `pi/16` and `pi/4`).
+
+### Added
+
+**Quick CPU/GPU parity diagnostic** (`debug/test_cpu_gpu_parity.py`)
+- Added lightweight script for synthetic parity checks of `radial_ME_all_L` vs `radial_ME_all_L_gpu`.
+- Script returns `SKIP` when CuPy/GPU runtime is unavailable.
+
 ## [v2.31] — 2026-02-12 — Physics-Based Auto Multipole Cutoff for Excitation
+
+**Commit:** `a0370fe` (Edit_99)
 
 ### Added
 
@@ -33,6 +103,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [v2.30] — 2026-02-12 — Example Config Refresh (Quality-Oriented Baseline)
 
+**Commit:** `a0370fe` (Edit_99)
+
 ### Documentation / UX
 
 **Updated example YAML templates** (`examples/config_excitation.yaml`, `examples/config_ionization.yaml`)
@@ -44,6 +116,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Updated ionization example to set `output.calibrate: false` (calibration applies to excitation, not ionization).
 
 ## [v2.29] — 2026-02-12 — Batch Log-Grid Threshold Regeneration Parity
+
+**Commit:** `a0370fe` (Edit_99)
 
 ### Fixed
 
@@ -58,6 +132,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Updated `README.md` performance notes with batch log-grid thresholding behavior.
 
 ## [v2.28] — 2026-02-11 — Partial-Wave Runtime Guardrails and Result Metadata
+
+**Commit:** `a0370fe` (Edit_99)
 
 ### Critical Fixes
 
@@ -90,6 +166,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Documented new excitation output metadata fields for partial-wave auditing.
 
 ## [v2.27] — 2026-02-11 — Debug Suite Cleanup and Deep-Tool Integration
+
+**Commit:** `e7f01c3` (Edit_98)
 
 ### Debug
 
@@ -129,6 +207,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [v2.26] — 2026-02-11 — Documentation Sync for Batch Outer-Tail and GPU Pool Hygiene
 
+**Commit:** `415a6ab` (Edit_97)
+
 ### Performance
 
 **GPU memory-pool hygiene guardrails** (`dwba_matrix_elements.py`)
@@ -143,6 +223,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - dynamic `l_f` precompute bound (`L_max_proj + L_max_integrals`) and bounded DCS-history buffer (`deque(maxlen=4)`).
 
 ## [v2.25] — 2026-02-10 — Batch Outer-Tail Integrals for Multi-L Excitation
+
+**Commit:** `415a6ab` (Edit_97)
 
 ### Performance
 
@@ -163,6 +245,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Updated `README.md` with new batch outer-tail environment variables and optimization notes.
 
 ## [v2.24] — 2026-02-10 — Outer-Tail Guardrails & Ratio-Cache Retention Fixes
+
+**Commit:** `a4d77a1` (Edit_96)
 
 ### Performance
 
@@ -196,6 +280,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [v2.23] — 2026-02-10 — GPU Ratio-Path Memory Control & Cache Stability
 
+**Commit:** `a4d77a1` (Edit_96)
+
 ### Performance
 
 **GPU ratio-path policy and memory-aware fallback** (`dwba_matrix_elements.py`)
@@ -222,6 +308,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [v2.22] — 2026-02-07 — Excitation Scaling Parity & Convergence Ordering
 
+**Commit:** `a4d77a1` (Edit_96)
+
 ### Critical Fixes
 
 **Config excitation `N_equiv` parity** (`DW_main.py`)
@@ -242,6 +330,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - synthetic pre-add vs post-add convergence-order behavior.
 
 ## [v2.21] — 2026-02-07 — GPU Hot-Path Logging & Block Auto-Tune Stability
+
+**Commit:** `7f28a7a` (Edit_95)
 
 ### Performance
 
@@ -270,6 +360,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Documented effective-memory-aware block auto-tuning and on-demand block-size tuning behavior.
 
 ## [v2.20] — 2026-02-06 — Adaptive Grid Parity & Ionic Phase-Sampling Finalization
+
+**Commit:** `34779cb` (Edit_94)
 
 ### Critical Fixes
 
@@ -359,6 +451,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [v2.19] — 2026-01-24 — Grid Scaling Propagation Fixes
 
+**Commit:** `4903f37` (Edit_93)
+
 ### Critical Fixes
 
 **L_max_effective Propagation** (`DW_main.py`)
@@ -379,6 +473,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ---
 
 ## [v2.18] — 2026-01-22 — Critical Phase Extraction & Asymptotic Fixes
+
+**Commit:** `17a3816` (Edit_92)
 
 ### Critical Fixes
 
@@ -419,6 +515,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ---
 
 ## [v2.17] — 2026-01-20 — Pilot Calibration Refactor
+
+**Commit:** `40626b1` (Edit_89)
 
 ### Code Quality Improvements
 
@@ -582,7 +680,6 @@ oscillatory:
   solver: "rk45"  # Recommended for exponential grids
   # Options: "auto", "rk45" (recommended), "johnson", "numerov"
 ```
-
 
 ---
 

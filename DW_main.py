@@ -163,6 +163,7 @@ DEFAULTS = {
         "L_max": 15,              # Multipole L_max
         "L_max_projectile": 50,   # Base partial wave L_max
         "n_energy_steps": 10,     # SDCS integration steps
+        "energy_quadrature": "gauss_legendre",  # "gauss_legendre" / "trapz_linear"
     },
     
     # --- Oscillatory Integrals ---
@@ -387,9 +388,9 @@ def log_active_configuration(params: dict, context: str = "calculation") -> None
     # Ionization-specific
     if 'ionization' in params:
         ion = params['ionization']
-        logger.info("Ionization: l_eject_max=%d, L_max=%d, n_energy_steps=%d",
+        logger.info("Ionization: l_eject_max=%d, L_max=%d, n_energy_steps=%d, quadrature=%s",
                    ion.get('l_eject_max', 3), ion.get('L_max', 15),
-                   ion.get('n_energy_steps', 10))
+                   ion.get('n_energy_steps', 10), ion.get('energy_quadrature', 'gauss_legendre'))
     
     # Oscillatory configuration
     if 'oscillatory' in params:
@@ -1256,6 +1257,7 @@ def run_scan_ionization(run_name) -> None:
     L_max = params['ionization']['L_max']
     L_max_proj = params['ionization']['L_max_projectile']
     n_energy_steps = params['ionization']['n_energy_steps']
+    energy_quadrature = params['ionization'].get('energy_quadrature', 'gauss_legendre')
     
     # Set oscillatory configuration globally (merge oscillatory + hardware for backward compat)
     osc_config = {**params['oscillatory'], **params['hardware']}
@@ -1268,7 +1270,8 @@ def run_scan_ionization(run_name) -> None:
         l_eject_max=l_eject_max,
         L_max=L_max,
         L_i_total=li,
-        L_max_projectile=L_max_proj
+        L_max_projectile=L_max_proj,
+        energy_quadrature=energy_quadrature
     )
     
     # Use parameters from library
@@ -2286,7 +2289,8 @@ def run_from_config(config_path: str, verbose: bool = False) -> None:
             l_eject_max=params['ionization']['l_eject_max'],
             L_max=params['ionization']['L_max'],
             L_i_total=li,
-            L_max_projectile=params['ionization']['L_max_projectile']
+            L_max_projectile=params['ionization']['L_max_projectile'],
+            energy_quadrature=params['ionization'].get('energy_quadrature', 'gauss_legendre')
         )
         
         # Get ionization threshold and reusable target preparation
