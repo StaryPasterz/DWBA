@@ -35,7 +35,7 @@ from __future__ import annotations
 import numpy as np
 from collections import deque
 from dataclasses import dataclass, replace
-from typing import Optional, Dict, Tuple, List, Any
+from typing import Optional, Dict, Tuple, Any
 import time
 import concurrent.futures
 import os
@@ -69,7 +69,6 @@ from dwba_matrix_elements import (
     radial_ME_all_L_gpu,
     HAS_CUPY,
     check_cupy_runtime,
-    RadialDWBAIntegrals,
     OscillatoryMethod,
 )
 from sigma_total import (
@@ -752,7 +751,6 @@ def compute_total_excitation_cs(
         grid, V_core, orb_i, orb_f, 
         k_i_au=k_i_au, 
         k_f_au=k_f_au,
-        use_exchange=False,  # Article uses static potentials only
         use_polarization=use_polarization_potential
     )
     

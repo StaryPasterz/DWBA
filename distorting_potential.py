@@ -451,7 +451,6 @@ def build_distorting_potentials(
     orbital_final: BoundOrbital,
     k_i_au: float = 0.5,
     k_f_au: float = 0.5,
-    use_exchange: bool = False,  # Deprecated - always False per article
     use_polarization: bool = False
 ) -> Tuple[DistortingPotential, DistortingPotential]:
     """
@@ -464,9 +463,6 @@ def build_distorting_potentials(
       
     If use_polarization=True, adds a heuristic polarization potential
     (SEP-style; not part of the article DWBA).
-    
-    Note: use_exchange parameter is deprecated and ignored. Exchange in
-    potentials was removed as it caused double-counting with T-matrix exchange.
     
     Convenience helper:
     Given the core potential V_{A+}(r) and two bound orbitals
@@ -523,17 +519,12 @@ def build_distorting_potentials(
     if V_core_array.shape != r.shape:
         raise ValueError("build_distorting_potentials: V_core_array/grid mismatch.")
 
-    # energies
-    E_i = 0.5 * k_i_au**2
-    E_f = 0.5 * k_f_au**2
-
     # Hartree potentials
     V_H_i = hartree_potential_from_orbital(grid, orbital_initial)
     V_H_f = hartree_potential_from_orbital(grid, orbital_final)
 
     # Distorting potentials - ALWAYS use Static (Article Eq. 456-463)
     # U_j = V_core + V_H_j
-    # Note: use_exchange parameter is deprecated and ignored
     U_i_arr = U_distorting(V_core_array, V_H_i)
     U_f_arr = U_distorting(V_core_array, V_H_f)
         

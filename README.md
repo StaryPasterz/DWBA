@@ -103,7 +103,7 @@ The calculation evaluates both **direct ($f$)** and **exchange ($g$)** scatterin
 ### 2. Differential Cross Section (DCS)
 The unpolarized DCS for excitation (Eq. 226) includes proper spin-weighting for singlet and triplet channels:
 $$\frac{d\sigma}{d\Omega} = N (2\pi)^4 \frac{k_f}{k_i} \frac{1}{2L_i+1} \sum_{M_i, M_f} \left[ \frac{3}{4}|f-g|^2 + \frac{1}{4}|f+g|^2 \right]$$
-*Note: For Ionization, the (e, 2e) TDCS follows a similar $(2\pi)^4$ kinematic convention (Jones/Madison 1993).*
+*Note: For ionization, the (e, 2e) TDCS follows the same $(2\pi)^4$ kinematic convention used in DWBA/TDWBA literature (e.g., Jones/Madison, 2003).*
 
 ### 3. Potential Models
 - **SAE Core Potential (Eq. 69):** Used to solve for target bound states $\Phi_j$ and the core potential:
@@ -154,7 +154,7 @@ $$f(x) = \frac{1}{x} \left[ \beta \ln x + \gamma \left( 1 - \frac{1}{x} \right) 
 
 ## Requirements
 - Python ≥ 3.9
-- NumPy, SciPy, Matplotlib
+- NumPy, SciPy, Matplotlib, PyYAML
 - (Optional) CuPy for GPU acceleration
 
 ## Setup
@@ -163,6 +163,7 @@ python -m venv .venv
 .venv\Scripts\activate        # Windows
 source .venv/bin/activate     # Linux/Mac
 pip install numpy scipy matplotlib
+pip install pyyaml
 ```
 
 For GPU support:
@@ -234,6 +235,7 @@ Comprehensive (e, 2e) pipeline for computing ionization cross sections.
   - **Exchange**: Handled via angle-swapping logic (Jones/Madison) for indistinguishable electrons.
   - **Automation**: Minimum $L_{max}=3$ floor and adaptive $L_{max}$ scaling based on incident momentum.
   - **Energy Quadrature**: Configurable SDCS integration (`gauss_legendre` recommended, `trapz_linear` legacy).
+  - **State inputs**: Ionization uses `states.initial` as the shell to ionize; `states.final` is kept for config schema compatibility.
   - **High-L Tail Diagnostics**: Conservative high-L top-up with per-energy fit diagnostics in runtime metadata.
 - **Calibration**: Normalization applies to **excitation only**; ionization plots and results show raw DWBA data.
 - **Results**: Integrated and differential data saved to `results/results_<run>_ion.json`.
@@ -456,7 +458,7 @@ The code supports three strategies for determining the radial grid (`r_max`, `n_
 
 2. **Local** *(v2.12 bounds fix)*
    - Recalculates optimal grid parameters for *each* energy point.
-   - Re-runs target preparation (bound states, core potential) for every point.
+   - Re-runs target preparation when adaptive parameters change (first point always; then as needed).
    - **Pros**: Most accurate, optimal grid size per energy.
    - **Cons**: Slower due to repeated target preparation.
    - *Note: v2.12 fixed turning point overflow when high-L waves extend beyond small grids.*
@@ -487,7 +489,7 @@ precomputed in batch across many multipoles `L` and reused in the GPU `L` loop. 
 enabled only when enough active moments are detected (`DWBA_OUTER_BATCH_MIN_ACTIVE`) and it
 falls back automatically to the legacy per-`L` outer-tail integration on failure.
 
-Outputs: `results_<run>_exc.json`, `results_<run>_ion.json` in project root. Excitation entries include angular grids (`theta_deg`) and both raw/calibrated DCS in a.u. for later plotting. Ionization entries include SDCS data and optional TDCS entries (`angles_deg`, `values`).
+Outputs: `results/results_<run>_exc.json`, `results/results_<run>_ion.json`. Excitation entries include angular grids (`theta_deg`) and both raw/calibrated DCS in a.u. for later plotting. Ionization entries include SDCS data and optional TDCS entries (`angles_deg`, `values`). For backward compatibility, legacy root-level JSON files are still discoverable.
 
 Excitation JSON entries now also store runtime convergence metadata:
 - `L_max_integrals_used` - effective multipole cutoff used in radial Coulomb integrals
@@ -520,7 +522,7 @@ Contains SAE model potential parameters for various atoms:
 ### Adding New Atoms
 1. Run `python fit_potential.py`
 2. Enter atomic data (Z, Zc, n, l, binding energy)
-3. Wait for optimization (~30-60s)
+3. Wait for optimization (runtime depends on bounds and machine; typically tens of seconds)
 4. Parameters are automatically saved to `atoms.json`
 
 ## Debugging and Logging
@@ -532,6 +534,17 @@ set DWBA_LOG_LEVEL=DEBUG    # Windows
 export DWBA_LOG_LEVEL=DEBUG # Linux/Mac
 ```
 Levels: DEBUG, INFO, WARNING, ERROR, CRITICAL
+
+### Runtime Info Logs (interpretation)
+
+- `Config updated: ...`  
+  Printed when runtime oscillatory/hardware config differs from internal defaults. It lists changed keys only.
+
+- `L_max limited by turning point/grid ...`  
+  Safety clamp: requested projectile cutoff exceeded current grid/energy limit; computation continues with safe `L_max`.
+
+- `Continuum waves computed (E=...): analytic_bypass: X, ...`  
+  Per-energy solver usage summary. High `analytic_bypass` counts are expected in eligible short-range channels.
 
 ### Hot-Path Debug Control
 
@@ -903,23 +916,25 @@ integrals = radial_ME_all_L(
 - **Near-threshold**: Grid auto-scales, but consider using log energy grid
 - **Batch log-grid thresholding**: In YAML/config runs, `energy.type: log` is regenerated above threshold when needed (instead of only filtering), keeping comparable point density.
 - **keV energies**: Ensure sufficient `L_max_projectile`
-- **Turning point warning**: Logs show when L_max is limited; r_max is auto-increased
-- **GPU**: Install CuPy for 5-10× speedup on radial integrals (auto-detected)
-- **Parallel**: Code auto-detects CPU cores for multiprocessing
+- **Turning point warning**: Logs show when `L_max` is limited by current grid/energy; increase `r_max` or use adaptive strategy for higher partial-wave coverage.
+- **GPU**: Install CuPy for substantial speedup on radial integrals (exact gain depends on grid size, `L_max`, and GPU memory mode)
+- **Parallel**: CPU worker policy is configurable (`n_workers`): `auto` uses a balanced cap, `max` uses all logical cores
 
 ### Performance Benchmarks
+
+Representative values only (hardware- and workload-dependent).
 
 | Operation | Time | Notes |
 |-----------|------|-------|
 | CC weights (vectorized) | ~0.1 ms | Cached at module level |
-| Filon integration | ~0.9 ms | 1000 points |
-| Filon Exchange | ~3.3 ms | 500 points |
-| GPU radial integrals | 5-10× faster | Pure GPU path |
+| Filon integration | ~0.9 ms | Example for ~1000 points |
+| Filon Exchange | ~3.3 ms | Example for ~500 points |
+| GPU radial integrals | Often multi-x faster | Relative gain varies with problem size and memory path |
 
 #### GPU Block-wise Architecture
 
 To prevent system memory exhaustion on large grids:
-- Kernels are built in **blocks of 8192 rows** (default).
+- Kernels are built in GPU blocks with **auto-tuned size** by default (`gpu_block_size: auto`), or explicit fixed size if configured.
 - Each block calculates a subset of the $r_1$ outer integral.
 - Intermediate block buffers are released and memory is reused by the CuPy pool.
 - Result: **Constant VRAM usage**, independent of $N_{grid}$.
@@ -1019,7 +1034,7 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and detailed changes.
 
 1. **Article**: Lai et al., J. At. Mol. Sci. 5, 311-323 (2014)
 2. **SAE Potential**: X.M. Tong, C.D. Lin, J. Phys. B 38, 2593 (2005)
-3. **Ionization TDCS**: S. Jones, D.H. Madison et al., Phys. Rev. A 48, 2285 (1993)
+3. **Ionization TDCS**: S. Jones, D.H. Madison, Phys. Rev. A 67, 052701 (2003)
 4. **Inner-shell ionization**: D. Bote, F. Salvat, Phys. Rev. A 77, 042701 (2008)
 
 ---

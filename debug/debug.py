@@ -278,7 +278,7 @@ def run_continuum_diagnostic(E_eV: float = 50.0, L_max: int = 10, atom: str = "H
     orb_1s = states[0]
     
     k = k_from_E_eV(E_eV)
-    U_i, _ = build_distorting_potentials(grid, V_core, orb_1s, orb_1s, k, k, use_exchange=False)
+    U_i, _ = build_distorting_potentials(grid, V_core, orb_1s, orb_1s, k, k)
     
     result.add_data("E_eV", E_eV)
     result.add_data("k_au", float(k))
@@ -393,7 +393,7 @@ def run_radial_integral_diagnostic(E_eV: float = 50.0, method_compare: bool = Tr
     ki = k_from_E_eV(E_eV)
     kf = k_from_E_eV(E_f)
     
-    U_i, U_f = build_distorting_potentials(grid, V_core, orb_1s, orb_2s, ki, kf, use_exchange=False)
+    U_i, U_f = build_distorting_potentials(grid, V_core, orb_1s, orb_2s, ki, kf)
     
     result.add_data("E_inc_eV", E_eV)
     result.add_data("E_final_eV", E_f)
@@ -729,7 +729,7 @@ def run_phase_method_comparison() -> DiagnosticResult:
     states = solve_bound_states(grid, V_core, l=0, n_states_max=2)
     orb_1s = states[0]
     k = k_from_E_eV(50.0)
-    U_i, _ = build_distorting_potentials(grid, V_core, orb_1s, orb_1s, k, k, use_exchange=False)
+    U_i, _ = build_distorting_potentials(grid, V_core, orb_1s, orb_1s, k, k)
     
     print(f"\n  {'L':>3} | {'δ_hybrid':>10} | {'δ_logderiv':>10} | {'δ_lsq':>10} | {'Method Used':<15}")
     print("  " + "-" * 65)

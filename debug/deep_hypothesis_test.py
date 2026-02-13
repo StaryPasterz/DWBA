@@ -147,8 +147,7 @@ def test_hypothesis_3_radial_integral_L_dependence():
         
         U_i, U_f = build_distorting_potentials(
             grid, V_core, orb_i, orb_f,
-            k_i_au=ki, k_f_au=kf,
-            use_exchange=False, use_polarization=False
+            k_i_au=ki, k_f_au=kf, use_polarization=False
         )
         
         # Pick a specific l_i, l_f pair
@@ -261,8 +260,7 @@ def test_grid_density_impact():
         
         U_i, U_f = build_distorting_potentials(
             grid, V_core, orb_i, orb_f,
-            k_i_au=ki, k_f_au=kf,
-            use_exchange=False, use_polarization=False
+            k_i_au=ki, k_f_au=kf, use_polarization=False
         )
         
         # Compute sigma for L=0 to 10

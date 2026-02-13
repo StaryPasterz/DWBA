@@ -57,7 +57,6 @@ Uses logging_config. Set DWBA_LOG_LEVEL=DEBUG for verbose output.
 from __future__ import annotations
 import numpy as np
 import time
-import os
 from dataclasses import dataclass
 from typing import Optional, Dict, Tuple, List, Any
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -68,7 +67,6 @@ from grid import (
     ev_to_au,
     k_from_E_eV,
     compute_safe_L_max,
-    compute_required_r_max,
 )
 from potential_core import (
     CorePotentialParams,
@@ -767,9 +765,7 @@ def compute_ionization_cs(
     r_max: float = 200.0,
     n_points: int = 3000,
     n_energy_steps: int = 10,
-    use_exchange: bool = False,
     use_polarization: bool = False,
-    exchange_method: str = "fumc",
     n_workers: Optional[int] = None,
     tdcs_angles_deg: Optional[List[Tuple[float, float, float]]] = None,
     # Optimization Injection
@@ -806,12 +802,8 @@ def compute_ionization_cs(
         Number of radial grid points.
     n_energy_steps : int
         Number of energy integration steps.
-    use_exchange : bool
-        Deprecated. Exchange potential is not used for ionization (ignored).
     use_polarization : bool
         Include polarization potential.
-    exchange_method : str
-        Deprecated. Retained for API compatibility (ignored).
     n_workers : Optional[int]
         Number of parallel workers (default: CPU count).
     tdcs_angles_deg : Optional[List[Tuple[float, float, float]]]
@@ -830,12 +822,6 @@ def compute_ionization_cs(
         Contains total cross section, SDCS/TDCS data, partial waves, and metadata.
     """
     t_start = time.perf_counter()
-    if use_exchange or exchange_method != "fumc":
-        logger.debug(
-            "Ionization: use_exchange/exchange_method ignored (static U_j only). "
-            "use_exchange=%s, exchange_method=%s",
-            use_exchange, exchange_method
-        )
     if use_polarization:
         logger.warning(
             "Ionization: polarization potential is heuristic and not part of the article DWBA."
@@ -942,7 +928,6 @@ def compute_ionization_cs(
     U_inc_obj, _ = build_distorting_potentials(
         grid, V_core, orb_i, orb_i, 
         k_i_au=k_i_au_in, 
-        use_exchange=False,  # Article uses static potentials only
         use_polarization=use_polarization
     )
     

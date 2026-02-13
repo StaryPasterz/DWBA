@@ -63,7 +63,7 @@ def run_diagnostic():
         k_f = np.sqrt(2.0 * E_f_au)
         
         # Build potentials for this energy
-        U_i, U_f = build_distorting_potentials(grid, V_core, orb_1s, orb_2s, k_i, k_f, use_exchange=False)
+        U_i, U_f = build_distorting_potentials(grid, V_core, orb_1s, orb_2s, k_i, k_f)
         
         for L in [0, 1, 2, 3]:
             try:
@@ -101,7 +101,7 @@ def run_diagnostic():
     k_i = np.sqrt(2.0 * E_inc_au)
     k_f = np.sqrt(2.0 * E_f_au)
     
-    U_i, U_f = build_distorting_potentials(grid, V_core, orb_1s, orb_2s, k_i, k_f, use_exchange=False)
+    U_i, U_f = build_distorting_potentials(grid, V_core, orb_1s, orb_2s, k_i, k_f)
     
     # Calculate radial overlaps
     r = grid.r

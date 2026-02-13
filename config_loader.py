@@ -24,7 +24,6 @@ import yaml
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional, List, Literal, Dict, Any, Union
-import json
 
 from logging_config import get_logger
 
@@ -250,6 +249,8 @@ def load_config(path: Union[str, Path]) -> DWBAConfig:
     
     # Parse top-level fields
     config = DWBAConfig()
+    osc_defaults = OscillatoryConfig()
+    hw_defaults = HardwareConfig()
     
     # Simple fields
     if 'run_name' in raw_data:
@@ -341,15 +342,15 @@ def load_config(path: Union[str, Path]) -> DWBAConfig:
     if 'oscillatory' in raw_data:
         osc = raw_data['oscillatory']
         config.oscillatory = OscillatoryConfig(
-            method=osc.get('method', 'advanced'),
-            CC_nodes=osc.get('CC_nodes', 5),
-            phase_increment=osc.get('phase_increment', 1.5708),
-            min_grid_fraction=osc.get('min_grid_fraction', 0.1),
-            k_threshold=osc.get('k_threshold', 0.5),
-            max_chi_cached=osc.get('max_chi_cached', 20),
-            phase_extraction=osc.get('phase_extraction', 'hybrid'),  # v2.11+
-            solver=osc.get('solver', 'auto'),  # v2.13+
-            analytic_bypass=_parse_bool(osc.get('analytic_bypass', True), True),  # v2.34+
+            method=osc.get('method', osc_defaults.method),
+            CC_nodes=osc.get('CC_nodes', osc_defaults.CC_nodes),
+            phase_increment=osc.get('phase_increment', osc_defaults.phase_increment),
+            min_grid_fraction=osc.get('min_grid_fraction', osc_defaults.min_grid_fraction),
+            k_threshold=osc.get('k_threshold', osc_defaults.k_threshold),
+            max_chi_cached=osc.get('max_chi_cached', osc_defaults.max_chi_cached),
+            phase_extraction=osc.get('phase_extraction', osc_defaults.phase_extraction),  # v2.11+
+            solver=osc.get('solver', osc_defaults.solver),  # v2.13+
+            analytic_bypass=_parse_bool(osc.get('analytic_bypass', osc_defaults.analytic_bypass), osc_defaults.analytic_bypass),  # v2.34+
         )
     
     # Hardware (new section, with backward compatibility for oscillatory GPU params)
@@ -359,11 +360,11 @@ def load_config(path: Union[str, Path]) -> DWBAConfig:
     # Backward compatibility: if GPU params are in oscillatory (old format), use them
     config.hardware = HardwareConfig(
         gpu_block_size=_parse_gpu_block_size(
-            hw_data.get('gpu_block_size', osc_data.get('gpu_block_size', 'auto'))
+            hw_data.get('gpu_block_size', osc_data.get('gpu_block_size', hw_defaults.gpu_block_size))
         ),
-        gpu_memory_mode=hw_data.get('gpu_memory_mode', osc_data.get('gpu_memory_mode', 'auto')),
-        gpu_memory_threshold=hw_data.get('gpu_memory_threshold', osc_data.get('gpu_memory_threshold', 0.8)),
-        n_workers=hw_data.get('n_workers', osc_data.get('n_workers', 'auto'))
+        gpu_memory_mode=hw_data.get('gpu_memory_mode', osc_data.get('gpu_memory_mode', hw_defaults.gpu_memory_mode)),
+        gpu_memory_threshold=hw_data.get('gpu_memory_threshold', osc_data.get('gpu_memory_threshold', hw_defaults.gpu_memory_threshold)),
+        n_workers=hw_data.get('n_workers', osc_data.get('n_workers', hw_defaults.n_workers))
     )
     
     # Output
@@ -614,8 +615,13 @@ oscillatory:
   phase_increment: 1.5708     # π/2
   min_grid_fraction: 0.1
   k_threshold: 0.5
-  analytic_bypass: true      # true = allow early analytic bypass, false = always ODE
-  gpu_block_size: \"auto\"        # \"auto\" = auto-tune, int = explicit size
+  max_chi_cached: 20
+  phase_extraction: "hybrid"  # "hybrid", "logderiv", "lsq"
+  solver: "rk45"              # "auto", "rk45", "johnson", "numerov"
+  analytic_bypass: true       # true = allow early analytic bypass, false = always ODE
+
+hardware:
+  gpu_block_size: "auto"      # "auto" = auto-tune, int = explicit size
   gpu_memory_mode: "auto"     # "auto", "full", "block"
   gpu_memory_threshold: 0.8
   n_workers: "auto"           # "auto" (balanced), "max" (all cores), or int count

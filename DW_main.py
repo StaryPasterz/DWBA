@@ -42,19 +42,16 @@ import sys
 import glob
 import argparse
 import builtins
-from dataclasses import asdict
 
 from driver import (
     compute_total_excitation_cs,
     ExcitationChannelSpec,
     ev_to_au,
-    set_oscillatory_method,
     set_oscillatory_config,
     reset_scan_logging
 )
 from grid import (
     k_from_E_eV,
-    compute_safe_L_max,
     compute_required_r_max,
     validate_high_energy,
 )
@@ -67,7 +64,7 @@ from potential_core import CorePotentialParams
 import atom_library
 # import plotter  <-- Moved to local functions to avoid multiprocessing overhead
 from calibration import TongModel
-from output_utils import get_results_dir, get_output_path, get_json_path, find_result_files
+from output_utils import get_results_dir, find_result_files, save_results
 from logging_config import get_logger
 
 # -----------------------------------------------------------------------------
@@ -622,73 +619,6 @@ def get_energy_list_interactive() -> np.ndarray | tuple:
     
     print_warning("Invalid choice. Using default grid.")
     return np.arange(10.0, 201.0, 5.0)
-
-# --- Data Management ---
-
-def load_results(filename) -> dict:
-    """
-    Load existing results from a JSON file.
-    
-    Checks both results/ directory and root for backward compatibility.
-    Returns an empty dict if file does not exist or is corrupt.
-    
-    Parameters
-    ----------
-    filename : str
-        Filename (may or may not include 'results/' prefix).
-    """
-    from pathlib import Path
-    
-    # Normalize filename (remove any existing results/ prefix)
-    base_name = Path(filename).name
-    
-    # Check results/ directory first (preferred location)
-    results_path = get_results_dir() / base_name
-    if results_path.exists():
-        try:
-            with open(results_path, "r") as f:
-                return json.load(f)
-        except Exception:
-            return {}
-    
-    # Fallback: check root directory for backward compatibility
-    if os.path.exists(filename):
-        try:
-            with open(filename, "r") as f:
-                return json.load(f)
-        except Exception:
-            return {}
-    
-    return {}
-
-def save_results(filename, new_data_dict) -> None:
-    """
-    Update and save results to JSON in the results/ directory.
-    
-    Merges new_data_dict into existing data (by key) to prevent data loss.
-    Creates the results/ directory if it doesn't exist.
-    
-    Parameters
-    ----------
-    filename : str
-        Filename (will be saved to results/ directory).
-    new_data_dict : dict
-        New data to merge into existing results.
-    """
-    from pathlib import Path
-    
-    # Ensure we save to results/ directory
-    base_name = Path(filename).name
-    output_path = get_output_path(base_name)
-    
-    # Load existing data (checks both locations)
-    current = load_results(base_name)
-    current.update(new_data_dict)
-    
-    with open(output_path, "w") as f:
-        json.dump(current, f, indent=2)
-    print(f"\n[INFO] Results saved to {output_path}")
-
 
 # --- Configuration File Discovery ---
 

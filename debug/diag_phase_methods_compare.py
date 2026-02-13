@@ -308,7 +308,7 @@ def create_test_potential(grid: RadialGrid, potential_type: str = "hydrogen") ->
         # Build distorting potential (static, no exchange)
         k_dummy = 0.5
         U_i, _ = build_distorting_potentials(grid, V_core, orb_1s, orb_1s, 
-                                              k_dummy, k_dummy, use_exchange=False)
+                                              k_dummy, k_dummy)
         return U_i.U_of_r
     
     elif potential_type == "weak_gaussian":

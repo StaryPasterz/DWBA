@@ -27,7 +27,7 @@ E_f = E_INC_EV - (orb_2s.energy_au - orb_1s.energy_au)*27.211
 ki = k_from_E_eV(E_INC_EV)
 kf = k_from_E_eV(E_f)
 
-U_i, U_f = build_distorting_potentials(grid, V_core, orb_1s, orb_2s, ki, kf, use_exchange=False)
+U_i, U_f = build_distorting_potentials(grid, V_core, orb_1s, orb_2s, ki, kf)
 
 print(f"{'L':>3} | {'Legacy Sum':>12} | {'Adv Sum':>12} | {'Ratio':>8} | {'Notes'}")
 print("-" * 60)

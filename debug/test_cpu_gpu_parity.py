@@ -89,7 +89,6 @@ def main() -> int:
         prep.orb_f,
         k_i_au=k_i,
         k_f_au=k_f,
-        use_exchange=False,
         use_polarization=False,
     )
 

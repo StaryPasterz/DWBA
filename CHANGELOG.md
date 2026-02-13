@@ -15,6 +15,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - `solve_continuum_wave(...)` now accepts `allow_analytic_bypass`.
 - Driver and ionization paths now pass this flag consistently to continuum-wave solves (including precompute worker path).
 
+### Fixed
+
+**Config defaults consistency** (`config_loader.py`)
+- Parsing of `oscillatory.*` now inherits defaults from `OscillatoryConfig` dataclass instead of duplicated literals.
+- Fixed fallback for `oscillatory.solver` when the key is omitted (now consistent with dataclass default `rk45`).
+- Template generator now writes GPU/CPU settings under `hardware:` (current schema) and keeps `oscillatory:` focused on oscillatory controls.
+
+**I/O deduplication for results JSON** (`DW_main.py`, `output_utils.py`)
+- Removed duplicated `load_results/save_results` implementations from `DW_main.py`.
+- Centralized JSON load/merge/save in `output_utils.py`.
+
+### Changed
+
+**Hard deprecation cleanup for ignored exchange arguments** (`distorting_potential.py`, `ionization.py`, `debug/*.py`, `driver.py`)
+- Removed `use_exchange` from `build_distorting_potentials(...)`.
+- Removed `use_exchange` and `exchange_method` from `compute_ionization_cs(...)`.
+- Updated internal and debug call sites to current API (static DWBA potentials only).
+
 ### Documentation
 
 - Updated `README.md` oscillatory parameter reference and continuum solver notes.

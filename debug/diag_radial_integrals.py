@@ -59,7 +59,7 @@ for E_inc in TEST_ENERGIES:
     k_f = k_from_E_eV(E_f_eV)
     
     # Build potentials
-    U_i, U_f = build_distorting_potentials(grid, V_core, orb_1s, orb_2s, k_i, k_f, use_exchange=False)
+    U_i, U_f = build_distorting_potentials(grid, V_core, orb_1s, orb_2s, k_i, k_f)
     
     print(f"E = {E_inc:.2f} eV (k_i={k_i:.3f}, k_f={k_f:.3f})")
     print("-" * 100)

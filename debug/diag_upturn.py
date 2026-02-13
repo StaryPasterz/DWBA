@@ -62,8 +62,7 @@ def analyze_partial_wave(E_eV: float, L_range: range):
     # Build distorting potentials
     U_i, U_f = build_distorting_potentials(
         grid, V_core, orb_i, orb_f,
-        k_i_au=ki, k_f_au=kf,
-        use_exchange=False, use_polarization=False
+        k_i_au=ki, k_f_au=kf, use_polarization=False
     )
     
     # Angular setup (H 1s → 2s: Li=0, Lf=0)

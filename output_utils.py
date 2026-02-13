@@ -26,7 +26,7 @@ Notes
 - Functions accept both string and Path inputs for flexibility.
 """
 
-import os
+import json
 from pathlib import Path
 from typing import Union, List, Tuple
 
@@ -171,6 +171,54 @@ def find_result_files(pattern: str = "results_*.json") -> List[Path]:
             files.append(rf)
     
     return sorted(files, key=lambda p: p.name)
+
+
+def load_results(filename: Union[str, Path]) -> dict:
+    """
+    Load existing results JSON.
+
+    Checks `results/` first, then falls back to repository root for
+    backward compatibility. Returns empty dict on missing/corrupt file.
+    """
+    base_name = Path(filename).name
+
+    results_path = get_results_dir() / base_name
+    if results_path.exists():
+        try:
+            with open(results_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+
+    root_path = Path(base_name)
+    if root_path.exists():
+        try:
+            with open(root_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+
+    return {}
+
+
+def save_results(filename: Union[str, Path], new_data_dict: dict) -> Path:
+    """
+    Merge and save results JSON in `results/`.
+
+    Existing file content is loaded via `load_results()` and updated by key.
+    Returns path to saved file.
+    """
+    base_name = Path(filename).name
+    output_path = get_output_path(base_name)
+
+    current = load_results(base_name)
+    current.update(new_data_dict)
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(current, f, indent=2)
+
+    logger.info("Results saved to %s", output_path)
+    return output_path
 
 
 def migrate_existing_files(dry_run: bool = True) -> List[Tuple[Path, Path]]:

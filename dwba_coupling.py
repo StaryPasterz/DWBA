@@ -13,7 +13,7 @@ Calculations are cached to ensure high performance.
 from __future__ import annotations
 import numpy as np
 from dataclasses import dataclass
-from typing import Dict, List, Tuple, Optional
+from typing import Dict
 from functools import lru_cache
 
 # We need Legendre polynomials / Spherical Harmonics

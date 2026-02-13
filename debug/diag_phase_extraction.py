@@ -45,7 +45,7 @@ def create_hydrogen_potential(grid):
     
     # k doesn't matter much for neutral static potential
     k_dummy = 0.5
-    U_i, _ = build_distorting_potentials(grid, V_core, orb_1s, orb_1s, k_dummy, k_dummy, use_exchange=False)
+    U_i, _ = build_distorting_potentials(grid, V_core, orb_1s, orb_1s, k_dummy, k_dummy)
     
     return U_i, V_core
 
