@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [v2.34] — 2026-02-13 — Configurable Continuum Analytic Bypass
+
+**Commit:** `TBD`
+
+### Added
+
+**User-configurable analytic bypass switch** (`continuum.py`, `driver.py`, `ionization.py`, `config_loader.py`)
+- Added `oscillatory.analytic_bypass` (bool, default `true`) to YAML/config pipeline.
+- `solve_continuum_wave(...)` now accepts `allow_analytic_bypass`.
+- Driver and ionization paths now pass this flag consistently to continuum-wave solves (including precompute worker path).
+
+### Documentation
+
+- Updated `README.md` oscillatory parameter reference and continuum solver notes.
+- Updated example and project YAML configs with `analytic_bypass` field.
+
 ## [v2.33] — 2026-02-12 — Ionization Quadrature Upgrade and High-L Tail Stabilization
 
 **Commit:** `TBD`
@@ -15,6 +31,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - `gauss_legendre` (new default, recommended),
   - `trapz_linear` (legacy behavior).
 - Added weighted-energy integration path (`dot(weights, SDCS)`) for total ionization cross section and per-partial-wave integrated outputs.
+- Fixed near-threshold node clamping so evaluated `E_eject` remains inside physical bounds (`0 <= E_eject <= (E-IP)/2`), avoiding invalid negative scattered-channel energies.
 - Added ionization metadata fields:
   - `energy_quadrature`,
   - `n_energy_nodes`.
@@ -24,6 +41,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - power-law fit in `L`,
   - geometric fallback.
 - Added acceptance guard on tail fraction to reject unstable extrapolations.
+- Added per-node top-up diagnostics in runtime metadata (fit quality and tail fraction) for uncertainty filtering.
+
+**Ionization grid sampling criterion** (`DW_main.py`)
+- Adaptive grid wavelength criterion now supports ionization worst-case oscillatory scale based on `k_scatt + k_eject` (equal-sharing estimate), not only the incident momentum.
+- Applied to both batch and local-per-energy ionization grid preparation paths.
 
 ### Fixed
 

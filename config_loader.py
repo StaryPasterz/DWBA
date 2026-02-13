@@ -108,6 +108,8 @@ class OscillatoryConfig:
     phase_extraction: Literal["hybrid", "logderiv", "lsq"] = "hybrid"
     # v2.13: Primary ODE solver selection ("auto" = physics-based per-L)
     solver: Literal["auto", "numerov", "johnson", "rk45"] = "rk45"
+    # v2.34: optional fast path for weak short-range channels
+    analytic_bypass: bool = True
 
 @dataclass
 class HardwareConfig:
@@ -193,6 +195,23 @@ def _parse_gpu_block_size(value) -> int:
         except ValueError:
             return 0
     return int(value) if value else 0
+
+
+def _parse_bool(value, default: bool = True) -> bool:
+    """Parse bool-like values from YAML/user input with backward-compatible fallbacks."""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return bool(default)
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        raw = value.strip().lower()
+        if raw in {"1", "true", "yes", "on", "y"}:
+            return True
+        if raw in {"0", "false", "no", "off", "n"}:
+            return False
+    return bool(default)
 
 
 def load_config(path: Union[str, Path]) -> DWBAConfig:
@@ -329,7 +348,8 @@ def load_config(path: Union[str, Path]) -> DWBAConfig:
             k_threshold=osc.get('k_threshold', 0.5),
             max_chi_cached=osc.get('max_chi_cached', 20),
             phase_extraction=osc.get('phase_extraction', 'hybrid'),  # v2.11+
-            solver=osc.get('solver', 'auto')  # v2.13+
+            solver=osc.get('solver', 'auto'),  # v2.13+
+            analytic_bypass=_parse_bool(osc.get('analytic_bypass', True), True),  # v2.34+
         )
     
     # Hardware (new section, with backward compatibility for oscillatory GPU params)
@@ -424,6 +444,10 @@ def validate_config(config: DWBAConfig) -> List[str]:
     # Oscillatory
     if config.oscillatory.method not in ("legacy", "advanced", "full_split"):
         errors.append(f"Invalid oscillatory method: '{config.oscillatory.method}'")
+    if not isinstance(config.oscillatory.analytic_bypass, bool):
+        errors.append(
+            f"oscillatory.analytic_bypass must be bool (true/false), got {config.oscillatory.analytic_bypass!r}"
+        )
 
     # Excitation multipole cutoff
     ex_lint = config.excitation.L_max_integrals
@@ -496,6 +520,7 @@ def config_to_params_dict(config: DWBAConfig) -> Dict[str, Dict[str, Any]]:
             'max_chi_cached': config.oscillatory.max_chi_cached,  # v2.5+
             'phase_extraction': config.oscillatory.phase_extraction,  # v2.11+
             'solver': config.oscillatory.solver,  # v2.12+
+            'analytic_bypass': config.oscillatory.analytic_bypass,  # v2.34+
         },
         'hardware': {
             'gpu_block_size': config.hardware.gpu_block_size,
@@ -589,6 +614,7 @@ oscillatory:
   phase_increment: 1.5708     # π/2
   min_grid_fraction: 0.1
   k_threshold: 0.5
+  analytic_bypass: true      # true = allow early analytic bypass, false = always ODE
   gpu_block_size: \"auto\"        # \"auto\" = auto-tune, int = explicit size
   gpu_memory_mode: "auto"     # "auto", "full", "block"
   gpu_memory_threshold: 0.8

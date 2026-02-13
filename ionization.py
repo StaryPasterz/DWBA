@@ -111,6 +111,21 @@ from logging_config import get_logger
 # Initialize module logger
 logger = get_logger(__name__)
 
+
+def _parse_bool(raw: Any, default: bool = True) -> bool:
+    """Parse bool-like config values (bool/int/string) with safe fallback."""
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)):
+        return bool(raw)
+    if isinstance(raw, str):
+        value = raw.strip().lower()
+        if value in {"1", "true", "yes", "on", "y"}:
+            return True
+        if value in {"0", "false", "no", "off", "n"}:
+            return False
+    return bool(default)
+
 # ============================================================================
 # Data Structures
 # ============================================================================
@@ -253,7 +268,7 @@ def _build_sdcs_energy_quadrature(
 def _estimate_high_l_tail_sdcs(
     partial_L_contribs: Dict[str, float],
     sigma_base_au: float,
-) -> tuple[float, str]:
+) -> tuple[float, str, Dict[str, float]]:
     """
     Estimate missing high-L SDCS tail from the last computed projectile waves.
 
@@ -263,23 +278,31 @@ def _estimate_high_l_tail_sdcs(
     3) Apply conservative acceptance gate on tail fraction.
     """
     l_indices = sorted(int(k[1:]) for k in partial_L_contribs if k.startswith("L"))
+    diag: Dict[str, float] = {
+        "applied": 0.0,
+        "tail_au": 0.0,
+        "tail_fraction": 0.0,
+        "fit_r2": np.nan,
+        "fit_slope": np.nan,
+        "geometric_q": np.nan,
+    }
     if len(l_indices) < 4:
-        return 0.0, "none"
+        return 0.0, "none", diag
 
     vals = np.array([float(partial_L_contribs.get(f"L{L}", 0.0)) for L in l_indices], dtype=float)
     if not np.all(np.isfinite(vals)):
-        return 0.0, "none"
+        return 0.0, "none", diag
 
     n_tail = min(6, len(l_indices))
     L_tail = np.array(l_indices[-n_tail:], dtype=float)
     v_tail = np.array(vals[-n_tail:], dtype=float)
     if np.any(v_tail <= 0.0):
-        return 0.0, "none"
+        return 0.0, "none", diag
 
     # Need at least mostly decreasing tail for stable extrapolation.
     dec_count = int(np.sum(np.diff(v_tail) < 0.0))
     if dec_count < max(2, n_tail - 2):
-        return 0.0, "none"
+        return 0.0, "none", diag
 
     candidates: list[tuple[str, float]] = []
 
@@ -292,6 +315,8 @@ def _estimate_high_l_tail_sdcs(
     ss_res = float(np.sum((y - y_fit) ** 2))
     ss_tot = float(np.sum((y - np.mean(y)) ** 2)) + 1e-30
     r2 = 1.0 - ss_res / ss_tot
+    diag["fit_r2"] = float(r2)
+    diag["fit_slope"] = float(slope)
     if slope < -1.05 and r2 > 0.90:
         C = float(np.exp(intercept))
         L0 = float(L_tail[-1] + 0.5)
@@ -303,6 +328,7 @@ def _estimate_high_l_tail_sdcs(
     if len(v_tail) >= 3:
         ratios = v_tail[1:] / np.maximum(v_tail[:-1], 1e-300)
         q = float(np.median(ratios[-3:]))
+        diag["geometric_q"] = float(q)
         q_spread = float(np.max(np.abs(ratios[-3:] - q)))
         if 0.0 < q < 0.98 and q_spread < 0.12:
             tail_geo = float(v_tail[-1] * q / (1.0 - q))
@@ -310,19 +336,22 @@ def _estimate_high_l_tail_sdcs(
                 candidates.append(("geometric", tail_geo))
 
     if not candidates:
-        return 0.0, "none"
+        return 0.0, "none", diag
 
     # Conservative choice: smaller positive tail among plausible models.
     method, tail_au = min(candidates, key=lambda kv: kv[1])
     base = max(float(sigma_base_au), 1e-30)
     frac = tail_au / base
+    diag["tail_au"] = float(tail_au)
+    diag["tail_fraction"] = float(frac)
     if frac >= 0.25:
         logger.debug(
             "Ionization SDCS top-up rejected: tail/base=%.2f (method=%s) too large.",
             frac, method
         )
-        return 0.0, "rejected"
-    return float(tail_au), method
+        return 0.0, "rejected", diag
+    diag["applied"] = 1.0
+    return float(tail_au), method, diag
 
 
 # ============================================================================
@@ -343,7 +372,7 @@ def _compute_sdcs_at_energy(
     use_gpu: bool,
     chi_i_cache: Optional[Dict[int, ContinuumWave]] = None,
     tdcs_angles: Optional[List[Tuple[float, float, float]]] = None
-) -> Tuple[float, Dict[str, float], Optional[List[float]]]:
+) -> Tuple[float, Dict[str, float], Optional[List[float]], Dict[str, float]]:
     """
     Compute the Single Differential Cross Section (SDCS) at a specific ejected 
     electron energy using Partial Wave DWBA. The SDCS is angle-integrated over
@@ -387,10 +416,14 @@ def _compute_sdcs_at_energy(
         
     Returns
     -------
-    Tuple[float, Dict[str, float], Optional[List[float]]]
-        (SDCS value in a.u., partial wave contributions dict, optional TDCS list)
+    Tuple[float, Dict[str, float], Optional[List[float]], Dict[str, float]]
+        (SDCS value in a.u., partial wave contributions dict, optional TDCS list, top-up diagnostics)
     """
-    E_scatt_eV = E_total_final_eV - E_eject_eV
+    # Guard against near-threshold numerical edge cases.
+    if E_total_final_eV <= 1e-12:
+        return 0.0, {}, None, {"applied": 0.0, "method_code": -1.0}
+    E_eject_eV = float(np.clip(E_eject_eV, 1e-12, max(1e-12, E_total_final_eV - 1e-12)))
+    E_scatt_eV = float(E_total_final_eV - E_eject_eV)
     
     k_i_au = k_from_E_eV(E_incident_eV)
     k_scatt_au = k_from_E_eV(E_scatt_eV)
@@ -431,6 +464,10 @@ def _compute_sdcs_at_energy(
         amp_plus = f_val + g_val
         amp_minus = f_val - g_val
         return 0.25 * (abs(amp_plus) ** 2) + 0.75 * (abs(amp_minus) ** 2)
+
+    phase_method = OSCILLATORY_CONFIG.get("phase_extraction", "hybrid")
+    solver = OSCILLATORY_CONFIG.get("solver", "auto")
+    allow_analytic_bypass = _parse_bool(OSCILLATORY_CONFIG.get("analytic_bypass", True), True)
     
     # ========================================================================
     # OPTIMIZATION 1: Ejected Wave Cache
@@ -441,18 +478,34 @@ def _compute_sdcs_at_energy(
     for l_ej in range(chan.l_eject_max + 1):
         try:
             chi_eject_cache[l_ej] = solve_continuum_wave(
-                grid, U_ion_obj, l_ej, E_eject_eV, z_ion=z_ion_final
+                grid,
+                U_ion_obj,
+                l_ej,
+                E_eject_eV,
+                z_ion=z_ion_final,
+                phase_extraction_method=phase_method,
+                solver=solver,
+                allow_analytic_bypass=allow_analytic_bypass,
             )
         except Exception:
             chi_eject_cache[l_ej] = None
 
     # Cache scattered waves once per energy (reused across all l_i and l_ej).
     chi_scatt_cache: Dict[int, Optional[ContinuumWave]] = {}
-    l_f_max_scatt = L_max_proj + chan.L_max
+    # Physical turning-point cap for scattered channel avoids overextending l_f.
+    L_scatt_turn = compute_safe_L_max(k_scatt_au, float(grid.r[-1]), safety_factor=2.5)
+    l_f_max_scatt = min(L_max_proj + chan.L_max, max(2, int(L_scatt_turn)))
     for l_f in range(l_f_max_scatt + 1):
         try:
             chi_scatt_cache[l_f] = solve_continuum_wave(
-                grid, U_ion_obj, l_f, E_scatt_eV, z_ion=z_ion_final
+                grid,
+                U_ion_obj,
+                l_f,
+                E_scatt_eV,
+                z_ion=z_ion_final,
+                phase_extraction_method=phase_method,
+                solver=solver,
+                allow_analytic_bypass=allow_analytic_bypass,
             )
         except Exception:
             chi_scatt_cache[l_f] = None
@@ -478,7 +531,16 @@ def _compute_sdcs_at_energy(
             chi_i = chi_i_cache[l_i_proj]
         else:
             try:
-                chi_i = solve_continuum_wave(grid, U_inc_obj, l_i_proj, E_incident_eV, z_ion=z_ion_inc)
+                chi_i = solve_continuum_wave(
+                    grid,
+                    U_inc_obj,
+                    l_i_proj,
+                    E_incident_eV,
+                    z_ion=z_ion_inc,
+                    phase_extraction_method=phase_method,
+                    solver=solver,
+                    allow_analytic_bypass=allow_analytic_bypass,
+                )
             except Exception:
                 chi_i = None
         
@@ -498,7 +560,9 @@ def _compute_sdcs_at_energy(
             # Compatible final projectile l_f range
             # Use a wider range to avoid truncating higher partial waves.
             lf_min = 0
-            lf_max = max(L_max_proj, l_i_proj + chan.L_max)
+            lf_max = min(max(L_max_proj, l_i_proj + chan.L_max), l_f_max_scatt)
+            if lf_max < lf_min:
+                continue
             target_parity_change = (Li + Lf) % 2
             
             combo_sum = 0.0
@@ -650,8 +714,9 @@ def _compute_sdcs_at_energy(
     # ========================================================================
     # HIGH-L TAIL TOP-UP (power-law/geometric, conservative acceptance)
     # ========================================================================
+    tail_diag: Dict[str, float] = {"applied": 0.0, "method_code": -1.0}
     try:
-        tail_correction, tail_method = _estimate_high_l_tail_sdcs(partial_L_contribs, sigma_energy_au)
+        tail_correction, tail_method, tail_diag = _estimate_high_l_tail_sdcs(partial_L_contribs, sigma_energy_au)
         if tail_correction > 0.0:
             sigma_energy_au += tail_correction
             partial_L_contribs["born_topup"] = tail_correction
@@ -659,8 +724,11 @@ def _compute_sdcs_at_energy(
                 "Ionization SDCS top-up: +%.2e a.u. using %s tail model",
                 tail_correction, tail_method
             )
+        method_code = {"none": 0.0, "power_law": 1.0, "geometric": 2.0, "rejected": 3.0}.get(tail_method, -1.0)
+        tail_diag["method_code"] = float(method_code)
     except Exception as e:
         logger.debug("Ionization SDCS top-up skipped: %s", e)
+        tail_diag = {"applied": 0.0, "method_code": -1.0}
             
     tdcs_values = None
     if tdcs_amp is not None:
@@ -672,14 +740,14 @@ def _compute_sdcs_at_energy(
                 tdcs_sum += _spin_combo(f_val, g_val)
             tdcs_values.append(prefac_common * FACTOR_2PI_4 * tdcs_sum)
 
-    return sigma_energy_au, partial_L_contribs, tdcs_values
+    return sigma_energy_au, partial_L_contribs, tdcs_values, tail_diag
 
 
 # ============================================================================
 # Helper for Parallel Execution
 # ============================================================================
 
-def _wrapper_sdcs_helper(args: tuple) -> Tuple[float, Dict[str, float], Optional[List[float]]]:
+def _wrapper_sdcs_helper(args: tuple) -> Tuple[float, Dict[str, float], Optional[List[float]], Dict[str, float]]:
     """
     Wrapper function for ProcessPoolExecutor/imap.
     Unpacks the argument tuple and calls _compute_sdcs_at_energy.
@@ -862,8 +930,9 @@ def compute_ionization_cs(
 
     # Keep solver-safe energies (quadrature may include exact 0 in trapz mode).
     E_half = max(0.5 * E_total_final_eV, 0.0)
-    safe_min_ej = min(0.05, max(1e-4, 1e-3 * max(E_half, 1e-3)))
-    eval_nodes_eV = np.maximum(nodes_eV, safe_min_ej)
+    safe_base = min(0.05, max(1e-5, 1e-3 * max(E_half, 1e-3)))
+    safe_min_ej = min(safe_base, max(1e-12, 0.95 * E_half))
+    eval_nodes_eV = np.clip(nodes_eV, safe_min_ej, E_half)
     
     # ========================================================================
     # 4. Build Distorting Potentials
@@ -931,6 +1000,7 @@ def compute_ionization_cs(
     sdcs_values_au = []
     tdcs_values_au = [] if tdcs_angles_rad else None
     partials_per_step: List[Dict[str, float]] = []
+    topup_diag_per_step: List[Dict[str, float]] = []
     total_steps = len(tasks)
     
     if USE_GPU:
@@ -938,9 +1008,10 @@ def compute_ionization_cs(
         logger.info("Mode: GPU Acceleration (Sequential Energy Scan)")
         for idx, task in enumerate(tasks):
             E_ej = task[0]
-            val, partials, tdcs_vals = _compute_sdcs_at_energy(*task)
+            val, partials, tdcs_vals, topup_diag = _compute_sdcs_at_energy(*task)
             sdcs_values_au.append(val)
             partials_per_step.append(partials)
+            topup_diag_per_step.append(topup_diag)
             if tdcs_values_au is not None:
                 tdcs_values_au.append(tdcs_vals)
             logger.debug("Step %d/%d: E_ej=%.2f eV -> SDCS=%.2e", idx+1, total_steps, E_ej, val)
@@ -966,16 +1037,17 @@ def compute_ionization_cs(
                 for future in as_completed(future_to_idx):
                     idx = future_to_idx[future]
                     try:
-                        val, partials, tdcs_vals = future.result()
-                        results[idx] = (val, tdcs_vals, partials)
+                        val, partials, tdcs_vals, topup_diag = future.result()
+                        results[idx] = (val, tdcs_vals, partials, topup_diag)
                         completed += 1
                         logger.debug("[%d/%d] E_ej=%.2f eV -> SDCS=%.2e", completed, total_steps, eval_nodes_eV[idx], val)
                     except Exception as e:
                         logger.error("Step %d failed: %s", idx, e)
-                        results[idx] = (0.0, None, {})
+                        results[idx] = (0.0, None, {}, {"applied": 0.0, "method_code": -1.0})
                 
                 sdcs_values_au = [r[0] for r in results]
                 partials_per_step = [r[2] for r in results]
+                topup_diag_per_step = [r[3] for r in results]
                 if tdcs_values_au is not None:
                     tdcs_values_au = [r[1] for r in results]
                     for idx, vals in enumerate(tdcs_values_au):
@@ -1032,6 +1104,11 @@ def compute_ionization_cs(
                 "values": values
             })
 
+    finite_r2 = [
+        float(d.get("fit_r2", np.nan))
+        for d in topup_diag_per_step
+        if np.isfinite(float(d.get("fit_r2", np.nan)))
+    ]
     metadata = {
         "model": "static+polarization" if use_polarization else "static",
         "use_polarization": use_polarization,
@@ -1050,6 +1127,27 @@ def compute_ionization_cs(
             "L_max": chan.L_max,
             "l_eject_max": chan.l_eject_max,
             "convergence_threshold": chan.convergence_threshold,
+        },
+        "topup_diagnostics": {
+            "n_points": int(len(topup_diag_per_step)),
+            "n_applied": int(sum(1 for d in topup_diag_per_step if float(d.get("applied", 0.0)) > 0.5)),
+            "n_rejected": int(sum(1 for d in topup_diag_per_step if int(round(float(d.get("method_code", -1.0)))) == 3)),
+            "max_tail_fraction": float(
+                max([float(d.get("tail_fraction", 0.0)) for d in topup_diag_per_step], default=0.0)
+            ),
+            "min_fit_r2": float(min(finite_r2)) if finite_r2 else None,
+            "samples": [
+                {
+                    "E_eject_eV": float(eval_nodes_eV[i]),
+                    "applied": bool(float(d.get("applied", 0.0)) > 0.5),
+                    "method_code": int(round(float(d.get("method_code", -1.0)))),
+                    "tail_fraction": float(d.get("tail_fraction", 0.0)),
+                    "fit_r2": float(d.get("fit_r2")) if np.isfinite(float(d.get("fit_r2", np.nan))) else None,
+                    "fit_slope": float(d.get("fit_slope")) if np.isfinite(float(d.get("fit_slope", np.nan))) else None,
+                    "geometric_q": float(d.get("geometric_q")) if np.isfinite(float(d.get("geometric_q", np.nan))) else None,
+                }
+                for i, d in enumerate(topup_diag_per_step)
+            ],
         },
         "use_gpu": USE_GPU,
     }

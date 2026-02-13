@@ -106,7 +106,9 @@ OSCILLATORY_CONFIG = {
     # CPU worker count: "auto" = auto-detect (min(cpu_count, 8)), int > 0 = explicit count
     "n_workers": "auto",
     # v2.13+: ODE solver: "auto" (recommended), "rk45", "johnson", "numerov"
-    "solver": "rk45"
+    "solver": "rk45",
+    # v2.34+: allow early analytic bypass in continuum solver for weak short-range channels
+    "analytic_bypass": True,
 }
 
 # =============================================================================
@@ -123,6 +125,25 @@ def _is_hotpath_debug_enabled() -> bool:
     Enable very verbose per-(l_i,l_f) debug only on explicit request.
     """
     return os.environ.get("DWBA_HOTPATH_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _config_bool(key: str, default: bool = True) -> bool:
+    """
+    Parse boolean-like values from OSCILLATORY_CONFIG with safe fallback.
+    Accepts bool/int/string values to remain backward-compatible with YAML/user input.
+    """
+    raw = OSCILLATORY_CONFIG.get(key, default)
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)):
+        return bool(raw)
+    if isinstance(raw, str):
+        val = raw.strip().lower()
+        if val in {"1", "true", "yes", "on", "y"}:
+            return True
+        if val in {"0", "false", "no", "off", "n"}:
+            return False
+    return bool(default)
 
 def reset_scan_logging():
     """Reset scan-level logging flags. Call at start of new energy scan."""
@@ -315,7 +336,15 @@ def _worker_partial_wave(
     chan: ExcitationChannelSpec,
     theta_grid: np.ndarray,
     k_i_au: float,
-    k_f_au: float
+    k_f_au: float,
+    oscillatory_method: Optional[str] = None,
+    CC_nodes: Optional[int] = None,
+    phase_increment: Optional[float] = None,
+    min_grid_fraction: Optional[float] = None,
+    k_threshold: Optional[float] = None,
+    phase_method: Optional[str] = None,
+    solver: Optional[str] = None,
+    allow_analytic_bypass: Optional[bool] = None,
 ) -> Tuple[int, Dict[Tuple[int, int], Amplitudes], float]:
     """
     Worker function for a single projectile partial wave l_i.
@@ -327,10 +356,35 @@ def _worker_partial_wave(
     Li = chan.L_target_i
     Lf = chan.L_target_f
     target_parity_change = (Li + Lf) % 2
+    if oscillatory_method is None:
+        oscillatory_method = OSCILLATORY_CONFIG.get("method", "advanced")
+    if CC_nodes is None:
+        CC_nodes = int(OSCILLATORY_CONFIG.get("CC_nodes", 5))
+    if phase_increment is None:
+        phase_increment = float(OSCILLATORY_CONFIG.get("phase_increment", 1.5708))
+    if min_grid_fraction is None:
+        min_grid_fraction = float(OSCILLATORY_CONFIG.get("min_grid_fraction", 0.1))
+    if k_threshold is None:
+        k_threshold = float(OSCILLATORY_CONFIG.get("k_threshold", 0.5))
+    if phase_method is None:
+        phase_method = OSCILLATORY_CONFIG.get("phase_extraction", "hybrid")
+    if solver is None:
+        solver = OSCILLATORY_CONFIG.get("solver", "auto")
+    if allow_analytic_bypass is None:
+        allow_analytic_bypass = _config_bool("analytic_bypass", True)
     
     # Solve chi_i
     try:
-        chi_i = solve_continuum_wave(grid, U_i, l_i, E_incident_eV, z_ion) 
+        chi_i = solve_continuum_wave(
+            grid,
+            U_i,
+            l_i,
+            E_incident_eV,
+            z_ion,
+            phase_extraction_method=phase_method,
+            solver=solver,
+            allow_analytic_bypass=allow_analytic_bypass,
+        )
     except Exception as e:
         logger.debug("chi_i solve failed for l_i=%d: %s", l_i, e)
         chi_i = None
@@ -348,7 +402,16 @@ def _worker_partial_wave(
         if (l_i + l_f) % 2 != target_parity_change: continue
             
         try:
-            chi_f = solve_continuum_wave(grid, U_f, l_f, E_final_eV, z_ion)
+            chi_f = solve_continuum_wave(
+                grid,
+                U_f,
+                l_f,
+                E_final_eV,
+                z_ion,
+                phase_extraction_method=phase_method,
+                solver=solver,
+                allow_analytic_bypass=allow_analytic_bypass,
+            )
         except Exception as e:
             logger.debug("chi_f solve failed for l_f=%d: %s", l_f, e)
             chi_f = None
@@ -358,11 +421,11 @@ def _worker_partial_wave(
         integrals = radial_ME_all_L(
             grid, V_core, U_i.U_of_r, orb_i, orb_f, chi_i, chi_f, chan.L_max_integrals,
             use_oscillatory_quadrature=True,
-            oscillatory_method=OSCILLATORY_CONFIG["method"],
-            CC_nodes=OSCILLATORY_CONFIG["CC_nodes"],
-            phase_increment=OSCILLATORY_CONFIG["phase_increment"],
-            min_grid_fraction=OSCILLATORY_CONFIG["min_grid_fraction"],
-            k_threshold=OSCILLATORY_CONFIG["k_threshold"],
+            oscillatory_method=oscillatory_method,
+            CC_nodes=CC_nodes,
+            phase_increment=phase_increment,
+            min_grid_fraction=min_grid_fraction,
+            k_threshold=k_threshold,
             U_f_array=U_f.U_of_r  # Bug #2 fix: check both potentials
         )
         
@@ -405,14 +468,16 @@ def _worker_solve_wave(
     U: DistortingPotential,
     grid: RadialGrid,
     phase_method: str = "hybrid",
-    solver: str = "auto"
+    solver: str = "auto",
+    allow_analytic_bypass: bool = True,
 ) -> Tuple[int, Optional[ContinuumWave]]:
     """Worker for parallel wave solving."""
     try:
         chi = solve_continuum_wave(
             grid, U, l, E_eV, z_ion,
             phase_extraction_method=phase_method,
-            solver=solver
+            solver=solver,
+            allow_analytic_bypass=allow_analytic_bypass,
         )
         return l, chi
     except Exception as e:
@@ -439,6 +504,7 @@ def precompute_continuum_waves(
     # Retrieve config explicitly to pass to workers (crucial for Windows/spawn)
     phase_method = OSCILLATORY_CONFIG.get("phase_extraction", "hybrid")
     solver = OSCILLATORY_CONFIG.get("solver", "auto")
+    allow_analytic_bypass = _config_bool("analytic_bypass", True)
     
     # We only precompute up to L_max.
     # Note: solve_continuum_wave is purely CPU.
@@ -452,7 +518,9 @@ def precompute_continuum_waves(
         future_to_l = {
             executor.submit(
                 _worker_solve_wave, l, E_eV, z_ion, U, grid, 
-                phase_method=phase_method, solver=solver
+                phase_method=phase_method,
+                solver=solver,
+                allow_analytic_bypass=allow_analytic_bypass,
             ): l
             for l in range(L_max + 1)
         }
@@ -745,10 +813,11 @@ def compute_total_excitation_cs(
     # Treat user value as a BASE (floor), not a hard ceiling.
     # Runtime target is max(base, dynamic), then constrained by turning-point physics.
     L_target = max(L_requested, L_dynamic)
-    L_max_proj = min(L_target, L_turning_point)
+    L_after_turning = min(L_target, L_turning_point)
     
     # Hard cap for extreme cases (prevents runaway computation)
-    L_max_proj = min(L_max_proj, 100)
+    L_hard_cap = 100
+    L_max_proj = min(L_after_turning, L_hard_cap)
     
     logger.debug(
         "Auto-L: E=%.1f eV (k=%.2f, r_max=%.0f) -> L_base=%d, L_dynamic=%d, L_target=%d, L_max_proj=%d (turning_pt=%d)",
@@ -756,10 +825,33 @@ def compute_total_excitation_cs(
     )
     
     if L_max_proj < L_target:
-        logger.warning(
-            "L_max limited by turning point/grid: using L=%d vs target L=%d (need r_max~%.0f for L=%d).",
-            L_max_proj, L_target, compute_required_r_max(k_i_au, L_target), L_target
-        )
+        limited_by_turning = L_turning_point < L_target
+        limited_by_hard_cap = L_hard_cap < L_after_turning
+
+        if limited_by_turning and not limited_by_hard_cap:
+            logger.warning(
+                "L_max limited by turning point/grid: using L=%d vs target L=%d (need r_max~%.0f for L=%d).",
+                L_max_proj,
+                L_target,
+                compute_required_r_max(k_i_au, L_target),
+                L_target,
+            )
+        elif limited_by_hard_cap and not limited_by_turning:
+            logger.warning(
+                "L_max limited by internal safety cap: using L=%d vs target L=%d (turning-point allows up to L=%d).",
+                L_max_proj,
+                L_target,
+                L_turning_point,
+            )
+        else:
+            logger.warning(
+                "L_max limited by turning point + internal safety cap: using L=%d vs target L=%d "
+                "(turning-point limit L=%d, hard cap L=%d).",
+                L_max_proj,
+                L_target,
+                L_turning_point,
+                L_hard_cap,
+            )
 
     
     # --- Execution Strategy Selection ---
@@ -798,6 +890,9 @@ def compute_total_excitation_cs(
             len(chi_i_cache), L_max_proj,
             len(chi_f_cache), l_f_precompute_max
         )
+        phase_method = OSCILLATORY_CONFIG.get("phase_extraction", "hybrid")
+        solver = OSCILLATORY_CONFIG.get("solver", "auto")
+        allow_analytic_bypass = _config_bool("analytic_bypass", True)
 
         # === PHASE 3: Create GPU cache for energy-level reuse ===
         from dwba_matrix_elements import GPUCache
@@ -828,7 +923,16 @@ def compute_total_excitation_cs(
                 chi_i = chi_i_cache[l_i]
             else:
                 # Fallback if precalc missed it (rare)
-                chi_i = solve_continuum_wave(grid, U_i, l_i, E_incident_eV, z_ion) 
+                chi_i = solve_continuum_wave(
+                    grid,
+                    U_i,
+                    l_i,
+                    E_incident_eV,
+                    z_ion,
+                    phase_extraction_method=phase_method,
+                    solver=solver,
+                    allow_analytic_bypass=allow_analytic_bypass,
+                )
             
             if chi_i is None:
                 skipped_li_count += 1
@@ -877,7 +981,16 @@ def compute_total_excitation_cs(
                     chi_f = chi_f_cache[l_f]
                 else:
                     try:
-                        chi_f = solve_continuum_wave(grid, U_f, l_f, E_final_eV, z_ion)
+                        chi_f = solve_continuum_wave(
+                            grid,
+                            U_f,
+                            l_f,
+                            E_final_eV,
+                            z_ion,
+                            phase_extraction_method=phase_method,
+                            solver=solver,
+                            allow_analytic_bypass=allow_analytic_bypass,
+                        )
                     except Exception as e:
                         logger.debug("GPU path chi_f solve failed for l_f=%d: %s", l_f, e)
                         chi_f = None
@@ -1057,6 +1170,14 @@ def compute_total_excitation_cs(
         
         # Batch size proportional to workers
         batch_size = max(max_workers * 2, 10)
+        osc_method = OSCILLATORY_CONFIG.get("method", "advanced")
+        osc_cc_nodes = int(OSCILLATORY_CONFIG.get("CC_nodes", 5))
+        osc_phase_increment = float(OSCILLATORY_CONFIG.get("phase_increment", 1.5708))
+        osc_min_grid_fraction = float(OSCILLATORY_CONFIG.get("min_grid_fraction", 0.1))
+        osc_k_threshold = float(OSCILLATORY_CONFIG.get("k_threshold", 0.5))
+        phase_method = OSCILLATORY_CONFIG.get("phase_extraction", "hybrid")
+        solver = OSCILLATORY_CONFIG.get("solver", "auto")
+        allow_analytic_bypass = _config_bool("analytic_bypass", True)
         
         current_l = 0
         pool_running = True
@@ -1071,7 +1192,10 @@ def compute_total_excitation_cs(
                     for l_i in range(current_l, l_end):
                          batch_tasks.append((
                             l_i, E_incident_eV, E_final_eV, z_ion, U_i, U_f,
-                            grid, V_core, orb_i, orb_f, chan, theta_grid, k_i_au, k_f_au
+                            grid, V_core, orb_i, orb_f, chan, theta_grid, k_i_au, k_f_au,
+                            osc_method, osc_cc_nodes, osc_phase_increment,
+                            osc_min_grid_fraction, osc_k_threshold,
+                            phase_method, solver, allow_analytic_bypass,
                         ))
                     
                     results = pool.starmap(_worker_partial_wave, batch_tasks)

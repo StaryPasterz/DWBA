@@ -176,6 +176,7 @@ DEFAULTS = {
         "max_chi_cached": 20,         # v2.5+: LRU cache size for GPU continuum waves
         "phase_extraction": "hybrid", # v2.11+: "hybrid", "logderiv", "lsq"
         "solver": "rk45",             # v2.13+: "auto", "rk45" (recommended), "johnson", "numerov"
+        "analytic_bypass": True,      # v2.34+: enable early analytic bypass in continuum solver
     },
     
     # --- Hardware (GPU/CPU) ---
@@ -1317,12 +1318,15 @@ def run_scan_ionization(run_name) -> None:
     
     # L_max_effective: estimate maximum L that will be used at runtime.
     L_eff = estimate_effective_projectile_lmax(E_max_scan, L_max_proj)
+    k_sampling_ion = estimate_ionization_worst_oscillatory_k(E_max_scan, ion_thr)
     z_ion = core_params.Zc - 1.0
 
-    # Use unified grid calculation with wavelength scaling
+    # Use unified grid calculation with wavelength scaling.
+    # For ionization, use worst oscillatory scale k_scatt+k_eject.
     r_max_optimal, n_points_optimal = calculate_optimal_grid_params(
         E_min_scan, L_eff, base_r_max, base_n_points, 
-        scale_factor, n_points_max, min_pts_per_wl, z_ion
+        scale_factor, n_points_max, min_pts_per_wl, z_ion,
+        k_sampling_au=k_sampling_ion
     )
     
     print_info(f"Adaptive Grid: E_min={E_min_scan:.1f} eV -> r_max={r_max_optimal:.0f}, n_points={n_points_optimal}")
@@ -1653,6 +1657,23 @@ def estimate_effective_projectile_lmax(
     return max(L_dynamic + chi_f_buffer, int(L_max_projectile_base) + chi_f_buffer)
 
 
+def estimate_ionization_worst_oscillatory_k(E_incident_eV: float, threshold_eV: float) -> float:
+    """
+    Estimate worst oscillatory k-scale for ionization radial kernels.
+
+    For fixed final kinetic sum E_scatt + E_eject = E_inc - IP, the maximum
+    k_scatt + k_eject occurs near equal energy sharing.
+    """
+    E_inc = max(float(E_incident_eV), 0.0)
+    E_thr = max(float(threshold_eV), 0.0)
+    if E_inc <= E_thr:
+        return 0.0
+    E_total_final = E_inc - E_thr
+    k_inc = float(k_from_E_eV(E_inc))
+    k_half = float(k_from_E_eV(0.5 * E_total_final))
+    return max(k_inc, 2.0 * k_half)
+
+
 def resolve_grid_r_max_for_prep(base_r_max: float | str, fallback_auto: float = 200.0) -> float:
     """
     Resolve r_max to a numeric value for target preparation.
@@ -1675,7 +1696,8 @@ def calculate_optimal_grid_params(
     scale_factor: float = 2.5,
     n_points_max: int = 15000,
     min_points_per_wavelength: int = 15,
-    z_ion: float = 0.0
+    z_ion: float = 0.0,
+    k_sampling_au: float | None = None,
 ) -> tuple[float, int]:
     """
     Calculate optimal radial grid size based on energy and projectile L_max.
@@ -1701,6 +1723,9 @@ def calculate_optimal_grid_params(
     z_ion : float
         Ionic charge of target (0 for neutral, 1 for He+, etc.).
         Affects r_max requirement for Coulomb asymptotic validity.
+    k_sampling_au : float | None
+        Optional oscillatory wavenumber override used only for wavelength-based
+        n_points scaling (does not affect turning-point r_max logic).
     
     Returns
     -------
@@ -1732,8 +1757,9 @@ def calculate_optimal_grid_params(
     
     r_min = 1e-5  # Standard grid r_min
     
-    if k_au > 0.1 and min_points_per_wavelength > 0:  # Only for non-zero k
-        wavelength = 2 * np.pi / k_au
+    k_wave = max(k_au, float(k_sampling_au) if k_sampling_au is not None else 0.0)
+    if k_wave > 0.1 and min_points_per_wavelength > 0:  # Only for non-zero k
+        wavelength = 2 * np.pi / k_wave
         log_ratio = np.log(r_max_optimal / r_min)
         
         # v2.14+: Check at r = 15 a.u. (outer edge of bound state region)
@@ -1776,7 +1802,7 @@ def calculate_optimal_grid_params(
     n_points_optimal = min(n_points_optimal, n_points_max)
     
     # v2.14+: Warn if cap significantly limits required density
-    if pre_cap > n_points_max * 1.5 and k_au > 2.0:
+    if pre_cap > n_points_max * 1.5 and k_wave > 2.0:
         logger.warning(
             f"Grid cap limits phase sampling: need {pre_cap} pts for E={E_eV:.0f}eV, "
             f"capped at {n_points_max}. Consider increasing n_points_max for high energies."
@@ -1786,7 +1812,7 @@ def calculate_optimal_grid_params(
     if n_points_optimal > base_n_points * 1.5:
         logger.debug(
             f"Grid scaled for E={E_eV:.0f}eV: n_points {base_n_points}→{n_points_optimal} "
-            f"(k={k_au:.2f}, λ={2*np.pi/k_au:.2f})"
+            f"(k_wave={k_wave:.2f}, λ={2*np.pi/k_wave:.2f})"
         )
         
     return r_max_optimal, n_points_optimal
@@ -2357,6 +2383,7 @@ def run_from_config(config_path: str, verbose: bool = False) -> None:
         L_eff_scan = estimate_effective_projectile_lmax(
             E_max_scan, params['ionization']['L_max_projectile']
         )
+        k_sampling_ion = estimate_ionization_worst_oscillatory_k(E_max_scan, threshold_eV)
         
         if strategy == "manual":
             if isinstance(base_r_max, str):
@@ -2378,6 +2405,7 @@ def run_from_config(config_path: str, verbose: bool = False) -> None:
                 n_points_max,
                 min_pts_per_wl,
                 z_ion,
+                k_sampling_au=k_sampling_ion,
             )
             if strategy == "local":
                 logger.info("Grid Strategy   | LOCAL (per-energy adaptive)")
@@ -2423,6 +2451,7 @@ def run_from_config(config_path: str, verbose: bool = False) -> None:
                         L_eff_local = estimate_effective_projectile_lmax(
                             E, params['ionization']['L_max_projectile']
                         )
+                        k_sampling_local = estimate_ionization_worst_oscillatory_k(E, threshold_eV)
                         r_local, n_local = calculate_optimal_grid_params(
                             E,
                             L_eff_local,
@@ -2432,6 +2461,7 @@ def run_from_config(config_path: str, verbose: bool = False) -> None:
                             n_points_max,
                             min_pts_per_wl,
                             z_ion,
+                            k_sampling_au=k_sampling_local,
                         )
                         if i_e == 0:
                             current_prep = prepare_target(

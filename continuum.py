@@ -1448,6 +1448,7 @@ def solve_continuum_wave(
     atol: float = 1e-8,
     phase_extraction_method: str = "hybrid",  # v2.11+: "hybrid", "logderiv", or "lsq"
     solver: str = "auto",  # v2.13+: "auto" (recommended), "rk45", "johnson", or "numerov"
+    allow_analytic_bypass: bool = True,  # v2.34+: user-configurable bypass gate
 ) -> ContinuumWave:
     """
     Solve for the distorted-wave scattering solution χ_l(k,r) in channel j.
@@ -1514,6 +1515,9 @@ def solve_continuum_wave(
     rtol, atol : float
         Relative / absolute tolerances for solve_ivp. We keep them fairly
         strict because χ_l will later enter delicate radial integrals.
+    allow_analytic_bypass : bool
+        Enables/disables early analytic bypass for weak short-range channels.
+        If False, the solver always runs the full numerical ODE path.
 
     Returns
     -------
@@ -1622,7 +1626,7 @@ def solve_continuum_wave(
     idx_fraction_to_match = idx_match_check / max(len(r) - 1, 1)
     r_span = max(float(r[-1] - r[0]), 1e-30)
     r_fraction_to_match = (float(r_m_check) - float(r[0])) / r_span
-    use_analytic_bypass = r_fraction_to_match < 0.15
+    use_analytic_bypass = bool(allow_analytic_bypass) and (r_fraction_to_match < 0.15)
     # Coulomb channels are long-range by construction; Born-like bypass is
     # not robust there. Keep bypass for neutral (short-range) channels only.
     if use_analytic_bypass and abs(z_ion) > 1e-6:

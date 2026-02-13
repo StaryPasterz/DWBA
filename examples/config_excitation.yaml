@@ -55,6 +55,7 @@ oscillatory:
   max_chi_cached: 20             # [count] LRU cache size for continuum waves on GPU
   phase_extraction: "hybrid"     # [v2.11+] "hybrid", "logderiv", or "lsq"
   solver: "rk45"                 # [v2.13+] "auto", "rk45" (recommended), "johnson", "numerov"
+  analytic_bypass: true          # [v2.34+] true=allow early bypass, false=always solve ODE
 
 hardware:
   gpu_block_size: "auto"         # "auto" = auto-tune based on VRAM, int = explicit size

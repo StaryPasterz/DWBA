@@ -233,6 +233,8 @@ Comprehensive (e, 2e) pipeline for computing ionization cross sections.
   - **Normalization**: Follows TDWBA convention with proper $(2\pi)^4$ kinematic factors.
   - **Exchange**: Handled via angle-swapping logic (Jones/Madison) for indistinguishable electrons.
   - **Automation**: Minimum $L_{max}=3$ floor and adaptive $L_{max}$ scaling based on incident momentum.
+  - **Energy Quadrature**: Configurable SDCS integration (`gauss_legendre` recommended, `trapz_linear` legacy).
+  - **High-L Tail Diagnostics**: Conservative high-L top-up with per-energy fit diagnostics in runtime metadata.
 - **Calibration**: Normalization applies to **excitation only**; ionization plots and results show raw DWBA data.
 - **Results**: Integrated and differential data saved to `results/results_<run>_ion.json`.
 
@@ -326,6 +328,9 @@ All numerical defaults are organized by category and displayed before calculatio
 │  min_grid_fraction      = 0.1          │
 │  k_threshold            = 0.5          │
 │  max_chi_cached         = 20           │
+│  phase_extraction       = "hybrid"     │
+│  solver                 = "rk45"       │
+│  analytic_bypass        = true         │
 └────────────────────────────────────────┘
 
 ┌─ HARDWARE ─────────────────────────────┐
@@ -395,6 +400,7 @@ All numerical defaults are organized by category and displayed before calculatio
 | `max_chi_cached` | `20` | LRU cache size for continuum waves (v2.5+) |
 | `phase_extraction` | `"hybrid"` | Phase extraction method: `hybrid` (cross-validated), `logderiv`, `lsq` *(v2.11+)* |
 | `solver` | `"rk45"` | ODE solver: `auto` (physics-based), `rk45` (recommended), `johnson`, `numerov` *(v2.13+)* |
+| `analytic_bypass` | `true` | Enable early analytic bypass for weak short-range channels; set `false` to force full ODE solve for all `l` *(v2.34+)* |
 
 ---
 
@@ -454,6 +460,7 @@ The code supports three strategies for determining the radial grid (`r_max`, `n_
    - **Pros**: Most accurate, optimal grid size per energy.
    - **Cons**: Slower due to repeated target preparation.
    - *Note: v2.12 fixed turning point overflow when high-L waves extend beyond small grids.*
+   - *Ionization note:* wavelength scaling uses a worst-case oscillatory scale based on `k_scatt + k_eject`, not only `k_inc`.
 
 3. **Manual**
    - Uses fixed `r_max` and `n_points` defined in configuration.
@@ -489,6 +496,11 @@ Excitation JSON entries now also store runtime convergence metadata:
 - `maxL_in_result` - largest actually summed `L` present in `partial_waves`
 - `n_projectile_partial_waves_summed` - number of summed projectile partial waves
 - `meta.runtime` - extended runtime diagnostics (`L` targets/limits, stop reason, skipped waves)
+
+Ionization metadata additionally includes:
+- `numerics.energy_quadrature` - SDCS integration method (`gauss_legendre` / `trapz_linear`)
+- `numerics.n_energy_nodes` - effective number of SDCS quadrature nodes
+- `topup_diagnostics` - per-node high-L top-up diagnostics (`applied`, `method_code`, `tail_fraction`, fit quality fields)
 
 ## Atom Library (`atoms.json`)
 
@@ -748,6 +760,10 @@ $$\tan(\delta_l) = \frac{Y_m \cdot \hat{j}_l - \hat{j}_l'}{\hat{n}_l' - Y_m \cdo
 - Pure analytic solution $A[\hat{j}\cos\delta - \hat{n}\sin\delta]$ used for $r > r_m$
 - Amplitude $A = \sqrt{2/\pi}$ for $\delta(k-k')$ normalization
 - Eliminates numerical noise in oscillatory tail
+
+**Analytic Bypass Gate** *(v2.34+)*:
+- User can control bypass with `oscillatory.analytic_bypass` in YAML.
+- For ionic channels (`z_ion \neq 0`), bypass remains disabled for physical robustness.
 
 **Solver Selection** *(v2.13+)*:
 
